@@ -1,7 +1,7 @@
 <div align="center">
   <img src="assets/logo.svg" width="72" height="72" alt="Agy Powertools Logo" />
   <h1>Agy Powertools</h1>
-  <p><strong>Antigravity 2.0 原生界面增强与本地遥测插件</strong></p>
+  <p><strong>Antigravity 2.0 增强插件件</strong></p>
   <p>
     <a href="https://github.com/WhiteBr1ck/agy-powertools/releases"><img src="https://img.shields.io/github/v/release/WhiteBr1ck/agy-powertools?label=Release&color=2563eb" alt="Release" /></a>
     <img src="https://img.shields.io/badge/Antigravity-2.32.1-0f172a" alt="Antigravity 2.32.1" />
