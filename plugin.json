@@ -1,0 +1,12 @@
+{
+  "name": "agy-powertools",
+  "displayName": "Antigravity Telemetry & Session Branch",
+  "version": "2.12.1",
+  "description": "Context window inspector, compact command execution tree, session branching, and real-time token telemetry for Antigravity 2.0.",
+  "logo": "assets/logo.svg",
+  "suggestedPrompts": [
+    "Branch the current session from a previous turn",
+    "Inspect context window usage and cache hit rate",
+    "Show session token speed and execution timeline"
+  ]
+}

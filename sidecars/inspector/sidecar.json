@@ -1,0 +1,13 @@
+{
+  "command": "node",
+  "args": [
+    "main.mjs"
+  ],
+  "env": {
+    "AGY_POWERTOOLS_VERSION": "2.12.1"
+  },
+  "restart_policy": "always",
+  "display_name": "Powertools",
+  "description": "Native context telemetry, full conversation forks, and turn completion timestamps.",
+  "has_web_ui": false
+}

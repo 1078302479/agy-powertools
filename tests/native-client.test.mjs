@@ -1,0 +1,140 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import vm from 'node:vm';
+
+test('execution snapshot reads native lifecycle only for the requested conversation',()=>{
+  let snapshot={conversationId:'current',status:2,turns:[{startStepIndex:7}],executorMetadata:{terminationReason:0}};
+  const value={cascadeContext:{state:{agentStateProvider:{getState:()=>snapshot}}}};
+  const element={'__reactFiber$fixture':{tag:10,type:{},memoizedProps:{value},return:null}};
+  const context=vm.createContext({document:{querySelector:()=>element}});
+  vm.runInContext(readFileSync(new URL('../lib/native-client.js',import.meta.url),'utf8'),context);
+  assert.deepEqual(JSON.parse(JSON.stringify(context.__agyNativeAdapter.executionState('current'))),{conversationId:'current',status:2,turnStartStepIndex:7,terminationReason:0});
+  assert.equal(context.__agyNativeAdapter.executionState('other'),null);
+  snapshot={...snapshot,turns:[]};assert.equal(context.__agyNativeAdapter.executionState('current'),null);
+});
+
+test('master switch restores renamed native hooks and reuses saved enhancements on enable',()=>{
+  const original={checkpointConfig:{enabled:true},plannerConfig:{noToolExplanation:true}};
+  const nativeResolve=()=>original,nativeSegment=()=>({body:{type:'collapsible'}}),send=payload=>payload;
+  const service={forkConversation(){},sendUserCascadeMessage:send};
+  const element={'__reactFiber$fixture':{tag:10,type:{},memoizedProps:{value:service},return:null}};
+  const context=vm.createContext({document:{querySelector:()=>element},renamedResolve:nativeResolve,renamedSegment:nativeSegment,
+    __agyNativeBindings:{names:{resolve:'renamedResolve',segment:'renamedSegment',menu:'renamedMenu'}},I:{},tc:(_,value)=>structuredClone(value),Wb:(_,value)=>value});
+  vm.runInContext(readFileSync(new URL('../lib/native-client.js',import.meta.url),'utf8'),context);
+  const adapter=context.__agyNativeAdapter;
+  adapter.setStageUpdates(true);adapter.setContextLimit(1000000);adapter.setEfficientIO(true);
+  assert.equal(context.renamedResolve().checkpointConfig.maxTokenLimit,1000000);
+  adapter.setEnabled(false);
+  assert.equal(context.renamedResolve,nativeResolve);assert.equal(context.renamedSegment,nativeSegment);assert.equal(service.sendUserCascadeMessage,send);
+  assert.equal(adapter.stageUpdates,false);assert.equal(context.sjc,undefined);assert.equal(context.Yyc,undefined);
+  adapter.setEnabled(true);
+  const config=context.renamedResolve();assert.equal(config.checkpointConfig.maxTokenLimit,1000000);
+  assert.deepEqual(Array.from(config.plannerConfig.promptSectionCustomizationConfig.appendPromptSections,p=>p.title),['powertools_stage_updates','powertools_efficient_io']);
+  adapter.dispose();assert.equal(context.renamedResolve,nativeResolve);assert.equal(context.renamedSegment,nativeSegment);
+});
+
+test('native fork inherits history via ForkConversation without sending a model prompt', async () => {
+  const calls = [];
+  const service = { async getCascadeTrajectory() { return { trajectory: { steps: [{metadata:{index:42},step:{case:'plannerResponse'}},{metadata:{index:43},step:{case:'systemMessage'}},{metadata:{index:44},step:{case:'userInput'}}] } }; }, async forkConversation(request) { calls.push(request); return { newCascadeId: 'new-id', newProjectId: 'project-id', forkedAtStepIndex: 183, warnings: [] }; } };
+  const element = { '__reactFiber$fixture': { tag: 5, return: { tag: 10, type: {}, memoizedProps: { value: service }, return: null } } };
+  const context = vm.createContext({ document: { querySelector: () => element }, HU: metadata => metadata.index });
+  vm.runInContext(readFileSync(new URL('../lib/native-client.js', import.meta.url), 'utf8'), context);
+  const result = await context.__agyNativeAdapter.fork('source-id');
+  assert.equal(result.conversationId, 'new-id');
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [{ sourceCascadeId: 'source-id', forkAtStepIndex: -1, targetForkWorkspace: 1 }]);
+  await context.__agyNativeAdapter.fork('source-id', 42);
+  assert.equal(calls[1].forkAtStepIndex, 43);
+  assert.equal(await context.__agyNativeAdapter.forkPoint('source-id', 44), -1);
+  await assert.rejects(context.__agyNativeAdapter.fork('../source', 4), /Invalid/);
+  await assert.rejects(context.__agyNativeAdapter.fork('source', -2), /Invalid/);
+  assert.equal(calls.length, 2);
+});
+
+test('message editing rewinds conversation only and preserves attachment and reference data', async () => {
+  const calls = [];
+  const scope = { chunk: { case: 'item', value: { file: 'reference.md' } } };
+  const media = [{ uri: 'attachment.png' }];
+  const message = { cascadeId: 'source', metadata: { index: 4 }, step: { items: [{ chunk: { case: 'text', value: 'before' } }, scope, { chunk: { case: 'text', value: 'after' } }], media, artifactComments: [{ comment: 'keep' }] } };
+  const value = { stepHandler: { async revertToIndex(...args) { calls.push(['revert', ...args]); } }, async sendMessage(payload) { calls.push(['send', payload]); } };
+  const context = vm.createContext({ document: { querySelector() {} }, HU: metadata => metadata.index });
+  const element = { '__reactFiber$fixture': { tag: 0, memoizedProps: message, return: { tag: 10, type: {}, memoizedProps: { value }, return: null } } };
+  vm.runInContext(readFileSync(new URL('../lib/native-client.js', import.meta.url), 'utf8'), context);
+  await context.__agyNativeAdapter.editAndResend(element, 'replacement');
+  assert.deepEqual(JSON.parse(JSON.stringify(calls[0])), ['revert', 'source', 3, { conversationOnly: true }]);
+  assert.equal(calls[1][1].items[0].chunk.value, 'replacement');
+  assert.equal(calls[1][1].items[1], scope); assert.equal(calls[1][1].items.length, 2);
+  assert.equal(calls[1][1].media, media);
+  assert.equal(calls[1][1].commentOverrides.artifactComments, message.step.artifactComments);
+  await assert.rejects(context.__agyNativeAdapter.editAndResend(element, '  '), /请输入/);
+  assert.equal(calls.length, 2);
+  value.stepHandler.revertToIndex = async () => { throw new Error('failed'); };
+  await assert.rejects(context.__agyNativeAdapter.editAndResend(element, 'retry'), /failed/);
+  assert.equal(calls.length, 2);
+});
+
+test('context override reaches the native config resolver and restores the default without mutating base config', () => {
+  const service={forkConversation(){},sendUserCascadeMessage(payload){return payload;}};
+  const element={'__reactFiber$fixture':{tag:10,type:{},memoizedProps:{value:service},return:null}};
+  const originalConfig={plannerConfig:{planModel:1417},checkpointConfig:{enabled:true}};
+  const originalResolve=()=>originalConfig;
+  const context=vm.createContext({document:{querySelector:()=>element},sjc:originalResolve,I:{CascadeConfigSchema:{},CheckpointConfigSchema:{}},tc:(_,value)=>structuredClone(value),Wb:(_,value)=>value});
+  vm.runInContext(readFileSync(new URL('../lib/native-client.js',import.meta.url),'utf8'),context);
+  context.__agyNativeAdapter.setContextLimit(500000);
+  const resolved=context.sjc({});
+  assert.equal(resolved.checkpointConfig.maxTokenLimit,500000);assert.equal(resolved.checkpointConfig.tokenThreshold,500000);
+  assert.equal(resolved.checkpointConfig.enabled,true);assert.equal(originalConfig.checkpointConfig.maxTokenLimit,undefined);
+  context.__agyNativeAdapter.setContextLimit(1000000);assert.equal(context.sjc({}).checkpointConfig.maxTokenLimit,1000000);
+  context.__agyNativeAdapter.setContextLimit(256000);assert.equal(context.sjc,originalResolve);
+  assert.throws(()=>context.__agyNativeAdapter.setContextLimit(42),/上下文/);
+});
+
+test('stage updates compose with context limits, show live updates and fold them before the final answer',()=>{
+  const service={forkConversation(){},sendUserCascadeMessage(payload){return payload;}};
+  const element={'__reactFiber$fixture':{tag:10,type:{},memoizedProps:{value:service},return:null}};
+  const base={plannerConfig:{noToolExplanation:true,promptSectionCustomizationConfig:{appendPromptSections:[{title:'existing',content:'preserve'}]}},checkpointConfig:{enabled:true}};
+  const resolve=()=>base;
+  const modelText={type:'step',step:{step:{case:'plannerResponse',value:{response:'Reading the next file.'}}}};
+  const final={type:'lastTextResponse',step:{step:{case:'plannerResponse',value:{response:'Final answer'}}}};
+  const render=arg=>({leadingSteps:arg.leadingSteps||[],tailSteps:[final],body:{type:'collapsible',isActive:arg.running,content:{groups:arg.groups}}});
+  const context=vm.createContext({document:{querySelector:()=>element},sjc:resolve,Yyc:render,I:{},tc:(_,value)=>structuredClone(value),Wb:(_,value)=>value});
+  vm.runInContext(readFileSync(new URL('../lib/native-client.js',import.meta.url),'utf8'),context);
+  const adapter=context.__agyNativeAdapter;
+  adapter.setStageUpdates(true);adapter.setContextLimit(1000000);
+  const patchedResolve=context.sjc;
+  vm.runInContext(readFileSync(new URL('../lib/native-client.js',import.meta.url),'utf8'),context);
+  assert.equal(context.__agyNativeAdapter,adapter);
+  assert.equal(context.sjc,patchedResolve);
+  const config=context.sjc({});
+  assert.equal(config.plannerConfig.noToolExplanation,false);
+  assert.equal(config.checkpointConfig.maxTokenLimit,1000000);
+  assert.deepEqual(Array.from(config.plannerConfig.promptSectionCustomizationConfig.appendPromptSections,p=>p.title),['existing','powertools_stage_updates']);
+  assert.equal(base.plannerConfig.noToolExplanation,true);
+  assert.equal(base.plannerConfig.promptSectionCustomizationConfig.appendPromptSections.length,1);
+  const content=context.Yyc({groups:[modelText],running:true}).body;
+  assert.equal(content.type,'inline');assert.equal(content.content.groups[0],modelText);
+  const complete=context.Yyc({groups:[modelText],leadingSteps:[modelText],running:false});
+  assert.equal(complete.body.type,'collapsible');assert.equal(complete.body.defaultExpanded,false);
+  assert.equal(complete.leadingSteps.length,0);assert.equal(complete.body.content.groups.length,2);
+  assert.equal(complete.tailSteps[0],final);assert.ok(!complete.body.content.groups.includes(final));
+  const thinking={type:'thinkingIndicator',thinking:'not user-facing'};
+  assert.equal(context.Yyc({groups:[thinking]}).body.type,'collapsible');
+  adapter.setEfficientIO(true);
+  let prompts=context.sjc({}).plannerConfig.promptSectionCustomizationConfig.appendPromptSections;
+  assert.deepEqual(Array.from(prompts,p=>p.title),['existing','powertools_stage_updates','powertools_efficient_io']);
+  assert.match(prompts.at(-1).content,/prefer rg/);
+  assert.match(prompts.at(-1).content,/operating system/);
+  adapter.setStageUpdates(false);
+  assert.equal(context.Yyc,render);
+  assert.equal(context.sjc({}).checkpointConfig.maxTokenLimit,1000000);
+  assert.equal(context.sjc({}).plannerConfig.noToolExplanation,true);
+  prompts=context.sjc({}).plannerConfig.promptSectionCustomizationConfig.appendPromptSections;
+  assert.deepEqual(Array.from(prompts,p=>p.title),['existing','powertools_efficient_io']);
+  adapter.setContextLimit(256000);assert.notEqual(context.sjc,resolve);
+  adapter.setEfficientIO(false);assert.equal(context.sjc,resolve);
+  adapter.dispose();assert.equal(context.Yyc,render);
+  assert.equal(adapter.active,false);
+  vm.runInContext(readFileSync(new URL('../lib/native-client.js',import.meta.url),'utf8'),context);
+  assert.notEqual(context.__agyNativeAdapter,adapter);
+  assert.equal(context.__agyNativeAdapter.active,true);
+});
