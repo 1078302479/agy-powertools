@@ -47,7 +47,7 @@
 
 ### 环境说明
 
-- 请先安装并至少启动过一次 Antigravity（当前适配 **Antigravity 2.32.1**；Windows 已实机验证安装与卸载，macOS 与 Linux 已提供适配脚本）。
+- 请先安装并至少启动过一次 Antigravity。
 - 发行包已内置编译产物，安装过程无需执行 `npm install`，无需管理员权限；优先使用本机 Node.js `>= 22.13`，未安装时自动回退使用客户端自带的 `agy-node`。
 
 ### 安装
