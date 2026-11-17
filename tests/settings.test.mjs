@@ -14,7 +14,10 @@ test('settings persist, merge safely, and reject unknown options without changin
     assert.equal(createSettingsStore(directory).get().compact, false);
     assert.equal(store.get().messageEdit, true);
     store.set({ enabled: false }); assert.equal(store.get().enabled, false);
+    assert.equal(DEFAULT_SETTINGS.contextLimit, 0);
     store.set({language:'en',contextLimit:1000000});assert.equal(store.get().contextLimit,1000000);assert.equal(store.get().language,'en');
+    store.set({contextLimit:256000});assert.equal(store.get().contextLimit,256000);
+    store.set({contextLimit:0});assert.equal(store.get().contextLimit,0);
     const before = readFileSync(join(directory, 'settings.json'), 'utf8');
     for (const value of [{ compact: 'false' }, { unknown: true }, { toString: false }, {language:'invalid'}, {contextLimit:999999}, []]) assert.throws(() => store.set(value), /设置/);
     assert.equal(readFileSync(join(directory, 'settings.json'), 'utf8'), before);

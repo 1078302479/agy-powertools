@@ -4,7 +4,7 @@
     "main.mjs"
   ],
   "env": {
-    "AGY_POWERTOOLS_VERSION": "2.12.1"
+    "AGY_POWERTOOLS_VERSION": "2.12.2"
   },
   "restart_policy": "always",
   "display_name": "Powertools",

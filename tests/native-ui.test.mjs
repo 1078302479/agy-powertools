@@ -13,10 +13,11 @@ function page(ready = false) {
     append(child) { child.isConnected = true; },
     setAttribute() {}, addEventListener() {}, remove() { this.isConnected = false; }
   });
+  const attrs = new Set();
   const document = {
     readyState: ready ? 'complete' : 'loading',
     head: ready ? node() : null, body: ready ? node() : null,
-    documentElement: { toggleAttribute() {}, removeAttribute() {} },
+    documentElement: { toggleAttribute(name, force) { if (force === undefined ? !attrs.has(name) : force) attrs.add(name); else attrs.delete(name); }, removeAttribute(name) { attrs.delete(name); }, hasAttribute(name) { return attrs.has(name); } },
     createElement() { const element = node(); nodes.push(element); return element; },
     addEventListener(event, callback) { if (!callbacks.has(event)) callbacks.set(event, []); callbacks.get(event).push(callback); },
     querySelectorAll() { return []; },
@@ -53,7 +54,9 @@ test('already-loaded injection initializes without waiting and disposes cleanly'
   vm.runInContext(source, p.context);
   assert.equal(p.callbacks.has('DOMContentLoaded'), false);
   assert.equal(p.context.__agyPowertools.status.healthy, true);
+  assert.equal(p.document.documentElement.hasAttribute('data-agy-keep-outline'), true);
   p.context.__agyPowertools.dispose();
   assert.equal(p.context.__agyPowertools, undefined);
+  assert.equal(p.document.documentElement.hasAttribute('data-agy-keep-outline'), false);
   assert.ok(p.nodes.every(n => !n.isConnected));
 });

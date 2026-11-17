@@ -80,12 +80,13 @@ test('context override reaches the native config resolver and restores the defau
   const originalResolve=()=>originalConfig;
   const context=vm.createContext({document:{querySelector:()=>element},sjc:originalResolve,I:{CascadeConfigSchema:{},CheckpointConfigSchema:{}},tc:(_,value)=>structuredClone(value),Wb:(_,value)=>value});
   vm.runInContext(readFileSync(new URL('../lib/native-client.js',import.meta.url),'utf8'),context);
+  context.__agyNativeAdapter.setContextLimit(256000);assert.equal(context.sjc({}).checkpointConfig.maxTokenLimit,256000);
   context.__agyNativeAdapter.setContextLimit(500000);
   const resolved=context.sjc({});
   assert.equal(resolved.checkpointConfig.maxTokenLimit,500000);assert.equal(resolved.checkpointConfig.tokenThreshold,500000);
   assert.equal(resolved.checkpointConfig.enabled,true);assert.equal(originalConfig.checkpointConfig.maxTokenLimit,undefined);
   context.__agyNativeAdapter.setContextLimit(1000000);assert.equal(context.sjc({}).checkpointConfig.maxTokenLimit,1000000);
-  context.__agyNativeAdapter.setContextLimit(256000);assert.equal(context.sjc,originalResolve);
+  context.__agyNativeAdapter.setContextLimit(0);assert.equal(context.sjc,originalResolve);
   assert.throws(()=>context.__agyNativeAdapter.setContextLimit(42),/上下文/);
 });
 
@@ -130,7 +131,7 @@ test('stage updates compose with context limits, show live updates and fold them
   assert.equal(context.sjc({}).plannerConfig.noToolExplanation,true);
   prompts=context.sjc({}).plannerConfig.promptSectionCustomizationConfig.appendPromptSections;
   assert.deepEqual(Array.from(prompts,p=>p.title),['existing','powertools_efficient_io']);
-  adapter.setContextLimit(256000);assert.notEqual(context.sjc,resolve);
+  adapter.setContextLimit(0);assert.notEqual(context.sjc,resolve);
   adapter.setEfficientIO(false);assert.equal(context.sjc,resolve);
   adapter.dispose();assert.equal(context.Yyc,render);
   assert.equal(adapter.active,false);
