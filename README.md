@@ -11,6 +11,10 @@
     <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-475569" alt="Platform" />
   </p>
   <p>
+    <strong>简体中文</strong> |
+    <a href="README_EN.md">English</a>
+  </p>
+  <p>
     <a href="#功能一览">功能一览</a> |
     <a href="#安装与卸载">安装与卸载</a> |
     <a href="#重点功能详解">重点功能详解</a> |
