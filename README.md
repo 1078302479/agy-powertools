@@ -4,6 +4,8 @@
   <p><strong>Antigravity 2.0 增强插件</strong></p>
   <p>
     <a href="https://github.com/WhiteBr1ck/agy-powertools/releases"><img src="https://img.shields.io/github/v/release/WhiteBr1ck/agy-powertools?label=Release&color=2563eb" alt="Release" /></a>
+    <a href="https://github.com/WhiteBr1ck/agy-powertools/actions/workflows/ci.yml"><img src="https://github.com/WhiteBr1ck/agy-powertools/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-16a34a" alt="MIT License" /></a>
     <img src="https://img.shields.io/badge/Antigravity-2.32.1-0f172a" alt="Antigravity 2.32.1" />
     <img src="https://img.shields.io/badge/Node.js-%3E%3D22.13-339933" alt="Node.js >= 22.13" />
     <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-475569" alt="Platform" />
@@ -240,7 +242,8 @@ sh ./uninstall.sh
 - 适配 Antigravity 2.32.x 渲染器组件结构与调试端点动态重连。
 - 新增 `启用 Powertools` 全局总开关，重组“会话增强”配置分组并完善无障碍描述关联。
 
-## 问题反馈与致谢
+## 问题反馈与开源协议
 
+- **开源协议**：本项目基于 [MIT License](LICENSE) 开源。
 - **问题反馈**：如遇客户端新版本升级后入口未显示或界面异常，欢迎在 [GitHub Issues](https://github.com/WhiteBr1ck/agy-powertools/issues) 提交反馈，并附上你的操作系统、Antigravity 版本号与插件版本号。
 - **第三方致谢**：管理面板中的自定义日期范围日历交互改编自 HextaUI，并基于 `react-day-picker` 与 `date-fns` 构建，相关开源许可声明见 [lib/vendor/NOTICE.txt](lib/vendor/NOTICE.txt)。
