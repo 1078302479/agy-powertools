@@ -267,3 +267,7 @@ sh ./uninstall.sh
 - **开源协议**：本项目基于 [MIT License](LICENSE) 开源。
 - **问题反馈**：如遇客户端新版本升级后入口未显示或界面异常，欢迎在 [GitHub Issues](https://github.com/WhiteBr1ck/agy-powertools/issues) 提交反馈，并附上你的操作系统、Antigravity 版本号与插件版本号。
 - **第三方致谢**：管理面板中的自定义日期范围日历交互改编自 HextaUI，并基于 `react-day-picker` 与 `date-fns` 构建，相关开源许可声明见 [lib/vendor/NOTICE.txt](lib/vendor/NOTICE.txt)。
+
+## 友情链接
+
+- [LINUX DO](https://linux.do/) - 新的理想型社区

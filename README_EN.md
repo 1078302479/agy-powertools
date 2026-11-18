@@ -265,3 +265,7 @@ All options can be toggled live in **Powertools -> Settings** and persist automa
 - **License**: Released under the [MIT License](LICENSE).
 - **Issues**: If the sidebar entry disappears or UI components break after an Antigravity client update, please open an issue on [GitHub Issues](https://github.com/WhiteBr1ck/agy-powertools/issues) with your OS, Antigravity version, and Agy Powertools version.
 - **Acknowledgements**: The custom date-range calendar interaction in the dashboard is adapted from HextaUI and built with `react-day-picker` and `date-fns`. Third-party license notices are in [lib/vendor/NOTICE.txt](lib/vendor/NOTICE.txt).
+
+## Links
+
+- [LINUX DO](https://linux.do/)
