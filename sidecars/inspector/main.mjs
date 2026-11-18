@@ -10,6 +10,9 @@ import { requestEvents } from '../../lib/analytics.mjs';
 import { readProgress, resolveTurnExecution } from '../../lib/progress.mjs';
 import { serveRuntime } from '../../lib/runtime-control.mjs';
 import { installationPaths } from '../../lib/lifecycle.mjs';
+import { createSettingsStore } from '../../lib/settings.mjs';
+import { configureLaunchers, maybePromptPostUpdateRelaunch, scheduleRelaunchWithDebugPort } from '../../lib/launcher.mjs';
+import { startSidecarWebUi } from '../../lib/sidecar-ui.mjs';
 
 export const getAppDataDir = () => process.env.ANTIGRAVITY_APP_DATA_DIR || join(homedir(), '.gemini', 'antigravity');
 const validId = id => typeof id === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/.test(id);
@@ -230,8 +233,40 @@ export function exportTranscript(conversationId, targetTurnNumber) {
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
-  const stop = startNativeIntegration({ parseSessionData });
-  const version=JSON.parse(readFileSync(new URL('../../package.json',import.meta.url),'utf8')).version;
-  const close=await serveRuntime({directory:join(installationPaths().data,'runtime'),version,stop,health:stop.health});
-  for (const event of ['SIGINT', 'SIGTERM']) process.on(event, async () => { await stop();await close(); process.exit(0); });
+  const paths = installationPaths();
+  const settings = createSettingsStore();
+  let missingPortPolls = 0, shortcutsHealed = false;
+  const stop = startNativeIntegration({
+    parseSessionData,
+    onMissingDebugPort() {
+      missingPortPolls++;
+      if (!shortcutsHealed) {
+        shortcutsHealed = true;
+        try { configureLaunchers({ home: paths.home, dataDir: paths.data }); } catch {}
+      }
+      if (missingPortPolls >= 2) {
+        const current = settings.get();
+        if (current.enabled !== false) {
+          maybePromptPostUpdateRelaunch({
+            dataDir: paths.data,
+            installDir: paths.installed,
+            language: current.language || 'zh-CN',
+            home: paths.home
+          });
+        }
+      }
+    }
+  });
+  const version = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version;
+  const closeWebUi = await startSidecarWebUi({
+    version,
+    getStatus: async () => {
+      const current = settings.get();
+      const health = await stop.health();
+      return { healthy: health.healthy, enabled: current.enabled !== false, language: current.language || 'zh-CN' };
+    },
+    onRelaunch: () => scheduleRelaunchWithDebugPort({ dataDir: paths.data, home: paths.home })
+  }).catch(() => async () => {});
+  const close = await serveRuntime({ directory: join(paths.data, 'runtime'), version, stop, health: stop.health });
+  for (const event of ['SIGINT', 'SIGTERM']) process.on(event, async () => { await stop(); await closeWebUi(); await close(); process.exit(0); });
 }

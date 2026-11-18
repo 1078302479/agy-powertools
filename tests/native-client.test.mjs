@@ -49,6 +49,86 @@ test('native fork inherits history via ForkConversation without sending a model 
   await assert.rejects(context.__agyNativeAdapter.fork('../source', 4), /Invalid/);
   await assert.rejects(context.__agyNativeAdapter.fork('source', -2), /Invalid/);
   assert.equal(calls.length, 2);
+  await context.__agyNativeAdapter.fork('source-id', 42, { exact: true });
+  assert.equal(calls[2].forkAtStepIndex, 42);
+});
+
+test('resolveForkPlan forks turns before subagent directly and offers last pre-subagent turn boundary when subagent is in range', async () => {
+  const userStep = (index, text) => ({ metadata: { index }, step: { case: 'userInput', value: { items: [{ chunk: { case: 'text', value: text } }] } } });
+  let steps = [
+    userStep(0, '<USER_REQUEST>First user prompt</USER_REQUEST>'),
+    { metadata: { index: 1 }, step: { case: 'plannerResponse' } },
+    { metadata: { index: 2 }, step: { case: 'systemMessage' } },
+    userStep(3, '<USER_REQUEST>Check this link</USER_REQUEST>'),
+    userStep(4, 'Error: The stream was interrupted. Please continue the task you were working on.'),
+    { metadata: { index: 5 }, step: { case: 'plannerResponse' } },
+    { metadata: { index: 6 }, step: { case: 'generic' }, metadata: { index: 6, toolCall: { name: 'invoke_subagent' } } },
+    { metadata: { index: 7 }, step: { case: 'plannerResponse' } },
+    userStep(8, '<USER_REQUEST>Follow-up question</USER_REQUEST>'),
+    { metadata: { index: 9 }, step: { case: 'plannerResponse' } }
+  ];
+  const service = { async getCascadeTrajectory() { return { trajectory: { steps } }; }, async forkConversation() { return { newCascadeId: 'forked' }; } };
+  const element = { '__reactFiber$fixture': { tag: 5, return: { tag: 10, type: {}, memoizedProps: { value: service }, return: null } } };
+  const context = vm.createContext({ document: { querySelector: () => element }, HU: metadata => metadata.index });
+  vm.runInContext(readFileSync(new URL('../lib/native-client.js', import.meta.url), 'utf8'), context);
+  const adapter = context.__agyNativeAdapter;
+
+  const beforeSub = JSON.parse(JSON.stringify(await adapter.resolveForkPlan('conv-1', 1)));
+  assert.deepEqual(beforeSub, { mode: 'direct', forkAtStepIndex: 2 });
+
+  const fullFork = JSON.parse(JSON.stringify(await adapter.resolveForkPlan('conv-1', -1)));
+  assert.deepEqual(fullFork, {
+    mode: 'before-subagent',
+    forkAtStepIndex: 2,
+    turnNumber: 1,
+    subagentTurnNumber: 2,
+    promptPreview: 'First user prompt'
+  });
+
+  const afterSub = JSON.parse(JSON.stringify(await adapter.resolveForkPlan('conv-1', 7)));
+  assert.equal(afterSub.mode, 'before-subagent');
+  assert.equal(afterSub.forkAtStepIndex, 2);
+
+  steps = [
+    userStep(0, 'Immediate browser task'),
+    { metadata: { index: 1, toolCall: { name: 'invoke_subagent' } }, step: { case: 'generic' } }
+  ];
+  const firstTurnSub = JSON.parse(JSON.stringify(await adapter.resolveForkPlan('conv-1', -1)));
+  assert.deepEqual(firstTurnSub, { mode: 'blocked-first-turn', subagentStepIndex: 1 });
+});
+
+test('forked conversations automatically receive an incremented (N) title annotation', async () => {
+  const annotationCalls = [];
+  const summaries = {
+    'source-1': { summary: '优化 README 文件指南' },
+    'existing-1': { annotations: { title: '优化 README 文件指南 (1)' } }
+  };
+  const reduxStore = { getState: () => ({ trajectorySummaries: { summaries } }), dispatch() {} };
+  const service = {
+    async getCascadeTrajectory() { return { trajectory: { steps: [] } }; },
+    async forkConversation() { return { newCascadeId: 'forked-2', newProjectId: 'proj-1', forkedAtStepIndex: -1, warnings: [] }; },
+    async updateConversationAnnotations(ids, ann, merge) { annotationCalls.push([ids, ann, merge]); }
+  };
+  const element = {
+    '__reactFiber$fixture': {
+      tag: 10, type: {}, memoizedProps: { value: { store: reduxStore } },
+      return: { tag: 10, type: {}, memoizedProps: { value: service }, return: null }
+    }
+  };
+  const context = vm.createContext({
+    document: { querySelector: () => element, querySelectorAll: () => [] },
+    HU: m => m.index,
+    YF: { ConversationAnnotationsSchema: 'ann-schema' },
+    Wb: (schema, value) => ({ schema, ...value })
+  });
+  vm.runInContext(readFileSync(new URL('../lib/native-client.js', import.meta.url), 'utf8'), context);
+  const adapter = context.__agyNativeAdapter;
+  assert.equal(adapter.nextBranchTitle('测试会话', []), '测试会话 (1)');
+  assert.equal(adapter.nextBranchTitle('测试会话 (1)', ['测试会话', '测试会话 (1)']), '测试会话 (2)');
+
+  await adapter.fork('source-1');
+  assert.equal(annotationCalls.length, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(annotationCalls[0])), [['forked-2'], { schema: 'ann-schema', title: '优化 README 文件指南 (2)' }, true]);
 });
 
 test('message editing rewinds conversation only and preserves attachment and reference data', async () => {
@@ -71,6 +151,130 @@ test('message editing rewinds conversation only and preserves attachment and ref
   value.stepHandler.revertToIndex = async () => { throw new Error('failed'); };
   await assert.rejects(context.__agyNativeAdapter.editAndResend(element, 'retry'), /failed/);
   assert.equal(calls.length, 2);
+});
+
+test('composer-driven message editing loads rich quotes and media into Lexical, supports cancel draft restore, and rewinds before native send', async () => {
+  const events = [];
+  let editorState = 'draft-before', attachments = [{ uri: 'draft.png' }];
+  const quoteItem = { chunk: { case: 'item', value: { scopeItem: { case: 'quote', value: { text: 'quoted snippet' } } } } };
+  const message = {
+    cascadeId: 'conv-1',
+    metadata: { index: 6 },
+    step: {
+      items: [{ chunk: { case: 'text', value: 'hello ' } }, quoteItem],
+      media: [{ uri: 'artifact://img1.png', mimeType: 'image/png' }],
+      artifactComments: [{ comment: 'note' }]
+    }
+  };
+  const editor = {
+    getEditorState: () => editorState,
+    setEditorState: next => { editorState = next; events.push(['editor', next]); },
+    focus: () => events.push(['focus'])
+  };
+  const box = {
+    lexicalRef: { current: editor },
+    getMediaAttachments: () => attachments,
+    setMediaAttachments: next => { attachments = next; events.push(['media', next]); },
+    floatingContentRef: { current: {} }
+  };
+  const service = {
+    forkConversation() {},
+    async cancelCascadeInvocation(req) { events.push(['cancelRun', req]); },
+    async sendUserCascadeMessage(payload) { events.push(['rpcSend', payload]); return { ok: true }; }
+  };
+  const stepHandler = {
+    resolveArtifactUrl: uri => `https://local.test/${encodeURIComponent(uri)}`,
+    async revertToIndex(...args) { events.push(['revert', ...args]); }
+  };
+  const optimistic = {
+    applyOptimisticRevert(id, idx) { events.push(['optRevert', id, idx]); return { dispose: () => events.push(['optDispose']) }; }
+  };
+  const inputBox = { parentNode: null, nextSibling: null };
+  const bottomDock = {
+    isConnected: true,
+    children: [inputBox],
+    insertBefore(node, before) {
+      node.parentNode?.children?.splice?.(node.parentNode.children.indexOf(node), 1);
+      const idx = before ? this.children.indexOf(before) : this.children.length;
+      this.children.splice(idx < 0 ? this.children.length : idx, 0, node);
+      node.parentNode = this;
+      node.nextSibling = before || null;
+    }
+  };
+  inputBox.parentNode = bottomDock;
+  inputBox.parentElement = bottomDock;
+  const makeNode = tag => ({
+    tag, dataset: {}, className: '', textContent: '', children: [],
+    append(...items) { for (const item of items) { item.parentNode?.children?.splice?.(item.parentNode.children.indexOf(item), 1); item.parentNode = this; this.children.push(item); } },
+    addEventListener() {},
+    remove() { if (this.parentNode?.children) { const i = this.parentNode.children.indexOf(this); if (i >= 0) this.parentNode.children.splice(i, 1); } this.parentNode = null; }
+  });
+  const element = {
+    attrs: new Set(), children: [],
+    setAttribute(k) { this.attrs.add(k); },
+    removeAttribute(k) { this.attrs.delete(k); },
+    prepend(node) { node.parentNode = this; this.children.unshift(node); },
+    closest: () => ({ querySelector: () => inputBox }),
+    '__reactFiber$fixture': {
+      tag: 0, memoizedProps: message,
+      return: {
+        tag: 10, type: {}, memoizedProps: { value: { stepHandler, restoreReviewComments: arg => events.push(['comments', arg.cascadeId]) } },
+        return: {
+          tag: 10, type: {}, memoizedProps: { value: { inputBoxRef: { current: box }, getLexicalEditor: () => editor } },
+          return: {
+            tag: 10, type: {}, memoizedProps: { value: optimistic },
+            return: { tag: 10, type: {}, memoizedProps: { value: service }, return: null }
+          }
+        }
+      }
+    }
+  };
+  const context = vm.createContext({
+    document: { querySelector: sel => sel ? null : element, createElement: makeNode },
+    HU: m => m.index,
+    LN: items => ({ serialized: items }),
+    IJ: (_, json) => ({ parsed: json }),
+    fetch: async () => ({ ok: true, arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer }),
+    I: { CascadeConfigSchema: {} }, tc: (_, v) => structuredClone(v), Wb: (_, v) => v
+  });
+  vm.runInContext(readFileSync(new URL('../lib/native-client.js', import.meta.url), 'utf8'), context);
+  const adapter = context.__agyNativeAdapter;
+
+  await adapter.beginEdit(element);
+  assert.equal(adapter.pendingEdit.stepIndex, 6);
+  assert.equal(element.attrs.has('data-agy-editing-target'), true);
+  assert.equal(inputBox.parentNode, adapter.pendingEdit.inlineHost);
+  assert.deepEqual(JSON.parse(JSON.stringify(editorState)), { parsed: { serialized: message.step.items } });
+  assert.equal(attachments.length, 1);
+  assert.equal(attachments[0].uri, '');
+  assert.deepEqual(Array.from(attachments[0].payload.value), [1, 2, 3]);
+
+  adapter.cancelEdit();
+  assert.equal(adapter.pendingEdit, null);
+  assert.equal(element.attrs.has('data-agy-editing-target'), false);
+  assert.equal(inputBox.parentNode, bottomDock);
+  assert.equal(editorState, 'draft-before');
+  assert.deepEqual(JSON.parse(JSON.stringify(attachments)), [{ uri: 'draft.png' }]);
+
+  events.length = 0;
+  await adapter.beginEdit(element);
+  assert.equal(inputBox.parentNode, adapter.pendingEdit.inlineHost);
+  const editedItems = [{ chunk: { case: 'text', value: 'updated ' } }, quoteItem];
+  const editedMedia = [...attachments, { uri: 'new-upload.png', mimeType: 'image/png' }];
+  await service.sendUserCascadeMessage({ cascadeId: 'conv-1', items: editedItems, media: editedMedia, deliveryStrategy: 2 });
+  assert.equal(adapter.pendingEdit, null);
+  assert.equal(inputBox.parentNode, bottomDock);
+  assert.equal(element.attrs.has('data-agy-editing-target'), false);
+  const revertIdx = events.findIndex(e => e[0] === 'revert');
+  const sendIdx = events.findIndex(e => e[0] === 'rpcSend');
+  assert.ok(revertIdx >= 0 && sendIdx > revertIdx);
+  assert.deepEqual(JSON.parse(JSON.stringify(events[revertIdx])), ['revert', 'conv-1', 5, { conversationOnly: true }]);
+  const sent = events[sendIdx][1];
+  assert.equal(sent.items, editedItems);
+  assert.equal(sent.media, editedMedia);
+  assert.equal(sent.deliveryStrategy, undefined);
+  assert.equal(sent.artifactComments, message.step.artifactComments);
+  assert.ok(events.some(e => e[0] === 'optDispose'));
 });
 
 test('context override reaches the native config resolver and restores the default without mutating base config', () => {

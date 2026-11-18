@@ -30,6 +30,26 @@ test('quota estimates require quota consumption and local priced requests in the
  const requests=[2000,3000,4000].map(timestampMs=>({model:'Gemini 4 Argon',timestampMs,inputTokens:10000,cacheReadTokens:0,outputTokens:0}));
  const result=tracker.observe(groups(.98),requests,rates,5000).estimates[0];assert.ok(Math.abs(result.estimateUsd-3)<1e-9);assert.equal(result.confidence,'low');assert.ok(Math.abs(result.estimateTokens-1500000)<1e-6);assert.ok(Math.abs(result.remainingTokens-1470000)<1e-6);
  assert.equal(tracker.observe([{buckets:[{bucketId:'gemini-5h',remainingFraction:.97,resetTimeMs:200000}]}],requests,rates,6000).estimates[0].estimateUsd,null);
+ for(let i=0;i<120;i++)tracker.observe([{buckets:[{bucketId:'3p-5h',remainingFraction:1,resetTimeMs:300000+i*1000},{bucketId:'3p-weekly',remainingFraction:1,resetTimeMs:900000+i*1000}]}],requests,rates,6000+i*10);
+ const moreRequests=[...requests,[6100,6200,6300].map(t=>({model:'Gemini 4 Argon',timestampMs:t,durationMs:1500,inputTokens:10000,cacheReadTokens:0,outputTokens:0}))].flat();
+ const kept=tracker.observe([{buckets:[{bucketId:'gemini-5h',remainingFraction:.95,resetTimeMs:200000}]}],moreRequests,rates,8000).estimates[0];
+ assert.ok(Math.abs(kept.estimateUsd-1.2)<1e-9);
+ }finally{rmSync(dir,{recursive:true,force:true});}
+});
+
+test('quota tracker computes full-cycle 100% quota from resetTimeMs minus window duration without prior samples',()=>{
+ const dir=mkdtempSync(join(tmpdir(),'agy-quota-cycle-'));try{
+ const tracker=createQuotaTracker(dir),rates=[{model:'gemini-4-carbon',input:2,cache:.1,output:10}];
+ const resetTimeMs=Date.parse('2026-11-18T22:30:00Z');
+ const startMs=resetTimeMs-5*3600*1000;
+ const requests=[
+   {model:'Gemini 4 Carbon (High)',timestampMs:startMs-5000,durationMs:1000,inputTokens:900000,cacheReadTokens:0,outputTokens:0},
+   {model:'Gemini 4 Carbon (High)',timestampMs:startMs-500,durationMs:1200,inputTokens:50000,cacheReadTokens:0,outputTokens:0},
+   {model:'Gemini 4 Carbon (High)',timestampMs:startMs+3000,durationMs:500,inputTokens:50000,cacheReadTokens:0,outputTokens:0},
+   {model:'Gemini 4 Carbon (High)',timestampMs:startMs+6000,durationMs:500,inputTokens:50000,cacheReadTokens:0,outputTokens:0}
+ ];
+ const est=tracker.observe([{buckets:[{bucketId:'gemini-5h',window:'5h',remainingFraction:.99,resetTimeMs}]}],requests,rates,startMs+10000).estimates[0];
+ assert.ok(Math.abs(est.estimateUsd-30)<1e-9);
  }finally{rmSync(dir,{recursive:true,force:true});}
 });
 

@@ -6,7 +6,7 @@
     <a href="https://github.com/WhiteBr1ck/agy-powertools/releases"><img src="https://img.shields.io/github/v/release/WhiteBr1ck/agy-powertools?label=Release&color=2563eb" alt="Release" /></a>
     <a href="https://github.com/WhiteBr1ck/agy-powertools/actions/workflows/ci.yml"><img src="https://github.com/WhiteBr1ck/agy-powertools/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-16a34a" alt="MIT License" /></a>
-    <img src="https://img.shields.io/badge/Antigravity-2.32.1-0f172a" alt="Antigravity 2.32.1" />
+    <img src="https://img.shields.io/badge/Antigravity-2.33.0-0f172a" alt="Antigravity 2.33.0" />
     <img src="https://img.shields.io/badge/Node.js-%3E%3D22.13-339933" alt="Node.js >= 22.13" />
     <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-475569" alt="Platform" />
   </p>
@@ -45,7 +45,7 @@ It addresses four common friction points in daily Antigravity usage:
 - **Task progress and persistent turn outline**: Track checklist completion, recent tool activity, and elapsed time in the right Overview panel while keeping the left turn outline visible.
 - **Bilingual UI (`English` / `简体中文`)**: Switch between English and Simplified Chinese across Powertools panels and common native Antigravity menus and settings without first-paint flicker.
 - **Local usage, error, and quota dashboard**: A dedicated `Powertools` sidebar page with a 53-week usage heatmap, model health timeline, token and cost donuts, request filters, one-click error copy, quota bars, and official API reference pricing.
-- **Session enhancements and verified updates**: Optional experimental context targets (`Default` / `256K` / `500K` / `1M`), optional Efficient I/O guidance, and SHA-256 verified in-app updates with automatic rollback on startup failure.
+- **Session enhancements and verified updates**: Optional experimental context targets (`Default` / `256K` / `500K` / `1M`), optional Parallel search & read guidance, and SHA-256 verified in-app updates with automatic rollback on startup failure.
 
 ## Installation and uninstallation
 
@@ -124,8 +124,8 @@ A compact progress ring sits next to the model selector in the composer. Clickin
 
 ### 3. Lossless session branching and inline message editing
 
-- **Branch from any reply**: Every completed reply includes a `Branch to new chat` action, and the conversation menu adds `Fork conversation` (also available via the `/branch-session` skill). It calls Antigravity's native `ForkConversation` RPC to copy all stored steps, tool calls, and outputs up to that turn into a new conversation without sending an extra model prompt or replacing history with a summary.
-- **Edit and resend messages**: Click the edit icon next to any sent user message to revise the prompt in place and regenerate from that turn onward (local workspace files are not reverted).
+- **Branch from any reply**: Every completed reply includes a `Branch to new chat` action, and the conversation menu adds `Fork conversation` (also available via `/branch-session`). New branches are automatically renamed with `(1)`, `(2)` suffixes, and conversations that invoked subagents offer a native prompt to branch cleanly from the last turn before the subagent call.
+- **In-place native message editing**: Click the edit icon next to any sent user message to mount Antigravity's native rich Lexical composer directly in place, preserving quotes (`Ctrl+L`), `@` mentions, and image attachments while restoring any bottom draft on cancel.
 
 ### 4. Local usage, error, and quota dashboard
 
@@ -190,27 +190,32 @@ All options can be toggled live in **Powertools -> Settings** and persist automa
 | --- | --- | --- |
 | Enable Powertools | On | Master switch; turning it off pauses all UI injections and request overrides while keeping your saved preferences |
 
-### Display
+### Interface & display
 
 | Setting | Default | Description |
 | --- | --- | --- |
-| Compact layout | On | Tightens chat line height, paragraph spacing, divider margins, and tool-row height while following the client font size |
-| Context ring | On | Shows the context usage ring and statistics popover trigger next to the composer model selector |
-| Turn duration | On | Displays total completion duration at the top of each finished turn |
-| Expand tools from duration | On | Allows clicking the turn duration label to expand or collapse tool calls and stage updates |
-| Task progress | On | Renders the task checklist progress ring, recent tool activity, and elapsed timer inside the right Overview panel |
-| Always show conversation outline | On | Keeps the turn navigation rail visible in multi-turn chats even when the Overview panel reserves space |
-| Keep Overview open when switching chats | On | Preserves the open state of the right Overview panel when navigating between conversations |
-| Language | `简体中文` | Choose `简体中文` or `English` for Powertools panels and common native client UI strings |
+| Language | `简体中文` | Choose `简体中文` or `English` for Powertools panels and common native client UI menus |
+| Compact layout | On | Tightens chat line height and block spacing while following the client font size |
+| Always show conversation outline | On | Keeps the turn navigation rail visible in multi-turn chats even when Overview reserves space |
+| Keep Overview open when switching chats | On | Preserves the open state of the right Overview panel across chats |
+
+### Telemetry & progress
+
+| Setting | Default | Description |
+| --- | --- | --- |
+| Context ring | On | Shows the context usage ring and statistics popover in the composer (displays only the ring icon at 0 usage) |
+| Task progress | On | Renders checklist progress, recent tool activity, and elapsed timer inside Overview |
+| Turn duration | On | Displays completion duration at the top of each finished turn |
+| Expand tools from duration | On | Click the turn duration label to expand or collapse tool calls and stage updates |
 
 ### Conversation enhancements
 
 | Setting | Default | Description |
 | --- | --- | --- |
-| Stage updates | On | Prompts the model to share brief progress updates before tool steps and folds them into the duration group on completion |
-| Efficient I/O | Off | Guides the model to batch independent file reads and avoid redundant searches while respecting platform permissions and user-specified order |
-| Branch from responses | On | Adds a branch action under completed replies to fork a new conversation up to that turn |
-| Edit messages | On | Adds an inline edit button on sent user messages to revise and regenerate subsequent turns |
+| Stage updates | On | Codex-style live progress updates while the agent works, folded automatically on completion |
+| Parallel search & read | Off | Guides the agent to batch file searches and reads in the same turn to reduce round trips |
+| Conversation branching | On | Enables Antigravity's native conversation branching from menus and replies, with automatic `(1)` naming and pre-subagent fallback |
+| Message editing | On | Enables native in-place message editing with full support for quotes, `@` mentions, and images |
 
 ### Context (Experimental)
 
@@ -223,11 +228,17 @@ All options can be toggled live in **Powertools -> Settings** and persist automa
 | Name / Path | Description |
 | --- | --- |
 | `ANTIGRAVITY_USER_DATA_DIR` | Custom Antigravity user-data directory when running an isolated client profile |
-| `ANTIGRAVITY_CDP_PORT_FILE` | Explicit path to the client `DevToolsActivePort` file |
+| `ANTIGRAVITY_CDP_PORT_FILE` | Explicit path to the client `DevToolsActivePort` file (also honors `AGY_BROWSER_ACTIVE_PORT_FILE`) |
 | `~/.gemini/config/plugins/agy-powertools/` | Installed plugin program and runtime scripts |
 | `~/.gemini/antigravity/plugin_data/agy-powertools/` | User preferences (`settings.json`), component cache, and official pricing cache |
 
 ## Changelog
+
+### v2.12.3
+- **Antigravity 2.33.0 compatibility**: Automatic cross-platform shortcut launch flag management with clean uninstall restore, background self-healing across client updates, and a one-click restart helper.
+- **In-place native rich message editing**: Relocates the native Lexical composer directly to the edited message with full support for selection quotes (`Ctrl+L`), `@` mentions, image attachments, and draft restoration on cancel.
+- **Improved conversation branching**: Automatically renames forked conversations with `(1)`, `(2)` suffixes and offers a native modal to branch from the last turn before a subagent invocation.
+- **UI & quota refinements**: Redesigned the context popover with Claude Desktop-inspired multi-color segments and aligned columns (ring-only when usage is 0); narrowed Settings to match official readability with a fixed non-jumping header bar while keeping wide tables on Requests and Errors; updated 100% quota estimation to reconcile full-cycle usage from the exact reset start timestamp.
 
 ### v2.12.2
 - Restored smooth native Overview panel open/close transitions when `Always show conversation outline` is enabled.
