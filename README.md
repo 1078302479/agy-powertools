@@ -239,8 +239,8 @@ sh ./uninstall.sh
 ## 更新日志
 
 ### v2.12.5
-- **修复 macOS 自动重启启用失效（#1，感谢 `@niuanhua-ydy`）**：将重启等待脚本从 `pgrep -f`（在 macOS 上会跳过祖先进程导致提前抢跑撞上单实例锁）替换为 `/bin/ps + /usr/bin/awk` 精确前缀检测，增加 `trap '' HUP TERM` 防中断与更充足的退出等待窗口。
-- **同步加固 Linux 重启脚本**：同样加入 `trap '' HUP TERM` 保护与 `ps + awk` 精确进程匹配。
+- 修复 macOS 点击「立即重启启用」后旧进程尚未退出完导致重启失败的问题（#1，感谢 `@niuanhua-ydy`）：将进程等待逻辑从 `pgrep -f` 改为 `/bin/ps` + `/usr/bin/awk` 按路径前缀匹配，补充 `trap '' HUP TERM` 并延长退出等待时间。
+- 同步调整 Linux 重启脚本，使用 `trap '' HUP TERM` 与 `ps` + `awk` 检查进程退出。
 
 ### v2.12.4
 - **任务栏未读提醒**：后台或失焦对话完成后，在任务栏标题自动显示 `(1)` 未读计数并触发 Windows 11 原生橙色高亮提醒（不改 `app.asar`），切回查看自动消除，可在设置中开关。

@@ -237,8 +237,8 @@ All options can be toggled live in **Powertools -> Settings** and persist automa
 ## Changelog
 
 ### v2.12.5
-- **Fixed macOS relaunch exit wait (#1, thanks `@niuanhua-ydy`)**: Replaced `pgrep -f` (which skips ancestor processes on macOS and raced Electron's single-instance lock) with `/bin/ps` + `/usr/bin/awk` prefix matching, added `trap '' HUP TERM`, extended shutdown wait, and used absolute binary paths.
-- **Hardened Linux relaunch script**: Applied the same `trap '' HUP TERM` protection and literal `ps` + `awk` process matching.
+- Fixed macOS "Restart to Enable" failing when the previous Antigravity process had not finished exiting (#1, thanks `@niuanhua-ydy`): replaced `pgrep -f` with `/bin/ps` and `/usr/bin/awk` path-prefix matching, added `trap '' HUP TERM`, and extended the exit wait window.
+- Updated the Linux relaunch script to use `trap '' HUP TERM` and `ps` + `awk` process checks as well.
 
 ### v2.12.4
 - **Taskbar unread reminder**: Displays `(N)` unread count in the taskbar title and triggers native Windows attention highlighting when background or unfocused chats finish, clearing automatically on focus (configurable in Settings).
