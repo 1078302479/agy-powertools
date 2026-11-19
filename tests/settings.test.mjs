@@ -13,6 +13,7 @@ test('settings persist, merge safely, and reject unknown options without changin
     store.set({ compact: false, timing: false });
     assert.equal(createSettingsStore(directory).get().compact, false);
     assert.equal(store.get().messageEdit, true);
+    assert.equal(store.get().fileContextMenu, true);
     store.set({ enabled: false }); assert.equal(store.get().enabled, false);
     assert.equal(DEFAULT_SETTINGS.contextLimit, 0);
     store.set({language:'en',contextLimit:1000000});assert.equal(store.get().contextLimit,1000000);assert.equal(store.get().language,'en');

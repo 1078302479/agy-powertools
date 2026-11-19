@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
+import { EventEmitter } from 'node:events';
+import { pathToFileURL } from 'node:url';
 import {
   injectDebugArg,
   removeDebugArg,
@@ -14,7 +16,11 @@ import {
   restoreLaunchers,
   resolveAntigravityExecutable,
   shouldPromptPostUpdate,
-  scheduleRelaunchWithDebugPort
+  scheduleRelaunchWithDebugPort,
+  resolveLocalFilePath,
+  isWindowsRunnableFile,
+  openLocalFile,
+  copyLocalFile
 } from '../lib/launcher.mjs';
 import { startSidecarWebUi, renderAuxPaneHtml } from '../lib/sidecar-ui.mjs';
 
@@ -256,5 +262,96 @@ test('Sidecar Aux Pane Web UI serves post-update prompt copy, enforces token aut
     assert.equal(relaunched, 1);
   } finally {
     await close();
+  }
+});
+
+test('resolveLocalFilePath parses local file URIs, strips fragments, and rejects remote hosts', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agy-file-uri-'));
+  try {
+    const file = join(dir, 'sample #1.md');
+    writeFileSync(file, 'hello', 'utf8');
+    const fileUri = `${pathToFileURL(file).href}#L10-L20`;
+    assert.equal(resolveLocalFilePath(fileUri), file);
+    assert.throws(() => resolveLocalFilePath('https://example.com/a.md'), /仅支持本地文件链接/);
+    assert.throws(() => resolveLocalFilePath('file://evil.example/share/a.md'), /仅支持本机文件路径/);
+    assert.throws(() => resolveLocalFilePath(''), /文件路径无效/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('openLocalFile dispatches platform commands and blocks runnable Windows files on open', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agy-open-file-'));
+  try {
+    const doc = join(dir, 'notes.md');
+    const commaFile = join(dir, 'a,b.txt');
+    const script = join(dir, 'run.js');
+    writeFileSync(doc, '# hi', 'utf8');
+    writeFileSync(commaFile, 'x', 'utf8');
+    writeFileSync(script, 'console.log(1)', 'utf8');
+    const calls = [];
+    const fakeSpawn = (cmd, args, opts) => {
+      calls.push({ cmd, args, opts });
+      return { unref() {} };
+    };
+
+    openLocalFile(pathToFileURL(doc).href, { action: 'open', platform: 'win32', spawnProcess: fakeSpawn });
+    openLocalFile(pathToFileURL(doc).href, { action: 'reveal', platform: 'win32', spawnProcess: fakeSpawn });
+    openLocalFile(pathToFileURL(commaFile).href, { action: 'reveal', platform: 'win32', spawnProcess: fakeSpawn });
+    openLocalFile(pathToFileURL(doc).href, { action: 'reveal', platform: 'darwin', spawnProcess: fakeSpawn });
+    openLocalFile(pathToFileURL(doc).href, { action: 'reveal', platform: 'linux', spawnProcess: fakeSpawn });
+    openLocalFile(pathToFileURL(script).href, { action: 'reveal', platform: 'win32', spawnProcess: fakeSpawn });
+
+    assert.deepEqual(calls[0], { cmd: 'explorer.exe', args: [doc], opts: { detached: true, stdio: 'ignore' } });
+    assert.deepEqual(calls[1], { cmd: 'explorer.exe', args: [`/select,${doc}`], opts: { detached: true, stdio: 'ignore' } });
+    assert.deepEqual(calls[2], { cmd: 'explorer.exe', args: [`/select,"${commaFile}"`], opts: { detached: true, stdio: 'ignore', windowsVerbatimArguments: true } });
+    assert.deepEqual(calls[3], { cmd: 'open', args: ['-R', doc], opts: { detached: true, stdio: 'ignore' } });
+    assert.deepEqual(calls[4], { cmd: 'xdg-open', args: [dir], opts: { detached: true, stdio: 'ignore' } });
+    assert.deepEqual(calls[5], { cmd: 'explorer.exe', args: [`/select,${script}`], opts: { detached: true, stdio: 'ignore' } });
+
+    assert.equal(isWindowsRunnableFile(script), true);
+    assert.equal(isWindowsRunnableFile(doc), false);
+    assert.throws(() => openLocalFile(pathToFileURL(script).href, { action: 'open', platform: 'win32', spawnProcess: fakeSpawn }), /可能直接执行/);
+    assert.throws(() => openLocalFile(pathToFileURL(doc).href, { action: 'delete', spawnProcess: fakeSpawn }), /不支持的文件操作/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('copyLocalFile runs asynchronously across platforms with safe URI encoding', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agy-copy-file-'));
+  try {
+    const file = join(dir, 'shot #1.png');
+    writeFileSync(file, 'png', 'utf8');
+    const fileUri = pathToFileURL(file).href;
+    const calls = [];
+    const fakeSpawn = (cmd, args, opts) => {
+      const child = new EventEmitter();
+      child.stderr = new EventEmitter();
+      let written = '';
+      child.stdin = { on() {}, end(chunk) { written += String(chunk || ''); } };
+      child.kill = () => {};
+      const entry = { cmd, args, opts, get stdin() { return written; } };
+      calls.push(entry);
+      queueMicrotask(() => {
+        if (cmd === 'wl-copy') child.emit('error', new Error('ENOENT'));
+        else child.emit('close', 0);
+      });
+      return child;
+    };
+
+    await copyLocalFile(fileUri, { platform: 'win32', spawnProcess: fakeSpawn, env: {} });
+    await copyLocalFile(fileUri, { platform: 'darwin', spawnProcess: fakeSpawn, env: {} });
+    await copyLocalFile(fileUri, { platform: 'linux', spawnProcess: fakeSpawn, env: {} });
+
+    assert.equal(calls[0].cmd, 'powershell.exe');
+    assert.equal(calls[0].opts.env.AGY_CLIPBOARD_PATH, file);
+    assert.equal(calls[1].cmd, 'osascript');
+    assert.equal(calls[1].opts.env.AGY_CLIPBOARD_PATH, file);
+    assert.equal(calls[2].cmd, 'wl-copy');
+    assert.equal(calls[3].cmd, 'xclip');
+    assert.equal(calls[3].stdin, `${pathToFileURL(file).href}\n`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

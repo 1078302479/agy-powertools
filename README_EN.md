@@ -226,6 +226,7 @@ All options can be toggled live in **Powertools -> Settings** and persist automa
 | Parallel search & read | Off | Guides the agent to batch file searches and reads in the same turn to reduce round trips |
 | Conversation branching | On | Enables Antigravity's native conversation branching from menus and replies, with automatic `(1)` naming and pre-subagent fallback |
 | Message editing | On | Enables native in-place message editing with full support for quotes, `@` mentions, and images |
+| File context menu | On | Right-click local `file://` file links in messages to open with the default app, show in folder, copy the file, or copy its path |
 
 ### Context (Experimental)
 
@@ -243,6 +244,10 @@ All options can be toggled live in **Powertools -> Settings** and persist automa
 | `~/.gemini/antigravity/plugin_data/agy-powertools/` | User preferences (`settings.json`), component cache, and official pricing cache |
 
 ## Changelog
+
+### v2.12.6
+- Added a native context menu for local `file://` links in messages (idea inspired by #2, thanks `@chenfenger`): right-click to open with the default app, show in folder, copy the file, or copy its path, with a toggle under `Settings -> Conversation enhancements`.
+- Cross-platform and safety handling: runs file clipboard copy asynchronously to avoid blocking the background host; blocks direct Windows shell execution for runnable script/executable extensions (`.js`, `.bat`, `.cmd`, `.ps1`, `.exe`, etc.) with a notice; rejects remote `file://` hosts and uses `pathToFileURL` encoding across platforms.
 
 ### v2.12.5
 - Fixed macOS "Restart to Enable" failing when the previous Antigravity process had not finished exiting (#1, thanks `@niuanhua-ydy`): replaced `pgrep -f` with `/bin/ps` and `/usr/bin/awk` path-prefix matching, added `trap '' HUP TERM`, and extended the exit wait window.
