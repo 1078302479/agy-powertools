@@ -245,6 +245,10 @@ All options can be toggled live in **Powertools -> Settings** and persist automa
 
 ## Changelog
 
+### v2.12.7
+- Fixed composer footer overlap when the side panel narrows the main chat column: uses `@container input-footer` CSS container queries to progressively collapse speed and context labels into icon buttons with hover titles and overflow containment.
+- Added missing Simplified Chinese translations for the conversation `Copy` and `Split` submenus, side panel actions (`Search or enter a URL`, `Open File`, `See all`), Side Question panel (`Side Question`, `New Side Question`, empty-state prompt), and `N files changed` counters.
+
 ### v2.12.6
 - Added a native context menu for local `file://` links in messages (idea inspired by #2, thanks `@chenfenger`): right-click to open with the default app, show in folder, copy the file, or copy its path, with a toggle under `Settings -> Conversation enhancements`.
 - Cross-platform and safety handling: runs file clipboard copy asynchronously to avoid blocking the background host; blocks direct Windows shell execution for runnable script/executable extensions (`.js`, `.bat`, `.cmd`, `.ps1`, `.exe`, etc.) with a notice; rejects remote `file://` hosts and uses `pathToFileURL` encoding across platforms.
