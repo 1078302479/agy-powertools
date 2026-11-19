@@ -3,7 +3,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
-import { contextSnapshot } from '../../lib/context.mjs';
+import { contextSnapshot, modelContexts } from '../../lib/context.mjs';
 import { readDatabase } from '../../lib/database.mjs';
 import { startNativeIntegration } from '../../lib/native-host.mjs';
 import { requestEvents } from '../../lib/analytics.mjs';
@@ -175,6 +175,7 @@ export function parseSessionData(requestedId, { includeSessions = true, strict =
     ttfts.splice(0, ttfts.length, ...timed.map(g => g.ttftMs));
   }
   const context = contextSnapshot(latestGen, latestInput + latestCache);
+  const multiModel = modelContexts(database?.generations || [], database?.checkpointSteps || []);
   const totalInputAndCache = totalInput + totalCache;
   const requests = requestEvents(database, conversationId);
   const errors = steps.filter(s => s.type === 'ERROR_MESSAGE').map(s => ({ id: `step-${s.step_index}`, timestampMs: database?.times.get(s.step_index)?.createdMs ?? Date.parse(s.created_at), message: s.content || '', stepIndex: s.step_index }));
@@ -185,7 +186,10 @@ export function parseSessionData(requestedId, { includeSessions = true, strict =
     conversationId, sessions, modelName: modelName || '未知模型', hookEventsCount: hookEvents.length,
     contextWindow: {
       ...context,
-      inputTokens: latestInput, cacheReadTokens: latestCache, outputTokens: latestOutput
+      ...multiModel,
+      inputTokens: latestGen?.inputTokens ?? latestInput,
+      cacheReadTokens: latestGen?.cacheReadTokens ?? latestCache,
+      outputTokens: latestGen?.outputTokens ?? latestOutput
     },
     telemetry: {
       turnCount: turns.length, stepCount: steps.length,

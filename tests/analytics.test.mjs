@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseChecklist } from '../lib/progress.mjs';
-import { estimateCost, parseOfficialPricing } from '../lib/pricing.mjs';
+import { createPricingStore, estimateCost, parseOfficialPricing } from '../lib/pricing.mjs';
 import { createQuotaTracker } from '../lib/quota.mjs';
 import { requestEvents } from '../lib/analytics.mjs';
 test('buffered provider responses use whole-request timing instead of a millisecond streaming tail',()=>{
@@ -21,6 +21,11 @@ test('official price parsing selects standard rates and applies dated prices wit
  assert.equal(rates.length,1);const request={model:'Gemini 4 Argon (High)',inputTokens:1e6,cacheReadTokens:1e6,outputTokens:1e6,timestampMs:Date.parse('2026-11-11')};
  assert.equal(estimateCost(request,rates),12.1);assert.equal(estimateCost({...request,timestampMs:Date.parse('2026-12-02')},rates),24.2);
  assert.equal(estimateCost({...request,model:'unpriced-model'},rates),null);
+ const dir=mkdtempSync(join(tmpdir(),'agy-price-'));try{
+  const store=createPricingStore(dir),neon=store.get().rates.find(r=>r.model==='gemini-4-neon');
+  assert.deepEqual({input:neon.input,output:neon.output,cache:neon.cache},{input:3,output:15,cache:.15});
+  assert.equal(estimateCost({model:'Gemini 4 Neon (XHigh)',inputTokens:1e6,cacheReadTokens:1e6,outputTokens:1e6,timestampMs:Date.parse('2026-11-19')},store.get().rates),18.15);
+ }finally{rmSync(dir,{recursive:true,force:true});}
 });
 test('quota estimates require quota consumption and local priced requests in the same reset window',()=>{
  const dir=mkdtempSync(join(tmpdir(),'agy-quota-'));try{

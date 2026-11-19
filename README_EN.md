@@ -198,12 +198,14 @@ All options can be toggled live in **Powertools -> Settings** and persist automa
 | Compact layout | On | Tightens chat line height and block spacing while following the client font size |
 | Always show conversation outline | On | Keeps the turn navigation rail visible in multi-turn chats even when Overview reserves space |
 | Keep Overview open when switching chats | On | Preserves the open state of the right Overview panel across chats |
+| Taskbar unread reminder | On | Shows unread count in the taskbar title and highlights the window when background chats finish |
 
 ### Telemetry & progress
 
 | Setting | Default | Description |
 | --- | --- | --- |
-| Context ring | On | Shows the context usage ring and statistics popover in the composer (displays only the ring icon at 0 usage) |
+| Context ring | On | Shows the context usage ring and breakdown popover in the composer (including step cache reuse and Orchestrator per-model context; ring-only at 0 usage) |
+| Speed & statistics | On | Shows a circular dynamic speed dial with latest throughput in the composer and opens session telemetry |
 | Task progress | On | Renders checklist progress, recent tool activity, and elapsed timer inside Overview |
 | Turn duration | On | Displays completion duration at the top of each finished turn |
 | Expand tools from duration | On | Click the turn duration label to expand or collapse tool calls and stage updates |
@@ -233,6 +235,12 @@ All options can be toggled live in **Powertools -> Settings** and persist automa
 | `~/.gemini/antigravity/plugin_data/agy-powertools/` | User preferences (`settings.json`), component cache, and official pricing cache |
 
 ## Changelog
+
+### v2.12.4
+- **Taskbar unread reminder**: Displays `(N)` unread count in the taskbar title and triggers native Windows attention highlighting when background or unfocused chats finish, clearing automatically on focus (configurable in Settings).
+- **Split Context & Speed popovers**: Split the tall combined popover into dedicated **Context ring** and **Speed & statistics** controls (each independently toggleable), featuring a circular dynamic speedometer dial matched 1:1 to the context ring.
+- **Step cache reuse & Orchestrator context**: Added per-step cached context vs. new input rows, compaction badge, and automatic Orchestrator planner/execution per-model context bars.
+- **Gemini 4 Neon pricing & zero-jank navigation**: Added official `gemini-4-neon` and `gemini-4-hydrogen` baseline pricing, labeled Orchestrator presets as billed per underlying model, parallelized price fetching with proxy support, added sidebar pointerdown prefetch + 32-chat cache for instant smooth session switching, unified Requests/Errors row heights, and fixed host target matching when unread title badges are active.
 
 ### v2.12.3
 - **Antigravity 2.33.0 compatibility**: Automatic cross-platform shortcut launch flag management with clean uninstall restore, background self-healing across client updates, and a one-click restart helper.
