@@ -40,9 +40,9 @@ It addresses four common friction points in daily Antigravity usage:
 ## Features
 
 - **Codex-like conversation flow**: Same-font compact layout, plus live stage updates while tools run that automatically fold into the top duration bar once the turn completes.
-- **Live context and session telemetry**: A context ring next to the model selector shows category usage, cache hit rate, average and peak speed, time to first token, and model vs. tool time.
-- **Lossless session branching and message editing**: Fork a new chat from any historical reply with full prior steps and tool records preserved, or edit a sent message in place and regenerate.
-- **Task progress and persistent turn outline**: Track checklist completion, recent tool activity, and elapsed time in the right Overview panel while keeping the left turn outline visible.
+- **Context ring and dynamic speed gauge**: Separate composer controls for context usage (including cache reuse, compaction count, and Orchestrator per-model context bars) and live generation speed (`tok/s`, TTFT, and model vs. tool timing).
+- **Lossless session branching and message editing**: Fork a new chat from any historical reply with full prior steps and tool records preserved, or open the native composer in place to edit a sent message and regenerate.
+- **Task progress, persistent outline, and taskbar unread reminders**: Track checklist completion, recent tool activity, and elapsed time in the right Overview panel, keep the left turn outline visible, and surface unread counts with native taskbar highlighting when background turns finish.
 - **Bilingual UI (`English` / `简体中文`)**: Switch between English and Simplified Chinese across Powertools panels and common native Antigravity menus and settings without first-paint flicker.
 - **Local usage, error, and quota dashboard**: A dedicated `Powertools` sidebar page with a 53-week usage heatmap, model health timeline, token and cost donuts, request filters, one-click error copy, quota bars, and official API reference pricing.
 - **Session enhancements and verified updates**: Optional experimental context targets (`Default` / `256K` / `500K` / `1M`), optional Parallel search & read guidance, and SHA-256 verified in-app updates with automatic rollback on startup failure.
@@ -115,12 +115,12 @@ Side-by-side comparison using identical content, window width, and `14px` font s
 
 ![Standard layout vs. compact layout comparison](docs/images/layout-comparison.png)
 
-### 2. Context window ring and live session statistics
+### 2. Context window ring and dynamic speed gauge
 
-A compact progress ring sits next to the model selector in the composer. Clicking it opens a native popover with two groups of metrics:
+Two independent controls sit in the composer (each can be toggled separately in Settings):
 
-- **Context breakdown**: Actual input token usage from the latest generation, broken down into Messages, System tools, System prompt, and Free space.
-- **Session telemetry**: Turn and step counts, total tokens, cache hit rate, estimated 5-minute cache observation window, average / peak / latest generation speed (`tok/s`), time to first token, and cumulative model time vs. tool time.
+- **Context breakdown and Orchestrator view**: Displays actual input token usage and compaction count from the latest generation, split across Messages, System prompt, System tools, Skills, and Free space, plus cached vs. new input tokens for the step. In Orchestrator mode, separate context bars are shown for the planning and execution models.
+- **Dynamic speed gauge and session telemetry**: Deflects the gauge needle and color by generation rate; clicking opens turn and step counts, total tokens, average / peak / latest speed (`tok/s`), cache hit rate, estimated 5-minute cache observation window, time to first token, and model vs. tool time.
 
 ### 3. Lossless session branching and inline message editing
 
@@ -147,9 +147,9 @@ Switch between `English` and `简体中文` at any time in **Powertools -> Setti
 
 ![Native shell and context popover](docs/images/app-context.png)
 
-### Context breakdown and task progress
+### Speed telemetry popover and task progress
 
-![Context breakdown and task progress](docs/images/session.png)
+![Speed telemetry popover and task progress](docs/images/session.png)
 
 ### Usage overview (light and dark themes)
 
@@ -164,7 +164,11 @@ Switch between `English` and `简体中文` at any time in **Powertools -> Setti
 ![Subscription badge and quota bars](docs/images/quota.png)
 
 <details>
-<summary>More screenshots (usage distribution, error copy, and settings)</summary>
+<summary>More screenshots (Orchestrator context, usage distribution, error copy, pricing, and settings)</summary>
+
+#### Orchestrator per-model context breakdown
+
+![Orchestrator context breakdown](docs/images/orchestrator-context.png)
 
 #### Token and cost distribution
 
@@ -173,6 +177,10 @@ Switch between `English` and `简体中文` at any time in **Powertools -> Setti
 #### Error events and one-click copy
 
 ![Error events and copy button](docs/images/errors.png)
+
+#### Reference pricing and reasoning effort tiers
+
+![Model reference pricing table](docs/images/pricing.png)
 
 #### Settings and update manager
 
