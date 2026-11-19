@@ -188,6 +188,35 @@ test('macOS relaunch script waits for ancestor Antigravity process without pgrep
   }
 });
 
+test('Linux relaunch script protects against HUP/TERM and matches executable via ps/awk without pgrep -f', () => {
+  const root = mkdtempSync(join(tmpdir(), 'agy-relaunch-linux-'));
+  try {
+    const exe = join(root, 'antigravity');
+    writeFileSync(exe, '');
+    const spawned = [];
+    const res = scheduleRelaunchWithDebugPort({
+      dataDir: join(root, 'data'),
+      home: root,
+      platform: 'linux',
+      env: { APPIMAGE: exe, ELECTRON_RUN_AS_NODE: '1' },
+      spawnProcess(cmd, args, opts) { spawned.push({ cmd, args, opts }); return { unref() {} }; }
+    });
+    assert.equal(res.scheduled, true);
+    assert.equal(res.target, exe);
+    const script = spawned[0].args[1];
+    assert.ok(script.includes("trap '' HUP TERM"));
+    assert.ok(script.includes('ps -eo args='));
+    assert.ok(!script.includes('pgrep -f'));
+    assert.ok(script.includes('--remote-debugging-port=0'));
+    if (process.platform !== 'win32') {
+      const check = spawnSync('sh', ['-n', '-c', script], { encoding: 'utf8' });
+      assert.equal(check.status, 0, check.stderr);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('Sidecar Aux Pane Web UI serves post-update prompt copy, enforces token auth, and triggers relaunch', async () => {
   const freePort = await new Promise((resolve, reject) => {
     const s = createServer();

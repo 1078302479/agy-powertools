@@ -236,6 +236,10 @@ All options can be toggled live in **Powertools -> Settings** and persist automa
 
 ## Changelog
 
+### v2.12.5
+- **Fixed macOS relaunch exit wait (#1, thanks `@niuanhua-ydy`)**: Replaced `pgrep -f` (which skips ancestor processes on macOS and raced Electron's single-instance lock) with `/bin/ps` + `/usr/bin/awk` prefix matching, added `trap '' HUP TERM`, extended shutdown wait, and used absolute binary paths.
+- **Hardened Linux relaunch script**: Applied the same `trap '' HUP TERM` protection and literal `ps` + `awk` process matching.
+
 ### v2.12.4
 - **Taskbar unread reminder**: Displays `(N)` unread count in the taskbar title and triggers native Windows attention highlighting when background or unfocused chats finish, clearing automatically on focus (configurable in Settings).
 - **Split Context & Speed popovers**: Split the tall combined popover into dedicated **Context ring** and **Speed & statistics** controls (each independently toggleable), featuring a circular dynamic speedometer dial matched 1:1 to the context ring.
