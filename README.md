@@ -247,6 +247,11 @@ sh ./uninstall.sh
 
 ## 更新日志
 
+### v2.12.8
+- 修复「错误事件」页签可能串入请求事件行或空错误记录的问题：将「请求事件」与「错误事件」表格实例独立挂载（按页签隔离 `key` 与筛选状态），过滤空的 `ERROR_MESSAGE` 记录并按时间倒序排列，同时将重试错误条目的状态统一标记为 `error`。
+- 优化 Orchestrator 上下文显示与角色识别：仅在实际运行 2 个及以上模型时才展示底部多模型区块；调整行内布局，保留完整 `Orchestrator` 名称不截断；改为按整场会话汇总 `executionModelEnum` 判定规划与执行角色。
+- 补齐用量弹窗中文翻译：`5h limit`、`N% left` 以及 `Resets in ...` 重置倒计时文案。
+
 ### v2.12.7
 - 修复打开右侧辅助侧栏压缩主栏时，输入框底栏上下文圆环、速度文字与右侧按钮重叠的问题：基于客户端 `@container input-footer` 容器查询按宽度分级收起文字为图标并补充悬停提示，避免挤压模型选择器或溢出遮挡。
 - 补齐部分原生界面中文翻译：会话菜单「复制」「拆分视图」子菜单项、辅助侧栏（`Search or enter a URL`、`Open File`、`See all`）、支线提问（`Side Question` / `New Side Question` 及空态提示）以及 `N files changed` 文案。

@@ -245,6 +245,11 @@ All options can be toggled live in **Powertools -> Settings** and persist automa
 
 ## Changelog
 
+### v2.12.8
+- Fixed `Errors` tab table isolation and empty error rows: separated `Requests` and `Errors` `EventTable` instances by key so table DOM and filter state never leak across tabs, filtered out blank `ERROR_MESSAGE` steps, sorted merged errors descending by timestamp, and marked retry error entries with `status: 'error'`.
+- Refined Orchestrator context display and role detection: show the multi-model section only when at least 2 models have run, moved the token fraction next to the progress bar so `Orchestrator` displays without truncation, and inferred planner/execution roles across the full session using `executionModelEnum`.
+- Added Simplified Chinese translations for the native Usage popover (`5h limit`, `N% left`, and `Resets in ...`).
+
 ### v2.12.7
 - Fixed composer footer overlap when the side panel narrows the main chat column: uses `@container input-footer` CSS container queries to progressively collapse speed and context labels into icon buttons with hover titles and overflow containment.
 - Added missing Simplified Chinese translations for the conversation `Copy` and `Split` submenus, side panel actions (`Search or enter a URL`, `Open File`, `See all`), Side Question panel (`Side Question`, `New Side Question`, empty-state prompt), and `N files changed` counters.

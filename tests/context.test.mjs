@@ -36,4 +36,14 @@ test('modelContexts tracks Orchestrator planner and execution models, short name
  ],[]);
  assert.equal(plainMulti.hasOrchestrator,false);
  assert.equal(plainMulti.models[0].role,'');assert.equal(plainMulti.models[1].shortName,'Neon');assert.equal(plainMulti.models[1].isCurrent,true);
+
+ const sparseOrch=modelContexts([
+  {modelName:'Orchestrator (Neon)',modelEnum:1537,executionModelEnum:null,role:'',providerInputTokens:100000,context:{maxTokens:786432}},
+  {modelName:'Gemini 4 Hydrogen (High)',modelEnum:1669,executionModelEnum:null,role:'',providerInputTokens:180000,context:{maxTokens:786432}},
+  {modelName:'Orchestrator (Neon)',modelEnum:1537,executionModelEnum:1669,role:'planner',providerInputTokens:220000,context:{maxTokens:786432}}
+ ],[]);
+ assert.equal(sparseOrch.hasOrchestrator,true);
+ assert.equal(sparseOrch.models.length,2);
+ assert.equal(sparseOrch.models[0].role,'planner');assert.equal(sparseOrch.models[0].shortName,'Orchestrator');assert.equal(sparseOrch.models[0].isCurrent,true);
+ assert.equal(sparseOrch.models[1].role,'execution');assert.equal(sparseOrch.models[1].shortName,'Hydrogen');assert.equal(sparseOrch.models[1].isCurrent,false);
 });

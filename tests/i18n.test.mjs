@@ -17,6 +17,8 @@ test('native settings translations preserve product names and English input term
  assert.equal(t('Side Question','zh-CN'),'支线提问');assert.equal(t('New Side Question','zh-CN'),'新建支线提问');
  assert.equal(t('Ask a side question without interrupting the main conversation','zh-CN'),'发起支线提问，不打断主对话');
  assert.equal(t('12 files changed','zh-CN'),'12 个文件已更改');assert.equal(t('1 file changed','zh-CN'),'1 个文件已更改');
+ assert.equal(t('5h limit','zh-CN'),'5 小时限额');assert.equal(t('55% left','zh-CN'),'剩余 55%');assert.equal(t('100% left','zh-CN'),'剩余 100%');
+ assert.equal(t('Resets in 5d 1h','zh-CN'),'5 天 1 小时后重置');assert.equal(t('Resets in 3h 33m','zh-CN'),'3 小时 33 分钟后重置');
  assert.equal(t('Pull Requests','zh-CN'),'Pull Requests');assert.equal(t('14m ago','zh-CN'),'14m ago');
  assert.equal(t('Turbo','zh-CN'),'Turbo');assert.equal(t('当前会话','en'),'Current conversation');
 });
