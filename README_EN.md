@@ -47,6 +47,8 @@ It addresses four common friction points in daily Antigravity usage:
 - **Task progress, persistent outline, and taskbar unread reminders**: Track checklist completion, recent tool activity, and elapsed time in the right Overview panel, keep the left turn outline visible, and surface unread counts with native taskbar highlighting when background turns finish.
 - **Bilingual UI (`English` / `简体中文`)**: Switch between English and Simplified Chinese across Powertools panels and common native Antigravity menus and settings without first-paint flicker.
 - **Local usage, error, and quota dashboard**: A dedicated `Powertools` sidebar page with a 53-week usage heatmap, model health timeline, token and cost donuts, request filters, one-click error copy, quota bars, and official API reference pricing.
+- **Multi-account switching and quota management (opt-in)**: Isolate and switch multiple Google accounts locally via the OS keyring without storing plaintext tokens; integrates a bottom-left sidebar switcher with the native Settings entry, 5H/weekly quota views, list/card layouts, drag reordering, credential verification, and optional auto-switch on depletion.
+- **No-TUN application proxy (opt-in)**: Configure an Antigravity-only proxy via protocol/host/port fields without modifying `app.asar` or creating proxy shortcuts; injects proxy args and environment variables on relaunch with built-in HTTP CONNECT / SOCKS5 connectivity testing, optional `GODEBUG=http2client=0` to mitigate `EOF` drops, and a cold-start relaunch prompt.
 - **Session enhancements and verified updates**: Optional experimental context targets (`Default` / `256K` / `500K` / `1M`), optional Parallel search & read guidance, and SHA-256 verified in-app updates with automatic rollback on startup failure.
 
 ## Installation and uninstallation
@@ -142,6 +144,18 @@ Click **Powertools** in the left sidebar to open five local analytics tabs:
 ### 5. Bilingual interface (`English` / `简体中文`)
 
 Switch between `English` and `简体中文` at any time in **Powertools -> Settings**. Localization runs at initial paint without flicker and strictly excludes chat messages, composer inputs, and code blocks so conversations and source code are never altered.
+
+### 6. Multi-account switching and quota management (opt-in)
+
+Disabled by default and enabled in **Powertools -> Settings -> Accounts & switching** after a risk confirmation prompt:
+- **Local OS keyring isolation**: Uses Windows Credential Manager, macOS Keychain, or Linux Secret Service to back up and swap account sessions locally with no plaintext token files, plus anti-clobber locking and credential hash duplicate detection.
+- **Sidebar switcher and full manager**: Integrates your active account profile, plan badge, alias tag, and the native Settings button at the bottom of the left sidebar; the **Powertools -> Accounts & Quota** view supports list/card layouts, drag reordering, disabled-account guards, 5-hour/weekly quota views, credential checks, and optional auto-switch on depletion.
+
+### 7. No-TUN application proxy (opt-in)
+
+For users who want to proxy Antigravity alone without enabling a system-wide proxy or TUN adapter, available under **Powertools -> Settings -> Network proxy**:
+- **No client patching or proxy shortcuts**: Leaves `app.asar` and desktop shortcuts untouched; provides protocol (`HTTP` / `SOCKS5` / `HTTPS`), host/IP, and port fields (with paste auto-split) and injects `--proxy-server`, `--proxy-bypass-list`, and `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` (always protecting local loopback) on relaunch.
+- **Connectivity test, cold-start prompt, and account-switch harmony**: Includes real HTTP CONNECT / SOCKS5 tunnel probing, pre-relaunch port listening checks, optional `GODEBUG=http2client=0` (force HTTP/1.1 to mitigate idle `Post: EOF` disconnects), and a cold-start prompt banner whenever the window starts without proxy; multi-account and update restarts share the same relaunch path and preserve proxy settings automatically.
 
 ## Screenshots
 
@@ -266,6 +280,9 @@ All options can be toggled live in **Powertools -> Settings** and persist automa
 ## Changelog
 
 ### v2.13.0
+
+This is a major release introducing **multi-account switching & quota management** and a **no-TUN application proxy**, along with Antigravity 2.34.0 compatibility and stability fixes.
+
 - **Antigravity 2.34.0 compatibility**: Updated the native toast notification hook (`um`) matcher and made it optional so client updates to toast internals do not block plugin initialization.
 - **Opt-in multi-account switching (disabled by default with risk confirmation)**:
   - Stores and swaps multiple Google account sessions locally via OS native keyrings (Windows Credential Manager / macOS Keychain / Linux Secret Service) with `pendingSwitch` anti-clobber locking and credential hash duplicate detection.
