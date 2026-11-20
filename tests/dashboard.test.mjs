@@ -20,6 +20,9 @@ test('paired distribution groups share model order and preserve unknown expenses
 test('model effort variants aggregate with catalog entries and preserve unpriced costs',()=>{
  assert.deepEqual(modelIdentity('Gemini 4 Hydrogen (XHigh)'),{id:'gemini-4-hydrogen',effort:'xhigh'});
  assert.deepEqual(modelIdentity('claude-opus-5-5-high'),{id:'claude-opus-5-5',effort:'high'});
+ assert.deepEqual(modelIdentity('Orchestrator (Neon)'),{id:'gemini-pro-orchestrator-neon',effort:''});
+ assert.deepEqual(modelIdentity('Orchestrator (Carbon)'),{id:'gemini-pro-orchestrator',effort:''});
+ assert.deepEqual(modelIdentity('Orchestrator (Argon)'),{id:'gemini-pro-orchestrator-argon',effort:''});
  const summary=summarizeRequests([
  {model:'Gemini 4 Hydrogen (High)',timestampMs:1000,inputTokens:100,cacheReadTokens:20,outputTokens:100,durationMs:1000,tps:100,costUsd:.2,status:'success'},
  {model:'gemini-4-hydrogen-low',timestampMs:2000,inputTokens:100,outputTokens:300,durationMs:6000,tps:50,costUsd:.3,status:'success'},

@@ -60,3 +60,27 @@ test('already-loaded injection initializes without waiting and disposes cleanly'
   assert.equal(p.document.documentElement.hasAttribute('data-agy-keep-outline'), false);
   assert.ok(p.nodes.every(n => !n.isConnected));
 });
+
+test('multi-pane conversations with multiple composers stay healthy without triggering reload loops', () => {
+  const p = page(true);
+  p.context.location.pathname = '/c/conv-1';
+  const renderedRings = [];
+  p.context.ReactDOM = { createRoot(mount) { renderedRings.push(mount); return { render() {}, unmount() {} }; } };
+  p.context.getComputedStyle = () => ({ display: 'flex' });
+  const makeComposerTrigger = () => {
+    const parent = { insertBefore(child) { child.isConnected = true; } };
+    return { isConnected: true, parentElement: parent, nextSibling: null, closest: sel => sel === '.surface-composer-card' ? {} : null };
+  };
+  const twoTriggers = [makeComposerTrigger(), makeComposerTrigger()];
+  let ringNodes = [{}, {}];
+  p.document.querySelectorAll = sel => {
+    if (sel === '[data-testid="model-selector-trigger"]') return twoTriggers;
+    if (sel === '[data-testid="agy-context-ring-trigger"]') return ringNodes;
+    return [];
+  };
+  p.context.__agyInitialSettings = { enabled: true, contextRing: true };
+  vm.runInContext(source, p.context);
+  assert.equal(renderedRings.length, 2);
+  assert.equal(p.context.__agyPowertools.status.healthy, true);
+  p.context.__agyPowertools.dispose();
+});

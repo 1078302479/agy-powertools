@@ -361,3 +361,46 @@ test('stage updates compose with context limits, show live updates and fold them
   assert.notEqual(context.__agyNativeAdapter,adapter);
   assert.equal(context.__agyNativeAdapter.active,true);
 });
+
+test('setSidebarProjectLimit controls per-project visible rows, supports show-all, and restores cleanly',()=>{
+  const nativeFlat=args=>{
+    const out=[];
+    for(const g of args.groups){
+      out.push({type:'header',id:`header-${g.id}`,label:g.label});
+      const collapsed=args.onlyShowFirstFewConvos?.[g.id]??true;
+      const slice=collapsed?g.items.slice(0,6):g.items;
+      for(const it of slice)out.push({type:'row',id:it.cascadeId,cascadeId:it.cascadeId,isIndented:true,groupId:g.id});
+      if(g.items.length>6)out.push({type:'show-more',id:`show-more-${g.id}`,label:collapsed?`See all (${g.items.length})`:'See less',groupId:g.id,isIndented:true});
+    }
+    return out;
+  };
+  const context=vm.createContext({
+    document:{querySelector:()=>null},
+    __agyNativeBindings:{names:{resolve:'sjc',segment:'Yyc',menu:'lHc',sidebarItems:'VWc'}},
+    VWc:nativeFlat
+  });
+  vm.runInContext(readFileSync(new URL('../lib/native-client.js',import.meta.url),'utf8'),context);
+  const adapter=context.__agyNativeAdapter;
+  const groups=[{id:'p1',label:'Proj1',items:Array.from({length:8},(_,i)=>({cascadeId:`c${i}`}))}];
+  const call=flags=>context.VWc({groups,groupBy:'project',onlyShowFirstFewConvos:flags});
+
+  adapter.setSidebarProjectLimit(2);
+  let items=call({});
+  assert.equal(items.filter(x=>x.type==='row').length,2);
+  assert.equal(items.at(-1).type,'show-more');assert.equal(items.at(-1).label,'See all (8)');
+
+  items=call({p1:false});
+  assert.equal(items.filter(x=>x.type==='row').length,8);
+  assert.equal(items.at(-1).label,'See less');
+
+  adapter.setSidebarProjectLimit(-1);
+  items=call({});
+  assert.equal(items.filter(x=>x.type==='row').length,8);
+  assert.equal(items.some(x=>x.type==='show-more'),false);
+
+  adapter.setSidebarProjectLimit(0);
+  assert.equal(context.VWc,nativeFlat);
+  adapter.setSidebarProjectLimit(3);
+  adapter.dispose();
+  assert.equal(context.VWc,nativeFlat);
+});

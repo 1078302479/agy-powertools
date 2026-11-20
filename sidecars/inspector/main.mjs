@@ -11,7 +11,7 @@ import { readProgress, resolveTurnExecution } from '../../lib/progress.mjs';
 import { serveRuntime } from '../../lib/runtime-control.mjs';
 import { installationPaths } from '../../lib/lifecycle.mjs';
 import { createSettingsStore } from '../../lib/settings.mjs';
-import { configureLaunchers, maybePromptPostUpdateRelaunch, scheduleRelaunchWithDebugPort } from '../../lib/launcher.mjs';
+import { configureLaunchers, isRemoteSshEnvironment, maybePromptPostUpdateRelaunch, scheduleRelaunchWithDebugPort } from '../../lib/launcher.mjs';
 import { startSidecarWebUi } from '../../lib/sidecar-ui.mjs';
 
 export const getAppDataDir = () => process.env.ANTIGRAVITY_APP_DATA_DIR || join(homedir(), '.gemini', 'antigravity');
@@ -239,10 +239,12 @@ export function exportTranscript(conversationId, targetTurnNumber) {
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const paths = installationPaths();
   const settings = createSettingsStore();
+  const remoteSsh = isRemoteSshEnvironment();
   let missingPortPolls = 0, shortcutsHealed = false;
   const stop = startNativeIntegration({
     parseSessionData,
     onMissingDebugPort() {
+      if (remoteSsh) return;
       missingPortPolls++;
       if (!shortcutsHealed) {
         shortcutsHealed = true;
@@ -267,9 +269,9 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     getStatus: async () => {
       const current = settings.get();
       const health = await stop.health();
-      return { healthy: health.healthy, enabled: current.enabled !== false, language: current.language || 'zh-CN' };
+      return { healthy: health.healthy, enabled: current.enabled !== false, language: current.language || 'zh-CN', mode: remoteSsh ? 'ssh-remote' : 'local' };
     },
-    onRelaunch: () => scheduleRelaunchWithDebugPort({ dataDir: paths.data, home: paths.home })
+    onRelaunch: () => remoteSsh ? { scheduled: false, reason: 'ssh-remote' } : scheduleRelaunchWithDebugPort({ dataDir: paths.data, home: paths.home })
   }).catch(() => async () => {});
   const close = await serveRuntime({ directory: join(paths.data, 'runtime'), version, stop, health: stop.health });
   for (const event of ['SIGINT', 'SIGTERM']) process.on(event, async () => { await stop(); await closeWebUi(); await close(); process.exit(0); });

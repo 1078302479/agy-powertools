@@ -45,3 +45,16 @@ test('concurrent component discovery shares one download and storage failure doe
   try{const values=await Promise.all([discover('https://127.0.0.1:1',{version:'2.32.1'}),discover('https://127.0.0.1:1',{version:'2.32.1'})]);assert.equal(requests,1);assert.deepEqual(values,[['Ready'],['Ready']]);}
   finally{rmSync(directory,{recursive:true,force:true});}
 });
+
+test('component discovery falls back to page-context fetch when direct Node request fails (SSH window origin)',async()=>{
+  const directory=mkdtempSync(join(tmpdir(),'agy-component-fallback-'));let fallbackCalls=0;
+  const discover=createNativeDeclarationCache({directory,request:async()=>{throw Object.assign(new Error('connect ECONNREFUSED'),{code:'ECONNREFUSED'});}});
+  try{
+    const names=await discover('https://127.0.0.1:45678',{
+      version:'2.33.0',
+      fallbackFetch:async()=>{fallbackCalls++;return{status:200,source:'const PageBound=1;',headers:{}};}
+    });
+    assert.equal(fallbackCalls,1);
+    assert.deepEqual(names,['PageBound']);
+  }finally{rmSync(directory,{recursive:true,force:true});}
+});

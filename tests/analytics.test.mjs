@@ -62,3 +62,29 @@ test('request cache hit rate counts cached tokens within total input, not output
  const events=requestEvents({generations:[{stepIndices:[],modelName:'Gemini',inputTokens:25,cacheReadTokens:75,outputTokens:1000},{stepIndices:[],modelName:'Gemini',inputTokens:0,cacheReadTokens:0,outputTokens:0}],times:new Map()},'source');
  assert.equal(events[0].cacheHitPercent,75);assert.equal(events[1].cacheHitPercent,null);
 });
+
+test('Orchestrator planner and execution requests price by underlying model and count toward Gemini quota',()=>{
+ const dir=mkdtempSync(join(tmpdir(),'agy-orch-price-'));try{
+  const rates=createPricingStore(dir).get().rates;
+  const ts=Date.parse('2026-11-20T05:00:00Z');
+  assert.equal(estimateCost({model:'Orchestrator (Neon)',role:'planner',inputTokens:1e6,cacheReadTokens:1e6,outputTokens:1e6,timestampMs:ts},rates),18.15);
+  assert.equal(estimateCost({model:'Orchestrator (Neon)',role:'execution',inputTokens:1e6,cacheReadTokens:1e6,outputTokens:1e6,timestampMs:ts},rates),9.075);
+  assert.equal(estimateCost({model:'Gemini 4 Hydrogen (High)',role:'execution',inputTokens:1e6,cacheReadTokens:1e6,outputTokens:1e6,timestampMs:ts},rates),9.075);
+  assert.equal(estimateCost({model:'Orchestrator (Carbon)',role:'planner',inputTokens:1e6,cacheReadTokens:1e6,outputTokens:1e6,timestampMs:ts},rates),12.1);
+  assert.equal(estimateCost({model:'Orchestrator (Argon)',role:'planner',inputTokens:1e6,cacheReadTokens:1e6,outputTokens:1e6,timestampMs:ts},rates),12.1);
+
+  const tracker=createQuotaTracker(dir);
+  const resetTimeMs=ts+4*3600*1000;
+  const reqs=[
+   {model:'Orchestrator (Neon)',role:'planner',timestampMs:ts-2000,durationMs:500,inputTokens:100000,cacheReadTokens:0,outputTokens:0},
+   {model:'Gemini 4 Hydrogen (High)',role:'execution',timestampMs:ts-1500,durationMs:500,inputTokens:200000,cacheReadTokens:0,outputTokens:0},
+   {model:'Orchestrator (Neon)',role:'planner',timestampMs:ts-1000,durationMs:500,inputTokens:100000,cacheReadTokens:0,outputTokens:0}
+  ];
+  // 0.3 + 0.3 + 0.3 = $0.90 across 3% consumption => $30 extrapolated Gemini quota; Claude bucket stays unknown
+  const res=tracker.observe([
+   {buckets:[{bucketId:'gemini-5h',window:'5h',remainingFraction:.97,resetTimeMs},{bucketId:'claude-5h',window:'5h',remainingFraction:.97,resetTimeMs}]}
+  ],reqs,rates,ts).estimates;
+  assert.ok(Math.abs(res[0].estimateUsd-30)<1e-9);
+  assert.equal(res[1].estimateUsd,null);
+ }finally{rmSync(dir,{recursive:true,force:true});}
+});

@@ -14,6 +14,10 @@ test('settings persist, merge safely, and reject unknown options without changin
     assert.equal(createSettingsStore(directory).get().compact, false);
     assert.equal(store.get().messageEdit, true);
     assert.equal(store.get().fileContextMenu, true);
+    assert.equal(store.get().sidebarProjectLimit, 0);
+    store.set({ sidebarProjectLimit: 3 }); assert.equal(store.get().sidebarProjectLimit, 3);
+    store.set({ sidebarProjectLimit: -1 }); assert.equal(store.get().sidebarProjectLimit, -1);
+    store.set({ sidebarProjectLimit: 0 });
     store.set({ enabled: false }); assert.equal(store.get().enabled, false);
     assert.equal(DEFAULT_SETTINGS.contextLimit, 0);
     store.set({language:'en',contextLimit:1000000});assert.equal(store.get().contextLimit,1000000);assert.equal(store.get().language,'en');

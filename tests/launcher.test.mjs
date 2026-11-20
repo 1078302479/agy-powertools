@@ -17,6 +17,7 @@ import {
   resolveAntigravityExecutable,
   shouldPromptPostUpdate,
   scheduleRelaunchWithDebugPort,
+  isRemoteSshEnvironment,
   resolveLocalFilePath,
   isWindowsRunnableFile,
   openLocalFile,
@@ -354,4 +355,14 @@ test('copyLocalFile runs asynchronously across platforms with safe URI encoding'
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('isRemoteSshEnvironment detects headless SSH remote hosts without false positives on local desktop', () => {
+  assert.equal(isRemoteSshEnvironment({ platform: 'linux', env: { SSH_CONNECTION: '1.2.3.4 22', ANTIGRAVITY_VSCODE_HOST: '1' } }), true);
+  assert.equal(isRemoteSshEnvironment({ platform: 'linux', env: { ANTIGRAVITY_VSCODE_HOST: '1' } }), true);
+  assert.equal(isRemoteSshEnvironment({ platform: 'linux', env: { SSH_CONNECTION: '1.2.3.4 22', DISPLAY: ':0' } }), false);
+  assert.equal(isRemoteSshEnvironment({ platform: 'linux', env: { WAYLAND_DISPLAY: 'wayland-0' } }), false);
+  assert.equal(isRemoteSshEnvironment({ platform: 'win32', env: { SSH_CONNECTION: '1.2.3.4 22' } }), false);
+  const html = renderAuxPaneHtml({ version: '2.12.8', language: 'zh-CN' });
+  assert.ok(html.includes('当前处于 SSH 远端模式'));
 });

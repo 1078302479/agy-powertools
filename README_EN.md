@@ -206,6 +206,7 @@ All options can be toggled live in **Powertools -> Settings** and persist automa
 | Compact layout | On | Tightens chat line height and block spacing while following the client font size |
 | Always show conversation outline | On | Keeps the turn navigation rail visible in multi-turn chats even when Overview reserves space |
 | Keep Overview open when switching chats | On | Preserves the open state of the right Overview panel across chats |
+| Conversations per project | `Default (6)` | Controls how many conversations are shown per project in the sidebar (`Default (6)`, `1`, `2`, `3`, `4`, `5`, `10`, or `Show all`) before collapsing into "See all" |
 | Taskbar unread reminder | On | Shows unread count in the taskbar title and highlights the window when background chats finish |
 
 ### Telemetry & progress
@@ -244,6 +245,13 @@ All options can be toggled live in **Powertools -> Settings** and persist automa
 | `~/.gemini/antigravity/plugin_data/agy-powertools/` | User preferences (`settings.json`), component cache, and official pricing cache |
 
 ## Changelog
+
+### v2.12.9
+- Fixed continuous page flickering when multiple conversation panes or Side Questions are open (#3): updated the health check to match the actual number of composer triggers instead of assuming a single ring, stopping the 4-second dispose/re-inject loop.
+- Improved SSH remote mode handling (#4): headless remote SSH hosts now show an SSH compatibility notice in the Aux Pane instead of an ineffective restart prompt; when local Node fetch of `/main.js` fails with `ECONNREFUSED`, discovery falls back to page-context `fetch('/main.js')` via CDP.
+- Added `Conversations per project` setting under `Settings -> Interface & display` to customize sidebar per-project visible counts or show all while preserving native `See all / See less` pagination.
+- Fixed Orchestrator pricing, grouping, and Gemini quota attribution: merged `Orchestrator (Neon / Carbon / Argon)` into their catalog model IDs, estimated planner and execution (including `Hydrogen`) costs using underlying model rates, and included Orchestrator requests in Gemini quota calculations.
+- Refined Overview charts and tables: unified the usage heatmap to a consistent `53 x 7` cell grid scaled to the active date range, switched range separators to `-`, and filtered `Model statistics` to active models with donut-matched color dots.
 
 ### v2.12.8
 - Fixed `Errors` tab table isolation and empty error rows: separated `Requests` and `Errors` `EventTable` instances by key so table DOM and filter state never leak across tabs, filtered out blank `ERROR_MESSAGE` steps, sorted merged errors descending by timestamp, and marked retry error entries with `status: 'error'`.
