@@ -11,7 +11,7 @@ import { readProgress, resolveTurnExecution } from '../../lib/progress.mjs';
 import { serveRuntime } from '../../lib/runtime-control.mjs';
 import { installationPaths } from '../../lib/lifecycle.mjs';
 import { createSettingsStore } from '../../lib/settings.mjs';
-import { configureLaunchers, isRemoteSshEnvironment, maybePromptPostUpdateRelaunch, scheduleRelaunchWithDebugPort } from '../../lib/launcher.mjs';
+import { configureLaunchers, isRemoteSshEnvironment, manualLaunchCommand, maybePromptPostUpdateRelaunch, scheduleRelaunchWithDebugPort } from '../../lib/launcher.mjs';
 import { startSidecarWebUi } from '../../lib/sidecar-ui.mjs';
 
 export const getAppDataDir = () => process.env.ANTIGRAVITY_APP_DATA_DIR || join(homedir(), '.gemini', 'antigravity');
@@ -269,7 +269,13 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     getStatus: async () => {
       const current = settings.get();
       const health = await stop.health();
-      return { healthy: health.healthy, enabled: current.enabled !== false, language: current.language || 'zh-CN', mode: remoteSsh ? 'ssh-remote' : 'local' };
+      return {
+        healthy: health.healthy,
+        enabled: current.enabled !== false,
+        language: current.language || 'zh-CN',
+        mode: remoteSsh ? 'ssh-remote' : 'local',
+        manualCommand: remoteSsh ? '' : manualLaunchCommand({ home: paths.home })
+      };
     },
     onRelaunch: () => remoteSsh ? { scheduled: false, reason: 'ssh-remote' } : scheduleRelaunchWithDebugPort({ dataDir: paths.data, home: paths.home })
   }).catch(() => async () => {});

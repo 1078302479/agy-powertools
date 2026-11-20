@@ -93,6 +93,10 @@ test('native integration follows conversation titles and excludes external pages
   assert.ok(isHubTarget({type:'page',title:'(3) Antigravity',url:'https://127.0.0.1:1234/powertools'}));
   assert.ok(isHubTarget({type:'page',title:'Conversation - Project - Antigravity',url:'https://127.0.0.1:1234/c/fixture'}));
   assert.ok(isHubTarget({type:'page',title:'(2) Conversation - Project - Antigravity',url:'https://127.0.0.1:1234/c/fixture'}));
+  assert.ok(isHubTarget({type:'page',title:'Antigravity (SSH: prod-box)',url:'https://127.0.0.1:1234/'}));
+  assert.ok(isHubTarget({type:'page',title:'Conversation - Project - Antigravity (SSH: prod-box)',url:'https://127.0.0.1:1234/c/fixture'}));
+  assert.ok(isHubTarget({type:'page',title:'Conversation - Project - Antigravity [SSH: prod-box]',url:'https://127.0.0.1:1234/c/fixture'}));
+  assert.ok(!isHubTarget({type:'page',title:'Antigravity Docs',url:'https://127.0.0.1:1234/'}));
   assert.ok(!isHubTarget({type:'page',title:'Antigravity',url:'https://example.com/'}));
   assert.ok(!isHubTarget({type:'iframe',title:'Antigravity',url:'https://127.0.0.1:1234/'}));
   assert.equal(findIdentifier({events:[{response:{conversationId:'new-id'}}]}),'new-id');

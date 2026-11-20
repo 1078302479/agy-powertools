@@ -246,6 +246,13 @@ All options can be toggled live in **Powertools -> Settings** and persist automa
 
 ## Changelog
 
+### v2.12.10
+- Fixed "Restart to Enable" not responding or failing to reopen Antigravity:
+  - On Windows, launches a self-cleaning relaunch script via `Win32_Process.Create` outside Antigravity's Job Object, and checks `process.execPath` and `Program Files` for custom installation paths.
+  - On macOS, falls back to `SIGTERM` when AppleScript quit does not exit the process.
+  - Updated the Aux Pane prompt copy, added error/timeout recovery (15s), and exposed a one-click `Copy launch command` fallback.
+- Relaxed `isHubTarget` title matching to include remote SSH/WSL window suffixes such as `(SSH: ...)` and `[SSH: ...]` (#4).
+
 ### v2.12.9
 - Fixed continuous page flickering when multiple conversation panes or Side Questions are open (#3): updated the health check to match the actual number of composer triggers instead of assuming a single ring, stopping the 4-second dispose/re-inject loop.
 - Improved SSH remote mode handling (#4): headless remote SSH hosts now show an SSH compatibility notice in the Aux Pane instead of an ineffective restart prompt; when local Node fetch of `/main.js` fails with `ECONNREFUSED`, discovery falls back to page-context `fetch('/main.js')` via CDP.

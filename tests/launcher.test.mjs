@@ -15,6 +15,7 @@ import {
   configureLaunchers,
   restoreLaunchers,
   resolveAntigravityExecutable,
+  manualLaunchCommand,
   shouldPromptPostUpdate,
   scheduleRelaunchWithDebugPort,
   isRemoteSshEnvironment,
@@ -118,7 +119,9 @@ test('executable discovery, post-update prompt guards, and relaunch scheduling p
     mkdirSync(binDir, { recursive: true });
     const exe = join(appRoot, 'Antigravity.exe'), lsExe = join(binDir, 'language_server.exe');
     writeFileSync(exe, ''); writeFileSync(lsExe, '');
-    assert.equal(resolveAntigravityExecutable({ platform: 'win32', env: { ANTIGRAVITY_AGENTAPI_EXE: lsExe }, home: root }), exe);
+    assert.equal(resolveAntigravityExecutable({ platform: 'win32', env: { ANTIGRAVITY_AGENTAPI_EXE: lsExe }, home: root, execPath: '' }), exe);
+    assert.equal(resolveAntigravityExecutable({ platform: 'win32', env: {}, home: root, execPath: exe }), exe);
+    assert.equal(manualLaunchCommand({ platform: 'win32', env: {}, home: root, execPath: exe }), `"${exe}" --remote-debugging-port=0`);
 
     const installDir = join(root, 'installed'), dataDir = join(root, 'data');
     mkdirSync(installDir, { recursive: true }); mkdirSync(dataDir, { recursive: true });
@@ -145,6 +148,12 @@ test('executable discovery, post-update prompt guards, and relaunch scheduling p
     assert.equal(spawned.length, 1);
     assert.equal(spawned[0].opts.env.ELECTRON_RUN_AS_NODE, undefined);
     assert.equal(spawned[0].opts.env.AGY_RELAUNCH_TARGET, exe);
+    assert.ok(spawned[0].opts.env.AGY_RELAUNCH_SCRIPT.endsWith('relaunch-antigravity.ps1'));
+    assert.ok(existsSync(spawned[0].opts.env.AGY_RELAUNCH_SCRIPT));
+    assert.ok(spawned[0].args.join(' ').includes('Win32_Process'));
+    const psBody = readFileSync(spawned[0].opts.env.AGY_RELAUNCH_SCRIPT, 'utf8');
+    assert.ok(psBody.includes('--remote-debugging-port=0'));
+    assert.ok(psBody.includes('Remove-Item -LiteralPath $PSCommandPath'));
     assert.equal(shouldPromptPostUpdate({ dataDir, installDir, env: { ANTIGRAVITY_LS_ADDRESS: '127.0.0.1:5000' }, now: now + 1000 }).prompt, false);
     assert.equal(shouldPromptPostUpdate({ dataDir, installDir, env: { ANTIGRAVITY_LS_ADDRESS: '127.0.0.1:6000' }, now: now + 1000 }).reason, 'cooldown');
   } finally {
@@ -240,7 +249,8 @@ test('Sidecar Aux Pane Web UI serves post-update prompt copy, enforces token aut
   });
   try {
     const html = renderAuxPaneHtml({ version: '2.12.5', language: 'zh-CN' });
-    assert.ok(html.includes('检测到 Antigravity 已升级，请重启以重新启用 Powertools 插件'));
+    assert.ok(html.includes('需要重启 Antigravity 以启用 Powertools 插件'));
+    assert.ok(html.includes('复制启动命令'));
 
     const unauth = await fetch(`http://127.0.0.1:${freePort}/api/status`);
     assert.equal(unauth.status, 401);
