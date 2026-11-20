@@ -150,8 +150,15 @@ test('executable discovery, post-update prompt guards, and relaunch scheduling p
     assert.equal(spawned[0].opts.env.AGY_RELAUNCH_TARGET, exe);
     assert.ok(spawned[0].opts.env.AGY_RELAUNCH_SCRIPT.endsWith('relaunch-antigravity.ps1'));
     assert.ok(existsSync(spawned[0].opts.env.AGY_RELAUNCH_SCRIPT));
-    assert.ok(spawned[0].args.join(' ').includes('Win32_Process'));
+    assert.equal(spawned[0].opts.detached, undefined);
+    assert.ok(spawned[0].args.includes('-EncodedCommand'));
+    const encodedIdx = spawned[0].args.indexOf('-EncodedCommand');
+    const decodedLauncher = Buffer.from(spawned[0].args[encodedIdx + 1], 'base64').toString('utf16le');
+    assert.ok(decodedLauncher.includes('FindWindowSW'));
+    assert.ok(decodedLauncher.includes('ShellExecute'));
+    assert.ok(decodedLauncher.includes('CreateProcessW'));
     const psBody = readFileSync(spawned[0].opts.env.AGY_RELAUNCH_SCRIPT, 'utf8');
+    assert.ok(psBody.includes('Start-Sleep -Milliseconds 350'));
     assert.ok(psBody.includes('--remote-debugging-port=0'));
     assert.ok(psBody.includes('Remove-Item -LiteralPath $PSCommandPath'));
     assert.equal(shouldPromptPostUpdate({ dataDir, installDir, env: { ANTIGRAVITY_LS_ADDRESS: '127.0.0.1:5000' }, now: now + 1000 }).prompt, false);
