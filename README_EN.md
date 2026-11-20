@@ -2,14 +2,16 @@
   <img src="assets/logo.svg" width="72" height="72" alt="Agy Powertools Logo" />
   <h1>Agy Powertools</h1>
   <p><strong>Native UI enhancement plugin for Antigravity 2.0</strong></p>
+  <!-- plugin-badges:start -->
   <p>
-    <a href="https://github.com/WhiteBr1ck/agy-powertools/releases"><img src="https://img.shields.io/github/v/release/WhiteBr1ck/agy-powertools?label=Release&color=2563eb" alt="Release" /></a>
-    <a href="https://github.com/WhiteBr1ck/agy-powertools/actions/workflows/ci.yml"><img src="https://github.com/WhiteBr1ck/agy-powertools/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
-    <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-16a34a" alt="MIT License" /></a>
-    <img src="https://img.shields.io/badge/Antigravity-2.33.0-0f172a" alt="Antigravity 2.33.0" />
-    <img src="https://img.shields.io/badge/Node.js-%3E%3D22.13-339933" alt="Node.js >= 22.13" />
-    <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-475569" alt="Platform" />
+    <a href="https://github.com/WhiteBr1ck/agy-powertools/releases"><img src="https://img.shields.io/github/v/release/WhiteBr1ck/agy-powertools?label=Release&color=2563eb" height="20" alt="Release" /></a>
+    <a href="https://github.com/WhiteBr1ck/agy-powertools/actions/workflows/ci.yml"><img src="https://github.com/WhiteBr1ck/agy-powertools/actions/workflows/ci.yml/badge.svg" height="20" alt="CI" /></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-16a34a" height="20" alt="MIT License" /></a>
+    <img src="https://img.shields.io/badge/Antigravity-2.34.0-0f172a" height="20" alt="Antigravity 2.34.0" />
+    <img src="https://img.shields.io/badge/Node.js-%3E%3D22.13-339933" height="20" alt="Node.js >= 22.13" />
+    <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-475569" height="20" alt="Platform" />
   </p>
+  <!-- plugin-badges:end -->
   <p>
     <a href="README.md">简体中文</a> |
     <strong>English</strong>
@@ -209,6 +211,16 @@ All options can be toggled live in **Powertools -> Settings** and persist automa
 | Conversations per project | `Default (6)` | Controls how many conversations are shown per project in the sidebar (`Default (6)`, `1`, `2`, `3`, `4`, `5`, `10`, or `Show all`) before collapsing into "See all" |
 | Taskbar unread reminder | On | Shows unread count in the taskbar title and highlights the window when background chats finish |
 
+### Accounts & switching
+
+| Setting | Default | Description |
+| --- | --- | --- |
+| Enable multi-account switching | Off | Opt-in with a first-time Google/Antigravity single-account risk confirmation. Stores and swaps credentials locally via the OS keyring (Windows Credential Manager / macOS Keychain / Linux Secret Service) without saving plaintext tokens |
+| Sidebar account switcher | On (when enabled) | Integrates quick account switching and the native Settings entry at the bottom of the left sidebar with 5H/weekly quota toggling and one-click refresh |
+| Auto switch when quota runs out | Off (when enabled) | Automatically switches to the best enabled account when a 5-hour or weekly bucket is depleted, with a 120s cooldown and active-turn deferral |
+| Default account view | `List view` | Default layout for the Accounts & Quota manager (`List view` or `Card view`), with drag-to-reorder and credential verification |
+| Default quota window | `5-hour limit` | Controls whether the sidebar popover and list view display `5-hour limit` or `Weekly limit` |
+
 ### Telemetry & progress
 
 | Setting | Default | Description |
@@ -229,6 +241,13 @@ All options can be toggled live in **Powertools -> Settings** and persist automa
 | Message editing | On | Enables native in-place message editing with full support for quotes, `@` mentions, and images |
 | File context menu | On | Right-click local `file://` file links in messages to open with the default app, show in folder, copy the file, or copy its path |
 
+### Network proxy
+
+| Setting | Default | Description |
+| --- | --- | --- |
+| Application proxy (no TUN) | Off | Opt-in. Injects `--proxy-server`, `--proxy-bypass-list`, and `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` on relaunch without patching `app.asar` or creating proxy shortcuts; includes protocol/host/port split fields, HTTP CONNECT / SOCKS5 connectivity testing, pre-relaunch port checks, and a cold-start relaunch prompt |
+| Force HTTP/1.1 (mitigate EOF) | Off (when enabled) | Injects `GODEBUG=http2client=0` to disable Go HTTP/2 connection reuse and mitigate idle `Post: EOF` disconnects |
+
 ### Context (Experimental)
 
 | Setting | Default | Description |
@@ -245,6 +264,21 @@ All options can be toggled live in **Powertools -> Settings** and persist automa
 | `~/.gemini/antigravity/plugin_data/agy-powertools/` | User preferences (`settings.json`), component cache, and official pricing cache |
 
 ## Changelog
+
+### v2.13.0
+- **Antigravity 2.34.0 compatibility**: Updated the native toast notification hook (`um`) matcher and made it optional so client updates to toast internals do not block plugin initialization.
+- **Opt-in multi-account switching (disabled by default with risk confirmation)**:
+  - Stores and swaps multiple Google account sessions locally via OS native keyrings (Windows Credential Manager / macOS Keychain / Linux Secret Service) with `pendingSwitch` anti-clobber locking and credential hash duplicate detection.
+  - Integrates a bottom-left sidebar account switcher with the native Settings entry; adds an Accounts & Quota management view supporting list/card layouts, drag reordering, disabled-account switch guards, persistent 5H/weekly quota window switching, `Argon` quota grouping, quota/credential refresh, and optional auto-switch on depletion.
+  - Scopes quota cycle sampling per account and updates Windows auto-relaunch to use UTF-16LE `-EncodedCommand` with Explorer Desktop COM breakaway.
+- **Opt-in no-shortcut application proxy (disabled by default)**:
+  - Injects Chromium proxy flags and `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` across Windows, macOS, and Linux on relaunch without modifying `app.asar` or system shortcuts.
+  - Adds protocol/host/port split fields (with paste auto-split), loopback-protected `NO_PROXY`, real HTTP CONNECT / SOCKS5 tunnel connectivity tests, optional `GODEBUG=http2client=0` (force HTTP/1.1), pre-relaunch port listening checks, and a cold-start prompt banner when the window launched without proxy.
+  - Shares the same relaunch pipeline and guard with multi-account switching and update restarts so configured proxy settings carry across restarts seamlessly.
+- **Fixes and UI refinements**:
+  - Fixed in-place message editing losing state and leaking edited text/images into the bottom composer when switching conversations: now suspends active edits per conversation while restoring the original bottom draft, and automatically resumes the inline editor on return.
+  - Fixed oversized remote badge banners inside Antigravity's Installed Plugin overview (#5) by replacing the shields.io badge block in packaged `README.md` / `README_EN.md` with a single-line plain text summary while keeping the GitHub repository pages unchanged.
+  - Refined Settings page font weights to avoid heavy bold labels on Windows, fixed `renderRoot` redundant `insertBefore` calls and sidebar entry positioning, and removed a duplicate `Reset` translation entry.
 
 ### v2.12.10
 - Fixed "Restart to Enable" not responding or failing to reopen Antigravity:
