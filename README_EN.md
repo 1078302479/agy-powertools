@@ -45,7 +45,7 @@ It addresses four common friction points in daily Antigravity usage:
 - **Context ring and dynamic speed gauge**: Separate composer controls for context usage (including cache reuse, compaction count, and Orchestrator per-model context bars) and live generation speed (`tok/s`, TTFT, and model vs. tool timing).
 - **Lossless session branching and message editing**: Fork a new chat from any historical reply with full prior steps and tool records preserved, or open the native composer in place to edit a sent message and regenerate.
 - **Task progress, persistent outline, and taskbar unread reminders**: Track checklist completion, recent tool activity, and elapsed time in the right Overview panel, keep the left turn outline visible, and surface unread counts with native taskbar highlighting when background turns finish.
-- **Bilingual UI (`English` / `简体中文`)**: Switch between English and Simplified Chinese across Powertools panels and common native Antigravity menus and settings without first-paint flicker.
+- **Multilingual UI (`English` / `简体中文` / `繁體中文`)**: Switch between English, Simplified Chinese, and Traditional Chinese across Powertools panels and common native Antigravity menus and settings without first-paint flicker.
 - **Local usage, error, and quota dashboard**: A dedicated `Powertools` sidebar page with a 53-week usage heatmap, model health timeline, token and cost donuts, request filters, one-click error copy, quota bars, and official API reference pricing.
 - **Multi-account switching and quota management (opt-in)**: Isolate and switch multiple Google accounts locally via the OS keyring without storing plaintext tokens; integrates a bottom-left sidebar switcher with the native Settings entry, 5H/weekly quota views, list/card layouts, drag reordering, credential verification, and optional auto-switch on depletion.
 - **No-TUN application proxy (opt-in)**: Configure an Antigravity-only proxy via protocol/host/port fields without modifying `app.asar` or creating proxy shortcuts; injects proxy args and environment variables on relaunch with built-in HTTP CONNECT / SOCKS5 connectivity testing, optional `GODEBUG=http2client=0` to mitigate `EOF` drops, and a cold-start relaunch prompt.
@@ -279,6 +279,18 @@ All options can be toggled live in **Powertools -> Settings** and persist automa
 | `~/.gemini/antigravity/plugin_data/agy-powertools/` | User preferences (`settings.json`), component cache, and official pricing cache |
 
 ## Changelog
+
+### v2.13.2
+- **Overview and Requests page improvements (#6)**:
+  - Overview `Total tokens` card now shows the input/output split and overall cache hit rate (with cached token volume), the `Cost` card shows average cost per priced request, and `Model statistics` adds a color-coded `Cache hit` column with hover breakdown.
+  - Requests table detects short-interval cache anomalies (cleared, steep drop, or repeated miss within 3 minutes per conversation and normalized model, excluding cold starts, model switches, context compaction, and large-file dilution), highlights anomaly rows in red with status tags and hover comparison tooltips, adds a `Cache anomaly` filter option under `Result`, highlights single requests costing >= $1, and tightens table row density.
+- **Traditional Chinese (`zh-TW`) support**: Added `繁體中文` alongside `简体中文` and `English` under `Settings -> Language`, covering Powertools panels, native Antigravity UI localization, composer popovers, and the official Aux Pane.
+- **Antigravity 2.34.0 Orchestrator compatibility and dynamic Claude pricing**:
+  - Updated model normalization, cost estimation, and quota bucket attribution for Orchestrator sessions using Claude Opus 5.5 or custom execution models.
+  - Replaced hardcoded Claude model names in `pricing.refresh` with dynamic parsing of all Claude Opus / Sonnet / Haiku entries from the Google Cloud partner pricing page.
+- **UI fixes and cleanup**:
+  - Fixed duplicate checkmarks appearing on both left and right sides of Powertools select menus.
+  - Removed non-live refresh controls on the Accounts & Quota page (toolbar quota/credential refresh buttons, per-row credential check icons, and inactive-account refresh buttons), keeping active-account quota refresh on the current account row and sidebar switcher popover.
 
 ### v2.13.1
 - **Subagent context and telemetry** (toggleable under `Settings -> Telemetry & progress`):

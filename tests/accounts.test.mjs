@@ -479,20 +479,20 @@ test('AccountSwitcher, Quotas, and Settings implement master switch risk warning
 
   listUi.find(swTree, 'agy-popover-refresh-quotas').props.onClick();
   listUi.find(swTree, 'agy-account-open-settings').props.onClick();
-  assert.deepEqual(refreshedQuotas, ['']);
+  assert.deepEqual(refreshedQuotas, ['acct-1']);
   assert.equal(settingsOpened, 1);
   assert.equal(listUi.findAll(swTree, n => n.type === 'icon' && (n.props?.name === 'person_add' || n.props?.name === 'tune')).length, 0);
 
-  // Quotas list view: Argon label, disabled hides switch button, global + per-account refresh quota & cred buttons
+  // Quotas list view: Argon label, disabled hides switch button, active-only quota refresh without redundant cred/inactive refresh buttons
   const listQuotas = listUi.renderQuotas();
   assert.ok(listUi.find(listQuotas, 'agy-accounts-table'));
   assert.equal(listUi.find(listQuotas, 'agy-accounts-cards'), null);
-  assert.ok(listUi.find(listQuotas, 'agy-accounts-refresh-quotas'));
-  assert.ok(listUi.find(listQuotas, 'agy-accounts-refresh-creds'));
+  assert.equal(listUi.find(listQuotas, 'agy-accounts-refresh-quotas'), null);
+  assert.equal(listUi.find(listQuotas, 'agy-accounts-refresh-creds'), null);
   assert.ok(listUi.find(listQuotas, 'agy-refresh-quota-acct-1'));
-  assert.ok(listUi.find(listQuotas, 'agy-refresh-cred-acct-1'));
-  assert.ok(listUi.find(listQuotas, 'agy-refresh-quota-acct-2'));
-  assert.ok(listUi.find(listQuotas, 'agy-refresh-cred-acct-2'));
+  assert.equal(listUi.find(listQuotas, 'agy-refresh-cred-acct-1'), null);
+  assert.equal(listUi.find(listQuotas, 'agy-refresh-quota-acct-2'), null);
+  assert.equal(listUi.find(listQuotas, 'agy-refresh-cred-acct-2'), null);
   assert.ok(listUi.find(listQuotas, 'agy-switch-account-acct-2'));
   assert.equal(listUi.find(listQuotas, 'agy-switch-account-acct-3'), null);
   const listText = listUi.collectText(listQuotas);
@@ -502,16 +502,17 @@ test('AccountSwitcher, Quotas, and Settings implement master switch risk warning
   assert.ok(listText.includes('账号已禁用'));
   assert.equal(listText.includes('实时同步'), false);
   assert.equal(listText.includes('\u00b7'), false);
-  listUi.find(listQuotas, 'agy-accounts-refresh-creds').props.onClick();
-  assert.deepEqual(refreshedCreds, ['']);
+  listUi.find(listQuotas, 'agy-refresh-quota-acct-1').props.onClick();
+  assert.deepEqual(refreshedQuotas, ['acct-1', 'acct-1']);
 
   // Quotas card view: icon-only action buttons (no mixed text labels), Argon label, disabled hides switch button, zero middle dots
   const cardUi = createPanelHarness({ activeId: 'acct-1', accounts: realAccounts }, { multiAccount: true, accountViewMode: 'card' });
   const cardQuotas = cardUi.renderQuotas();
   assert.ok(cardUi.find(cardQuotas, 'agy-accounts-cards'));
   assert.equal(cardUi.find(cardQuotas, 'agy-accounts-table'), null);
-  assert.ok(cardUi.find(cardQuotas, 'agy-refresh-quota-acct-2'));
-  assert.ok(cardUi.find(cardQuotas, 'agy-refresh-cred-acct-2'));
+  assert.ok(cardUi.find(cardQuotas, 'agy-refresh-quota-acct-1'));
+  assert.equal(cardUi.find(cardQuotas, 'agy-refresh-quota-acct-2'), null);
+  assert.equal(cardUi.find(cardQuotas, 'agy-refresh-cred-acct-2'), null);
   assert.equal(cardUi.find(cardQuotas, 'agy-switch-account-acct-3'), null);
   assert.equal(cardUi.collectText(cardUi.find(cardQuotas, 'agy-switch-account-acct-2')), '');
   assert.equal(cardUi.collectText(cardUi.find(cardQuotas, 'agy-rename-account-acct-2')), '');
