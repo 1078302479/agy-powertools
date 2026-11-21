@@ -280,6 +280,15 @@ All options can be toggled live in **Powertools -> Settings** and persist automa
 
 ## Changelog
 
+### v2.13.3
+- **Full-history branching for conversations with subagents and streamlined fork path**:
+  - Calls native `ForkConversation` first; when Antigravity 2.34.0 rejects direct forking because subagents were invoked, automatically promotes through the native `SIDE_QUESTION` trajectory path (supports both end-of-chat and historical turns after subagents without sending a model prompt, leaves source subagents behind, and deletes the temporary side-question trajectory in `finally`).
+  - Removed legacy `resolveForkPlan` trajectory pre-scanning, the pre-subagent fallback dialog, and the unused `Mmc` native hook binding; navigates into forked sessions via the native SPA router.
+- **macOS launcher icon and Dock replacement guide (#7, #8, thanks `@PIGzyj233`)**:
+  - Automatically resolves the source `Antigravity.app` and copies its `.icns` icon into `~/Applications/Antigravity (Powertools).app` with `CFBundleIconFile` and `lsregister` refresh on macOS, without modifying the official app bundle or system Dock plist.
+  - Added macOS-only Dock replacement guidance to installer output, missing-port prompts, and the official Aux Pane.
+- **Completed 2.34.0 UI and menu localizations**: Added translations (both Simplified and Traditional Chinese) for `Thinking effort` and its tooltip, `View Usage`, `/btw` promotion controls, Orchestrator settings, the Delete Conversation confirmation modal, top `Workspace` / `Window` menus, and the General settings composer key description.
+
 ### v2.13.2
 - **Overview and Requests page improvements (#6)**:
   - Overview `Total tokens` card now shows the input/output split and overall cache hit rate (with cached token volume), the `Cost` card shows average cost per priced request, and `Model statistics` adds a color-coded `Cache hit` column with hover breakdown.

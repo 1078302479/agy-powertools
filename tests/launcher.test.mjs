@@ -91,7 +91,7 @@ test('macOS launcher app copies source icon when available, clears stale icon wh
     assert.equal(withIcon.macApp, appDir);
     assert.equal(readFileSync(iconPath, 'utf8'), 'FAKE_ICNS');
     assert.ok(readFileSync(plistPath, 'utf8').includes('<key>CFBundleIconFile</key><string>icon.icns</string>'));
-    assert.ok(readFileSync(join(appDir, 'Contents', 'MacOS', 'launcher'), 'utf8').includes(sourceApp));
+    assert.ok(readFileSync(join(appDir, 'Contents', 'MacOS', 'launcher'), 'utf8').includes(sourceApp.replace(/(["\\$`])/g, '\\$1')));
 
     rmSync(sourceApp, { recursive: true, force: true });
     const withoutIcon = configureLaunchers({ home, dataDir, platform: 'darwin', sandbox: true });

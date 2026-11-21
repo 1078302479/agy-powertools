@@ -336,7 +336,6 @@ test('native-bindings resolves 2.34.0 notification hook without type:"add" and s
       lT: () => ({ asChild: 1, openOnHover: 1, closeDelay: 1, attr: "data-no-drag" }),
       mT: () => ({ collisionBoundary: 1, pad: 1, alignOffset: 1, keepMounted: 1 }),
       nT: () => ({ highlighted: 1, selected: 1, action: 1, description: 1, managedHighlight: 1 }),
-      Mmc: () => ({ id: 'conversation-fork-progress', runFork: 1, isForking: 1 }),
       HU: s => s.sourceTrajectoryStepInfo?.stepIndex,
       Kc: x => x,
       resolveFn: () => { const c = Kc(Proto.CascadeConfigSchema, { lookupCustomModelInfo: 1, customModelInfoOverride: 1, checkpointConfig: void 0 }); return c; },
