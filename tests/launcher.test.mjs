@@ -246,18 +246,35 @@ test('Sidecar Aux Pane Web UI serves post-update prompt copy, enforces token aut
     s.once('error', reject);
     s.listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => resolve(port)); });
   });
-  let relaunched = 0;
+  let relaunched = 0, checked = 0, installedVer = '';
   const close = await startSidecarWebUi({
     port: freePort,
     token: 'secret-token',
-    version: '2.12.5',
-    getStatus: async () => ({ healthy: false, enabled: true, language: 'zh-CN' }),
-    onRelaunch: async () => { relaunched++; return { scheduled: true }; }
+    version: '2.13.0',
+    getStatus: async () => ({
+      healthy: false,
+      compatibilityError: 'Antigravity compatibility: um (missing)',
+      clientVersion: '2.34.0',
+      connected: true,
+      enabled: true,
+      language: 'zh-CN'
+    }),
+    onRelaunch: async () => { relaunched++; return { scheduled: true }; },
+    onCheckUpdate: async () => { checked++; return { status: 'available', version: '2.13.1', canInstall: true, releaseUrl: 'https://github.com/WhiteBr1ck/agy-powertools/releases/tag/v2.13.1' }; },
+    onInstallUpdate: async ({ version }) => { installedVer = version; return { status: 'preparing', version }; },
+    onUpdateStatus: async () => ({ status: installedVer ? 'installing' : 'idle', version: installedVer })
   });
   try {
-    const html = renderAuxPaneHtml({ version: '2.12.5', language: 'zh-CN' });
+    const html = renderAuxPaneHtml({ version: '2.13.0', language: 'zh-CN' });
     assert.ok(html.includes('需要重启 Antigravity 以启用 Powertools 插件'));
     assert.ok(html.includes('复制启动命令'));
+    assert.ok(html.includes('检查插件更新'));
+    assert.ok(html.includes('复制诊断信息'));
+    assert.ok(html.includes('[hidden] { display: none !important; }'));
+    assert.equal(html.includes('\u00b7'), false);
+    const inlineScript = html.match(/<script>\s*([\s\S]*?)<\/script>/)?.[1];
+    assert.ok(inlineScript);
+    new Function(inlineScript);
 
     const unauth = await fetch(`http://127.0.0.1:${freePort}/api/status`);
     assert.equal(unauth.status, 401);
@@ -266,7 +283,9 @@ test('Sidecar Aux Pane Web UI serves post-update prompt copy, enforces token aut
     assert.equal(statusRes.status, 200);
     const statusJson = await statusRes.json();
     assert.equal(statusJson.healthy, false);
-    assert.equal(statusJson.version, '2.12.5');
+    assert.equal(statusJson.version, '2.13.0');
+    assert.equal(statusJson.compatibilityError, 'Antigravity compatibility: um (missing)');
+    assert.equal(statusJson.clientVersion, '2.34.0');
 
     const badPost = await fetch(`http://127.0.0.1:${freePort}/api/relaunch`, { method: 'POST' });
     assert.equal(badPost.status, 401);
@@ -278,6 +297,31 @@ test('Sidecar Aux Pane Web UI serves post-update prompt copy, enforces token aut
     });
     assert.equal(okPost.status, 200);
     assert.equal(relaunched, 1);
+
+    assert.equal((await fetch(`http://127.0.0.1:${freePort}/api/update/check`, { method: 'POST' })).status, 401);
+    assert.equal((await fetch(`http://127.0.0.1:${freePort}/api/update/install`, { method: 'POST' })).status, 401);
+    assert.equal((await fetch(`http://127.0.0.1:${freePort}/api/update/status`)).status, 401);
+
+    const checkRes = await fetch(`http://127.0.0.1:${freePort}/api/update/check`, {
+      method: 'POST',
+      headers: { 'x-sidecar-token': 'secret-token', 'Content-Type': 'application/json' },
+      body: '{}'
+    });
+    assert.equal(checkRes.status, 200);
+    assert.equal((await checkRes.json()).version, '2.13.1');
+    assert.equal(checked, 1);
+
+    const installRes = await fetch(`http://127.0.0.1:${freePort}/api/update/install`, {
+      method: 'POST',
+      headers: { 'x-sidecar-token': 'secret-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ version: '2.13.1' })
+    });
+    assert.equal(installRes.status, 200);
+    assert.equal(installedVer, '2.13.1');
+
+    const updStatusRes = await fetch(`http://127.0.0.1:${freePort}/api/update/status?token=secret-token`);
+    assert.equal(updStatusRes.status, 200);
+    assert.equal((await updStatusRes.json()).status, 'installing');
   } finally {
     await close();
   }

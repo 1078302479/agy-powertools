@@ -14,6 +14,9 @@ test('settings persist, merge safely, and reject unknown options without changin
     assert.equal(createSettingsStore(directory).get().compact, false);
     assert.equal(store.get().messageEdit, true);
     assert.equal(store.get().fileContextMenu, true);
+    assert.equal(store.get().subagentTelemetry, true);
+    store.set({ subagentTelemetry: false }); assert.equal(store.get().subagentTelemetry, false);
+    store.set({ subagentTelemetry: true }); assert.equal(store.get().subagentTelemetry, true);
     assert.equal(store.get().multiAccount, false);
     assert.equal(store.get().accountSwitcher, true);
     assert.equal(store.get().accountViewMode, 'list');

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { dateRange,modelIdentity,summarizeRequests,subscriptionIdentity,distributionModels } from '../lib/dashboard.mjs';
 test('calendar ranges use local midnight and a Monday week boundary',()=>{
  const now=+new Date(2026,10,13,12,30),midnight=+new Date(2026,10,13);
+ assert.deepEqual(dateRange('today',now),{start:midnight,end:now});
  assert.deepEqual(dateRange('yesterday',now),{start:+new Date(2026,10,12),end:midnight});
  assert.equal(dateRange('week',now).start,+new Date(2026,10,9));
  assert.equal(dateRange('month',now).start,+new Date(2026,10,1));

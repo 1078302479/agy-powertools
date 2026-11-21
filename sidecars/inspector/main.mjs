@@ -13,6 +13,8 @@ import { installationPaths } from '../../lib/lifecycle.mjs';
 import { createSettingsStore } from '../../lib/settings.mjs';
 import { configureLaunchers, isRemoteSshEnvironment, manualLaunchCommand, maybePromptPostUpdateRelaunch, scheduleRelaunchWithDebugPort } from '../../lib/launcher.mjs';
 import { startSidecarWebUi } from '../../lib/sidecar-ui.mjs';
+import { checkForUpdates } from '../../lib/updates.mjs';
+import { startUpdate, updateStatus } from '../../lib/update-manager.mjs';
 
 export const getAppDataDir = () => process.env.ANTIGRAVITY_APP_DATA_DIR || join(homedir(), '.gemini', 'antigravity');
 const validId = id => typeof id === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/.test(id);
@@ -80,7 +82,7 @@ export function parseSessionData(requestedId, { includeSessions = true, strict =
   const turns = [];
   let turn, modelName = '';
   let latestInput = 0, latestCache = 0, latestOutput = 0;
-  let totalInput = 0, totalCache = 0, totalOutput = 0;
+  let totalInput = 0, totalCache = 0, totalOutput = 0, orphanToolCount = 0;
   let modelTimeMs = 0, timedOutputTokens = 0, generationTimeMs = 0;
   const ttfts = [], toolIntervals = [];
   for (let i = 0; i < steps.length; i++) {
@@ -104,17 +106,23 @@ export function parseSessionData(requestedId, { includeSessions = true, strict =
       turns.push(turn);
       continue;
     }
-    if (!turn) continue;
-    turn.stepCount++;
-    turn.stepIndexEnd = step.step_index;
-    if (['PLANNER_RESPONSE', 'GENERIC', 'ERROR_MESSAGE'].includes(step.type) && Number.isFinite(completedMs) && completedMs > (turn.completedAtMs || 0)) turn.completedAtMs = completedMs;
+    if (turn) {
+      turn.stepCount++;
+      turn.stepIndexEnd = step.step_index;
+      if (['PLANNER_RESPONSE', 'GENERIC', 'ERROR_MESSAGE'].includes(step.type) && Number.isFinite(completedMs) && completedMs > (turn.completedAtMs || 0)) turn.completedAtMs = completedMs;
+    }
     if (step.type === 'PLANNER_RESPONSE') {
-      turn.status = 'running';
+      if (turn) turn.status = 'running';
       const input = number(step.input_tokens), cached = number(step.cache_read_tokens), output = number(step.output_tokens);
       totalInput += input; totalCache += cached; totalOutput += output;
-      turn.inputTokens += input; turn.cacheReadTokens += cached; turn.outputTokens += output;
-      if (input + cached + output) { latestInput = input; latestCache = cached; latestOutput = output; turn.contextTokens = input + cached; }
-      if (step.content) turn.assistantPreview = step.content.slice(0, 240);
+      if (turn) {
+        turn.inputTokens += input; turn.cacheReadTokens += cached; turn.outputTokens += output;
+      }
+      if (input + cached + output) {
+        latestInput = input; latestCache = cached; latestOutput = output;
+        if (turn) turn.contextTokens = input + cached;
+      }
+      if (turn && step.content) turn.assistantPreview = step.content.slice(0, 240);
       const duration = elapsed(createdMs, timing?.finishedMs ?? timing?.completedMs);
       const ttft = elapsed(createdMs, timing?.viewableMs);
       if (duration !== null && output > 0) {
@@ -133,16 +141,20 @@ export function parseSessionData(requestedId, { includeSessions = true, strict =
         const end = resultTiming?.completedMs ?? matchTime('Completed At');
         const durationMs = elapsed(start, end);
         if (durationMs !== null) toolIntervals.push([start, end]);
-        if (Number.isFinite(end) && end > (turn.completedAtMs || 0)) turn.completedAtMs = end;
-        turn.toolCalls.push({
-          id: `step-${step.step_index}-tool-${c}`, stepIndex: step.step_index, ...classify(calls[c]),
-          startedAtIso: iso(start), completedAtIso: iso(end), durationMs,
-          outputPreview: content.replace(/^(Created At|Completed At):[^\r\n]*[\r\n]+/gm, '').slice(0, 1600)
-        });
+        if (turn) {
+          if (Number.isFinite(end) && end > (turn.completedAtMs || 0)) turn.completedAtMs = end;
+          turn.toolCalls.push({
+            id: `step-${step.step_index}-tool-${c}`, stepIndex: step.step_index, ...classify(calls[c]),
+            startedAtIso: iso(start), completedAtIso: iso(end), durationMs,
+            outputPreview: content.replace(/^(Created At|Completed At):[^\r\n]*[\r\n]+/gm, '').slice(0, 1600)
+          });
+        } else {
+          orphanToolCount++;
+        }
       }
-      if (!calls.length && step.content) turn.status = 'complete';
+      if (turn && !calls.length && step.content) turn.status = 'complete';
     }
-    if (step.type === 'ERROR_MESSAGE') turn.status = 'error';
+    if (turn && step.type === 'ERROR_MESSAGE') turn.status = 'error';
   }
   if (turns.length) turns[turns.length - 1] = resolveTurnExecution(turns.at(-1), execution, conversationId);
   for (let i = 0; i < turns.length; i++) {
@@ -176,8 +188,15 @@ export function parseSessionData(requestedId, { includeSessions = true, strict =
   }
   const context = contextSnapshot(latestGen, latestInput + latestCache);
   const multiModel = modelContexts(database?.generations || [], database?.checkpointSteps || []);
-  const totalInputAndCache = totalInput + totalCache;
   const requests = requestEvents(database, conversationId);
+  if (totalInput + totalCache + totalOutput === 0 && requests.length > 0) {
+    for (const r of requests) {
+      totalInput += number(r.inputTokens);
+      totalCache += number(r.cacheReadTokens);
+      totalOutput += number(r.outputTokens);
+    }
+  }
+  const totalInputAndCache = totalInput + totalCache;
   const errors = steps.filter(s => s.type === 'ERROR_MESSAGE').map(s => ({ id: `step-${s.step_index}`, timestampMs: database?.times.get(s.step_index)?.createdMs ?? Date.parse(s.created_at), message: s.content || '', stepIndex: s.step_index }));
   const speeds = requests.map(r=>r.tps).filter(Number.isFinite);
   const completeRequests=requests.filter(r=>r.tps!=null&&r.outputTokens>0);
@@ -199,12 +218,12 @@ export function parseSessionData(requestedId, { includeSessions = true, strict =
       peakTps: speeds.length ? Math.max(...speeds) : null,
       latestTps: speeds.at(-1) ?? null, requestCount: requests.length, errorCount: errors.length + requests.filter(r=>r.error).length,
       thinkingTokens: requests.reduce((n,r)=>n+r.thinkingTokens,0),
-      toolCount: turns.reduce((n,t)=>n+t.toolCalls.length,0),
+      toolCount: turns.reduce((n,t)=>n+t.toolCalls.length,0) + orphanToolCount,
       timedOutputTokens, generationTimeMs: generationTimeMs || null,
       totalTokens: totalInputAndCache + totalOutput, inputTokens: totalInput,
       cacheReadTokens: totalCache, outputTokens: totalOutput,
       cacheHitPercent: totalInputAndCache > 0 ? Number((totalCache / totalInputAndCache * 100).toFixed(1)) : null
-    }, turns, requests, errors, progress: readProgress(getAppDataDir(), conversationId, turns, steps)
+    }, turns, requests, errors, progress: readProgress(getAppDataDir(), conversationId, turns, steps, Date.now(), database, execution)
   };
 }
 
@@ -271,13 +290,20 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
       const health = await stop.health();
       return {
         healthy: health.healthy,
+        compatibilityError: health.compatibilityError || '',
+        clientVersion: health.clientVersion || '',
+        connected: Boolean(health.connected),
         enabled: current.enabled !== false,
         language: current.language || 'zh-CN',
         mode: remoteSsh ? 'ssh-remote' : 'local',
-        manualCommand: remoteSsh ? '' : manualLaunchCommand({ home: paths.home })
+        manualCommand: remoteSsh ? '' : manualLaunchCommand({ home: paths.home }),
+        update: updateStatus()
       };
     },
-    onRelaunch: () => remoteSsh ? { scheduled: false, reason: 'ssh-remote' } : scheduleRelaunchWithDebugPort({ dataDir: paths.data, home: paths.home })
+    onRelaunch: () => remoteSsh ? { scheduled: false, reason: 'ssh-remote' } : scheduleRelaunchWithDebugPort({ dataDir: paths.data, home: paths.home }),
+    onCheckUpdate: () => checkForUpdates({ currentVersion: version }),
+    onInstallUpdate: ({ version: expectedVersion } = {}) => startUpdate({ currentVersion: version, expectedVersion }),
+    onUpdateStatus: () => updateStatus()
   }).catch(() => async () => {});
   const close = await serveRuntime({ directory: join(paths.data, 'runtime'), version, stop, health: stop.health });
   for (const event of ['SIGINT', 'SIGTERM']) process.on(event, async () => { await stop(); await closeWebUi(); await close(); process.exit(0); });

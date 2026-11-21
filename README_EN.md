@@ -241,7 +241,8 @@ All options can be toggled live in **Powertools -> Settings** and persist automa
 | --- | --- | --- |
 | Context ring | On | Shows the context usage ring and breakdown popover in the composer (including step cache reuse and Orchestrator per-model context; ring-only at 0 usage) |
 | Speed & statistics | On | Shows a circular dynamic speed dial with latest throughput in the composer and opens session telemetry |
-| Task progress | On | Renders checklist progress, recent tool activity, and elapsed timer inside Overview |
+| Task progress | On | Renders checklist progress, live execution phase (approval wait, retry reason, running tool, thinking, streaming), recent tool activity, and elapsed timer inside Overview |
+| Subagent context & telemetry | On | Displays per-subagent model, context usage, tokens, cache hit rate, speed, and estimated cost in Overview subagent rows, subagent composer bars, and main composer popovers |
 | Turn duration | On | Displays completion duration at the top of each finished turn |
 | Expand tools from duration | On | Click the turn duration label to expand or collapse tool calls and stage updates |
 
@@ -278,6 +279,15 @@ All options can be toggled live in **Powertools -> Settings** and persist automa
 | `~/.gemini/antigravity/plugin_data/agy-powertools/` | User preferences (`settings.json`), component cache, and official pricing cache |
 
 ## Changelog
+
+### v2.13.1
+- **Subagent context and telemetry** (toggleable under `Settings -> Telemetry & progress`):
+  - Added token, cache hit rate, tool count, and estimated API cost aggregation for `SYSTEM_MESSAGE`-rooted subagent conversations, along with a batched `subagents.stats` host endpoint and general model short-name formatting.
+  - Added compact context ring + model badges on Overview `Subagents` rows (clicking opens full context and telemetry details), added model, context ring, and speed controls to subagent composer footers, and added subagent context and combined summary sections to the main composer popovers.
+  - Added main-conversation estimated API cost (and combined total with subagents) to the Session Statistics popover.
+- **Live execution phases in Overview Task Progress**: Combines live in-memory step state with local logs to distinguish waiting for approval, background retries (with attempt count and categorized reason such as EOF / 503 / 429 / region / timeout), active tool execution, thinking, waiting for model, and generating response.
+- **Added "Today" range in Overview**: Counts usage from local midnight (`00:00`) to now in the dashboard time range selector.
+- **Built-in update fallback in the official Aux Pane**: When an Antigravity client update breaks frontend bindings and hides the sidebar entry, the official `Powertools` side panel reports the client version and diagnostic error instead of a restart prompt, checks GitHub for a compatible release, and supports one-click SHA-256 verified updates directly from the panel.
 
 ### v2.13.0
 
