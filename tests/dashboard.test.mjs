@@ -216,4 +216,13 @@ test('weeklyQuota resolves exact native reset windows, per-pool cycle boundaries
   const fallback = resolveWeeklyQuotaWindow({ account: null, quotaSamples: [], now });
   assert.equal(fallback.status, 'fallback');
   assert.equal(fallback.start, now - SEVEN_DAYS_MS);
+
+  // Case 6: Requests explicitly tagged to another account are excluded from current account's weekly window
+  const scopedRange = resolveWeeklyQuotaWindow({ account: liveAccount, email: 'alice@example.com', fetchedAtMs, now });
+  const mixedAccountReqs = [
+    { id: 'alice-req', model: 'Gemini 4 Carbon (High)', timestampMs: geminiCycleStartMs + 60_000, durationMs: 1000, inputTokens: 1000, cacheReadTokens: 0, outputTokens: 100, accountEmail: 'alice@example.com', status: 'success' },
+    { id: 'bob-req', model: 'Gemini 4 Carbon (High)', timestampMs: geminiCycleStartMs + 90_000, durationMs: 1000, inputTokens: 9000, cacheReadTokens: 0, outputTokens: 100, accountEmail: 'bob@example.com', status: 'success' },
+    { id: 'unattr-req', model: 'Gemini 4 Carbon (High)', timestampMs: geminiCycleStartMs + 120_000, durationMs: 1000, inputTokens: 500, cacheReadTokens: 0, outputTokens: 100, accountEmail: '', status: 'success' }
+  ];
+  assert.deepEqual(summarizeRequests(mixedAccountReqs, scopedRange).requests.map(r => r.id), ['alice-req', 'unattr-req']);
 });

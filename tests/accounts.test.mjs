@@ -346,6 +346,7 @@ function createPanelHarness(accountsData, opts = {}, hooks = {}) {
   }
   return {
     renderOverview: dashboard => { activeComponent = 'overview'; hookIdx = 0; return panels.Overview({ dashboard }); },
+    renderEventTable: (dashboard, errors = false) => { activeComponent = errors ? 'errors' : 'requests'; hookIdx = 0; return panels.EventTable({ dashboard, errors }); },
     renderSwitcher: () => { activeComponent = 'switcher'; hookIdx = 0; return panels.AccountSwitcher(); },
     renderQuotas: () => { activeComponent = 'quotas'; hookIdx = 0; return panels.Quotas(); },
     renderSettings: () => { activeComponent = 'settings'; hookIdx = 0; return panels.Settings(); },
@@ -606,4 +607,174 @@ test('Overview defaults to Current weekly quota (本轮周限额内用量), disp
   const untouchedText = untouchedUi.collectText(untouchedUi.find(untouchedTree, 'agy-range-summary'));
   assert.ok(untouchedText.includes('本轮周限额尚未开始消耗（剩余 100%）'));
   assert.equal(untouchedText.includes('\u00b7'), false);
+});
+
+test('quota tracker account timeline isolates multi-account quota estimates and guards pre-upgrade mixed history', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agy-quota-timeline-'));
+  try {
+    const tracker = createQuotaTracker(dir);
+    const base = 1_795_000_000_000;
+    const rates = [{ model: 'gemini-4-neon', input: 2, output: 12, cache: 0.2 }];
+    const makeReq = (id, ts, inputTokens = 500_000) => ({
+      id,
+      model: 'Gemini 4 Neon (High)',
+      timestampMs: ts,
+      durationMs: 1000,
+      inputTokens,
+      cacheReadTokens: 0,
+      outputTokens: 10_000
+    });
+
+    // Account A (Ultra) uses 4 large requests in the first hour
+    const ultraReqs = [1, 2, 3, 4].map(i => makeReq(`u${i}`, base + i * 60_000, 1_000_000));
+    const ultraRes = tracker.observe(
+      [{ buckets: [{ bucketId: 'gemini-5h', window: '5h', remainingFraction: 0.9, resetTimeMs: base + 5 * 3600_000 }] }],
+      ultraReqs,
+      rates,
+      base + 5 * 60_000,
+      'ultra@example.com'
+    );
+    assert.equal(ultraRes.estimates[0].observedRequests, 4);
+    assert.equal(tracker.emailAt(base + 60_000), 'ultra@example.com');
+
+    // Switch to Account B (Plus) at base + 10 min; Plus makes 3 small requests
+    const switchAt = base + 10 * 60_000;
+    tracker.recordAccount('plus@example.com', switchAt);
+    const plusReqs = [1, 2, 3].map(i => makeReq(`p${i}`, switchAt + i * 60_000, 100_000));
+    const plusRes = tracker.observe(
+      [{ buckets: [{ bucketId: 'gemini-5h', window: '5h', remainingFraction: 0.8, resetTimeMs: switchAt + 5 * 3600_000 }] }],
+      [...ultraReqs, ...plusReqs],
+      rates,
+      switchAt + 5 * 60_000,
+      'plus@example.com'
+    );
+    // Plus MUST count only its own 3 small requests, NOT Ultra's 4 large requests
+    assert.equal(plusRes.estimates[0].observedRequests, 3);
+    assert.ok(plusRes.estimates[0].estimateUsd < ultraRes.estimates[0].estimateUsd);
+    assert.deepEqual(tracker.accounts(), ['plus@example.com', 'ultra@example.com']);
+
+    // Reload from disk preserves timeline
+    const reloaded = createQuotaTracker(dir);
+    assert.equal(reloaded.emailAt(base + 60_000), 'ultra@example.com');
+    assert.equal(reloaded.emailAt(switchAt + 60_000), 'plus@example.com');
+
+    // Pre-upgrade existing multi-account user (knownAccountCount > 1 on empty timeline) keeps old requests unattributed
+    const dirUpgrade = mkdtempSync(join(tmpdir(), 'agy-quota-upgrade-'));
+    try {
+      const upgraded = createQuotaTracker(dirUpgrade);
+      const upgradeNow = base + 30 * 60_000;
+      const upRes = upgraded.observe(
+        [{ buckets: [{ bucketId: 'gemini-5h', window: '5h', remainingFraction: 0.9, resetTimeMs: upgradeNow + 5 * 3600_000 }] }],
+        ultraReqs,
+        rates,
+        upgradeNow,
+        'plus@example.com',
+        { knownAccountCount: 2 }
+      );
+      assert.equal(upgraded.emailAt(base + 60_000), '');
+      assert.equal(upRes.estimates[0].observedRequests, 0);
+      assert.equal(upRes.estimates[0].estimateUsd, null);
+    } finally {
+      rmSync(dirUpgrade, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('EventTable and Overview filter requests by account when multiple accounts exist and stay clean for single account', () => {
+  const now = Date.now();
+  const accountsData = {
+    activeId: 'a1',
+    accounts: [
+      { id: 'a1', email: 'alice@example.com', name: 'Alice', alias: '主力号' },
+      { id: 'a2', email: 'bob@example.com', name: 'Bob', alias: '备用号' }
+    ]
+  };
+  const ui = createPanelHarness(accountsData, { multiAccount: true });
+  const multiDash = {
+    activeAccountEmail: 'alice@example.com',
+    accountEmails: ['alice@example.com', 'bob@example.com'],
+    requests: [
+      { id: 'r1', model: 'Gemini 4 Neon', timestampMs: now - 20_000, status: 'success', inputTokens: 1000, cacheReadTokens: 0, outputTokens: 200, costUsd: 0.01, accountEmail: 'alice@example.com' },
+      { id: 'r2', model: 'Claude Opus 5.5', timestampMs: now - 10_000, status: 'success', inputTokens: 2000, cacheReadTokens: 0, outputTokens: 300, costUsd: 0.02, accountEmail: 'bob@example.com' }
+    ]
+  };
+
+  // Defaults to active account (alice@example.com) when active account has rows (hides redundant per-row account subtitle)
+  const reqTree = ui.renderEventTable(multiDash, false);
+  const acctFilter = ui.find(reqTree, 'agy-account-filter');
+  assert.ok(acctFilter);
+  assert.ok(ui.collectText(acctFilter).includes('主力号 (alice@example.com)'));
+  assert.equal(ui.findAll(reqTree, n => n.type === 'tr' && typeof n.props?.key === 'string' && n.props.key.startsWith('req:')).length, 1);
+  assert.equal(ui.findAll(reqTree, n => n.props?.['data-testid'] === 'agy-request-account').length, 0);
+
+  // Switching account filter to all shows both accounts with their aliases
+  const allOption = ui.find(reqTree, 'agy-account-filter-all');
+  assert.ok(allOption);
+  allOption.props.onClick();
+  const reqTreeAll = ui.renderEventTable(multiDash, false);
+  const badges = ui.findAll(reqTreeAll, n => n.props?.['data-testid'] === 'agy-request-account').map(n => ui.collectText(n));
+  assert.deepEqual(badges, ['主力号', '备用号']);
+
+  // Single-account mode hides account filter cleanly
+  const singleUi = createPanelHarness(null, { multiAccount: false });
+  const singleTree = singleUi.renderEventTable({
+    activeAccountEmail: 'alice@example.com',
+    accountEmails: ['alice@example.com'],
+    requests: [{ id: 'r1', model: 'Gemini 4 Neon', timestampMs: now - 5_000, status: 'success', inputTokens: 1000, cacheReadTokens: 0, outputTokens: 100, accountEmail: 'alice@example.com' }]
+  }, false);
+  assert.equal(singleUi.find(singleTree, 'agy-account-filter'), null);
+});
+
+test('quota tracker backfills multi-account timeline from existing quota-samples.json and accounts.json without affecting single-account users', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agy-timeline-backfill-'));
+  try {
+    const tOther = 1_795_200_000_000;
+    const tActiveFirst = tOther + 3600_000;
+    const tColdStart = tActiveFirst + 24 * 3600_000;
+    writeFileSync(join(dir, 'quota-samples.json'), JSON.stringify([
+      { id: 'bob@example.com::gemini-5h', resetTimeMs: tOther + 18000_000, active: true, lastAt: tOther + 2000 },
+      { id: 'alice@example.com::gemini-5h', resetTimeMs: tActiveFirst + 18000_000, active: true, lastAt: tActiveFirst },
+      { id: 'alice@example.com::gemini-weekly', resetTimeMs: tColdStart + 5 * 86400_000, active: true, lastAt: tColdStart - 60_000 }
+    ]));
+    writeFileSync(join(dir, 'accounts.json'), JSON.stringify({
+      activeId: 'a1',
+      accounts: [
+        { id: 'a1', email: 'alice@example.com', lastUsedAtMs: tColdStart },
+        { id: 'a2', email: 'bob@example.com', lastUsedAtMs: tOther }
+      ]
+    }));
+    // Simulate cold-start timeline that only had the post-upgrade timestamp
+    writeFileSync(join(dir, 'account-timeline.json'), JSON.stringify([
+      { email: 'alice@example.com', sinceMs: tColdStart }
+    ]));
+
+    const tracker = createQuotaTracker(dir);
+    assert.deepEqual(tracker.timeline(), [
+      { email: 'bob@example.com', sinceMs: tOther },
+      { email: 'alice@example.com', sinceMs: tActiveFirst }
+    ]);
+    assert.equal(tracker.emailAt(tOther - 1000), '');
+    assert.equal(tracker.emailAt(tOther + 10_000), 'bob@example.com');
+    assert.equal(tracker.emailAt(tActiveFirst + 60_000), 'alice@example.com');
+    assert.equal(tracker.emailAt(tColdStart - 10_000), 'alice@example.com');
+
+    // Single-account user with quota-samples.json is NOT prematurely bounded
+    const singleDir = mkdtempSync(join(tmpdir(), 'agy-timeline-single-'));
+    try {
+      writeFileSync(join(singleDir, 'quota-samples.json'), JSON.stringify([
+        { id: 'solo@example.com::gemini-5h', resetTimeMs: tColdStart + 18000_000, active: true, lastAt: tActiveFirst }
+      ]));
+      const solo = createQuotaTracker(singleDir);
+      assert.deepEqual(solo.timeline(), []);
+      solo.recordAccount('solo@example.com', tColdStart, { knownAccountCount: 1 });
+      assert.deepEqual(solo.timeline(), [{ email: 'solo@example.com', sinceMs: 0 }]);
+      assert.equal(solo.emailAt(tOther - 86400_000), 'solo@example.com');
+    } finally {
+      rmSync(singleDir, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {mkdtempSync,writeFileSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {startNativeIntegration,declaredNativeNames} from '../lib/native-host.mjs';
+import {startNativeIntegration,declaredNativeNames,isSwarmTarget,swarmI18nSource} from '../lib/native-host.mjs';
 
 test('same window reattaches after an updater changes the origin or debug endpoint',async()=>{
   const directory=mkdtempSync(join(tmpdir(),'agy-recovery-')),portFile=join(directory,'port');
@@ -111,6 +111,53 @@ test('onMissingDebugPort triggers on missing/refused port before connection, ign
     await stopMissing?.();
     await stopTimeout?.();
     await stopReady?.();
+    globalThis.fetch = originalFetch;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('isSwarmTarget and startNativeIntegration localize Swarm plugin iframes and dispose cleanly', async () => {
+  assert.equal(isSwarmTarget({ type: 'iframe', url: 'plugin://swarm--swarm_board-123/index.html' }), true);
+  assert.equal(isSwarmTarget({ type: 'page', url: 'plugin://swarm--swarm_board-123/index.html' }), false);
+  assert.equal(isSwarmTarget({ type: 'iframe', url: 'https://127.0.0.1:5000/c/a' }), false);
+  const src = swarmI18nSource({ enabled: true, language: 'zh-TW' });
+  assert.doesNotThrow(() => new Function(src));
+  assert.ok(src.includes('"language":"zh-TW"'));
+
+  const dir = mkdtempSync(join(tmpdir(), 'agy-swarm-i18n-'));
+  const portFile = join(dir, 'port');
+  writeFileSync(portFile, '12345\n');
+  const originalFetch = globalThis.fetch;
+  const swarmClientCalls = [];
+  let swarmClosed = false;
+  globalThis.fetch = async () => ({
+    json: async () => [
+      { id: 'swarm-1', type: 'iframe', title: 'Swarm', url: 'plugin://swarm--swarm_board-abc/index.html', webSocketDebuggerUrl: 'ws://127.0.0.1:12345/devtools/page/swarm-1' }
+    ]
+  });
+  let stop;
+  try {
+    stop = startNativeIntegration({
+      portFile,
+      parseSessionData: () => ({}),
+      onStatus: () => {},
+      connect: async () => ({
+        onEvent() {},
+        socket: { addEventListener() {}, close() { swarmClosed = true; } },
+        async send(method, params) {
+          swarmClientCalls.push({ method, params });
+          if (method === 'Page.addScriptToEvaluateOnNewDocument') return { identifier: 'swarm-script-1' };
+          return { result: { value: { ready: true, lang: 'zh-CN' } } };
+        }
+      })
+    });
+    await stop.ready;
+    assert.ok(swarmClientCalls.some(c => c.method === 'Runtime.evaluate' && String(c.params?.expression || '').includes('__agyLocalization')));
+    await stop();
+    assert.equal(swarmClosed, true);
+    assert.ok(swarmClientCalls.some(c => c.method === 'Runtime.evaluate' && c.params?.expression === 'globalThis.__agyLocalization?.dispose()'));
+    assert.ok(swarmClientCalls.some(c => c.method === 'Page.removeScriptToEvaluateOnNewDocument' && c.params?.identifier === 'swarm-script-1'));
+  } finally {
     globalThis.fetch = originalFetch;
     rmSync(dir, { recursive: true, force: true });
   }

@@ -22,7 +22,8 @@ import {
   resolveLocalFilePath,
   isWindowsRunnableFile,
   openLocalFile,
-  copyLocalFile
+  copyLocalFile,
+  readLocalFileForAttach
 } from '../lib/launcher.mjs';
 import { startSidecarWebUi, renderAuxPaneHtml } from '../lib/sidecar-ui.mjs';
 
@@ -542,5 +543,50 @@ test('scheduleRelaunchWithDebugPort reads saved proxy settings across platforms 
     assert.ok(!psOffBody.includes('--proxy-server='));
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('readLocalFileForAttach returns base64 media for images/PDFs, mentions for code/folders/oversized, and rejects missing or remote URIs', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agy-attach-'));
+  try {
+    const imgPath = join(dir, 'sample.png');
+    const imgBytes = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+    writeFileSync(imgPath, imgBytes);
+    const pdfPath = join(dir, 'spec.pdf');
+    writeFileSync(pdfPath, Buffer.from('%PDF-1.7\n'));
+    const codePath = join(dir, 'index.mjs');
+    writeFileSync(codePath, 'export const ok = true;\n');
+    const subDir = join(dir, 'folder');
+    mkdirSync(subDir);
+
+    const imgRes = readLocalFileForAttach(pathToFileURL(imgPath).href);
+    assert.equal(imgRes.mode, 'media');
+    assert.equal(imgRes.mimeType, 'image/png');
+    assert.equal(imgRes.name, 'sample.png');
+    assert.equal(imgRes.base64, imgBytes.toString('base64'));
+
+    const pdfRes = readLocalFileForAttach(pathToFileURL(pdfPath).href);
+    assert.equal(pdfRes.mode, 'media');
+    assert.equal(pdfRes.mimeType, 'application/pdf');
+
+    const oversizedRes = readLocalFileForAttach(pathToFileURL(imgPath).href, { maxMediaBytes: 4 });
+    assert.equal(oversizedRes.mode, 'mention');
+    assert.equal(oversizedRes.oversized, true);
+    assert.equal(oversizedRes.base64, undefined);
+
+    const codeRes = readLocalFileForAttach(pathToFileURL(codePath).href);
+    assert.equal(codeRes.mode, 'mention');
+    assert.equal(codeRes.kind, 'file');
+    assert.equal(codeRes.isDirectory, false);
+
+    const dirRes = readLocalFileForAttach(pathToFileURL(subDir).href);
+    assert.equal(dirRes.mode, 'mention');
+    assert.equal(dirRes.kind, 'directory');
+    assert.equal(dirRes.isDirectory, true);
+
+    assert.throws(() => readLocalFileForAttach(pathToFileURL(join(dir, 'missing.png')).href), /不存在/);
+    assert.throws(() => readLocalFileForAttach('https://example.com/a.png'), /仅支持本地文件/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

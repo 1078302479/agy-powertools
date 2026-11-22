@@ -83,3 +83,30 @@ test('Traditional Chinese (zh-TW) uses Taiwan IT terminology, converts UI string
     assert.equal(leftover,null,`Unexpected simplified glyph ${leftover?.[0]} in ${file}`);
   }
 });
+
+test('Swarm UI strings translate cleanly in zh-CN and zh-TW without middle dots and protect post bodies', () => {
+  const document = { nodeType: 9, createTreeWalker: () => ({ nextNode: () => null }), querySelectorAll: () => [] };
+  const context = vm.createContext({ document, NodeFilter: { SHOW_TEXT: 4 }, MutationObserver: class { observe() {} disconnect() {} }, __agyToZhTw: toZhTw });
+  vm.runInContext(readFileSync('lib/native-i18n.js', 'utf8'), context);
+  const t = context.__agyI18n.t;
+  assert.equal(t('Board', 'zh-CN'), '讨论板');
+  assert.equal(t('Board', 'zh-TW'), '討論板');
+  assert.equal(t('Members', 'zh-CN'), '成员');
+  assert.equal(t('Members', 'zh-TW'), '成員');
+  assert.equal(t('Graph', 'zh-CN'), '关系图');
+  assert.equal(t('Graph', 'zh-TW'), '關係圖');
+  assert.equal(t('From anyone', 'zh-CN'), '来自任意成员');
+  assert.equal(t('To anyone', 'zh-TW'), '提及任意成員');
+  assert.equal(t('Hide inactive', 'zh-CN'), '隐藏非活跃');
+  assert.equal(t('Export GIF', 'zh-TW'), '匯出 GIF'.replace('匯', '導'));
+  assert.equal(t('No swarm in this conversation', 'zh-CN'), '当前会话暂无蜂群');
+  assert.equal(t('Copy to clipboard', 'zh-TW'), '複製到剪貼簿');
+  assert.equal(t('Attach to chat', 'zh-CN'), '引用到输入框');
+  assert.equal(t('Attach to chat', 'zh-TW'), '引用到輸入框');
+  const ovLabel = t(`overview \u00b7 from the narrator\u2019s notes`, 'zh-CN');
+  assert.equal(ovLabel, '概览 - 来自旁白笔记');
+  assert.equal(ovLabel.includes('\u00b7'), false);
+  assert.equal(t(`overview \u00b7 from the narrator's notes`, 'zh-TW'), '概覽 - 來自旁白筆記');
+  const i18nSrc = readFileSync('lib/native-i18n.js', 'utf8');
+  assert.ok(i18nSrc.includes('.post-body') && i18nSrc.includes('#ov-frame'));
+});

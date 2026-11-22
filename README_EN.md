@@ -282,6 +282,19 @@ All options can be toggled live in **Powertools -> Settings** and persist automa
 
 ## Changelog
 
+### v2.13.4
+- **Added "Current weekly quota" range in Overview as the new default (#12, thanks `@zhangyu-ch`)**: Resolves per-pool weekly reset windows for the active account and adds a configurable default Overview range under `Settings -> Telemetry & progress`.
+- **Added remote session telemetry for OpenSSH windows (#14, thanks `@reshdh`)**: Streams remote session, subagent, and dashboard metrics over local OpenSSH without leaving files on the remote host, isolates SSH component discovery cache, and reports per-window health.
+- **Per-account quota isolation and request filtering (#9, #11)**:
+  - Tracks an active-account switch timeline (`account-timeline.json`, with automatic backfill from existing `quota-samples.json` and `accounts.json`) so quota budget estimates only count requests from the current account's time windows instead of mixing prior accounts.
+  - Adds an account filter dropdown to `Overview`, `Requests`, and `Errors` when multiple accounts exist, shows compact account labels under timestamps in the `All accounts` view, and stays hidden for single-account setups.
+- **Attach images and files to chat from context menu**: Adds `Attach to chat` to the file context menu and extends right-click support to the right-side `Files` tree; attaches images, PDFs, Office documents, audio/video, and zip archives (up to 10 MB) via Antigravity's native media upload pipeline, and inserts native `@file` / `@directory` mention chips for code, text, folders, and SSH remote paths.
+- **Swarm panel localization (#10)**: Attaches a lightweight localizer to `plugin://swarm--swarm_board-*` iframes with live language syncing (Simplified Chinese, Traditional Chinese, and English) while excluding board post bodies, narrator frames, and raw JSON blocks.
+- **Fixes**:
+  - Fixed Side Question (`/btw`) and split-pane composers not updating their own context ring and speed stats by resolving and polling state per composer `cascadeId`.
+  - Fixed in-place message editing skipping `revertToIndex` when `Stage updates`, `Parallel search & read`, and `Context target` overrides were all turned off, caused by Antigravity's composer `useMemo` caching the unwrapped `sendUserCascadeMessage` function.
+  - Fixed false post-update restart prompts caused by transient `/json/list` polling timeouts (#15, thanks `@reshdh`).
+
 ### v2.13.3
 - **Full-history branching for conversations with subagents and streamlined fork path**:
   - Calls native `ForkConversation` first; when Antigravity 2.34.0 rejects direct forking because subagents were invoked, automatically promotes through the native `SIDE_QUESTION` trajectory path (supports both end-of-chat and historical turns after subagents without sending a model prompt, leaves source subagents behind, and deletes the temporary side-question trajectory in `finally`).
