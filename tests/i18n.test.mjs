@@ -110,6 +110,7 @@ test('Swarm UI strings translate cleanly in zh-CN and zh-TW without middle dots 
   assert.equal(t('For most deep reasoning and complex problems', 'zh-CN'), '适用于深度推理与复杂问题');
   assert.equal(t('For most deep reasoning and complex problems', 'zh-TW'), '適用於深度推理與複雜問題');
   assert.equal(t('Notice', 'zh-CN'), '提示');
+  assert.equal(t('Offloads routine steps to a faster executor. Same quality, fewer tokens used.', 'zh-CN'), '将常规步骤分流给更快的执行模型，保持同等质量同时减少 Token 消耗。');
   assert.equal(t('Chat Layout', 'zh-TW'), '聊天佈局'.replace('佈', '布'));
   assert.equal(t('Tool Permissions', 'zh-TW'), '工具權限');
   assert.equal(t('Confirm Undo', 'zh-CN'), '确认撤回');
