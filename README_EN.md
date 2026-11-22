@@ -42,7 +42,7 @@ It addresses four common friction points in daily Antigravity usage:
 ## Features
 
 - **Codex-like conversation flow**: Same-font compact layout, plus live stage updates while tools run that automatically fold into the top duration bar once the turn completes.
-- **Context ring and dynamic speed gauge**: Separate composer controls for context usage (including cache reuse, compaction count, and Orchestrator per-model context bars) and live generation speed (`tok/s`, TTFT, and model vs. tool timing).
+- **Context ring and dynamic speed gauge**: Separate composer controls for context usage (including cache reuse, compaction count, and Orchestrator per-model context bars) and live generation speed (`tok/s`, TTFT, and model vs. tool timing), including zero-footprint remote session, subagent, and dashboard telemetry in OpenSSH remote windows (`SSH: ...`).
 - **Lossless session branching and message editing**: Fork a new chat from any historical reply with full prior steps and tool records preserved, or open the native composer in place to edit a sent message and regenerate.
 - **Task progress, persistent outline, and taskbar unread reminders**: Track checklist completion, recent tool activity, and elapsed time in the right Overview panel, keep the left turn outline visible, and surface unread counts with native taskbar highlighting when background turns finish.
 - **Multilingual UI (`English` / `简体中文` / `繁體中文`)**: Switch between English, Simplified Chinese, and Traditional Chinese across Powertools panels and common native Antigravity menus and settings without first-paint flicker.
@@ -125,6 +125,7 @@ Two independent controls sit in the composer (each can be toggled separately in 
 
 - **Context breakdown and Orchestrator view**: Displays actual input token usage and compaction count from the latest generation, split across Messages, System prompt, System tools, Skills, and Free space, plus cached vs. new input tokens for the step. In Orchestrator mode, separate context bars are shown for the planning and execution models.
 - **Dynamic speed gauge and session telemetry**: Deflects the gauge needle and color by generation rate; clicking opens turn and step counts, total tokens, average / peak / latest speed (`tok/s`), cache hit rate, estimated 5-minute cache observation window, time to first token, and model vs. tool time.
+- **Remote SSH window telemetry**: In desktop `SSH: ...` remote windows, reuses your local OpenSSH configuration to run an on-demand, zero-disk-footprint read-only worker in memory on the remote host (using Antigravity's remote `agy-node` or system Node.js `>= 22.13`), bringing the context ring, speed gauge, Overview task progress, subagent stats, and usage dashboard to remote sessions without installing plugins or persistent daemons on the server.
 
 ### 3. Lossless session branching and inline message editing
 
