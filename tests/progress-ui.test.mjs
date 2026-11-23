@@ -64,3 +64,71 @@ test('progress integrates live phase into header, renders connected activity tra
   assert.ok(!doneText.includes('最近活动'));
   assert.ok(doneText.includes('0:25'));
 });
+
+test('progress supports native-style collapsing with compact status badge and persists state', () => {
+  const storage = new Map();
+  let stateVal;
+  let hookInit = false;
+  const R = {
+    createElement: (type, props, ...children) => ({ type, props: props || {}, children }),
+    useSyncExternalStore: (_, snapshot) => snapshot(),
+    useState: init => {
+      if (!hookInit) {
+        stateVal = typeof init === 'function' ? init() : init;
+        hookInit = true;
+      }
+      return [stateVal, next => { stateVal = typeof next === 'function' ? next(stateVal) : next; }];
+    }
+  };
+  const states = [];
+  let idx = 0;
+  R.useState = init => {
+    const i = idx++;
+    if (!(i in states)) states[i] = typeof init === 'function' ? init() : init;
+    return [states[i], next => { states[i] = typeof next === 'function' ? next(states[i]) : next; }];
+  };
+  const context = vm.createContext({
+    React: R,
+    dq: 'icon',
+    localStorage: { getItem: k => storage.get(k) ?? null, setItem: (k, v) => storage.set(k, String(v)) },
+    document: { createElement: () => ({ dataset: {}, remove() {} }), head: { append() {} } }
+  });
+  vm.runInContext(readFileSync(new URL('../lib/native-panels.js', import.meta.url), 'utf8'), context);
+  const panels = context.__agyPanels({
+    t: v => v,
+    options: () => ({ progress: true, language: 'zh-CN' }),
+    state: () => ({ conversationId: 'conv-1', progress: { status: 'complete', toolCount: 5, elapsedMs: 65000, recentActivity: [{ id: 'a1', label: 'Read app.js', status: 'complete', durationMs: 300 }] } }),
+    subscribe: () => () => {},
+    revision: () => 0
+  });
+  const findByTestId = (node, id) => {
+    if (!node || typeof node !== 'object') return null;
+    if (node.props?.['data-testid'] === id) return node;
+    for (const c of Array.isArray(node.children) ? node.children : [node.children]) {
+      const hit = findByTestId(c, id);
+      if (hit) return hit;
+    }
+    return null;
+  };
+  const collectText = node => typeof node === 'string' ? node : Array.isArray(node) ? node.map(collectText).join(' ') : (node && typeof node === 'object' ? collectText(node.children) : '');
+
+  idx = 0;
+  const expanded = panels.Progress();
+  const toggle = findByTestId(expanded, 'agy-progress-toggle');
+  assert.ok(toggle);
+  assert.equal(toggle.props['aria-expanded'], true);
+  assert.ok(collectText(expanded).includes('Read app.js'));
+
+  toggle.props.onClick();
+  assert.equal(storage.get('agy-powertools:ov-open:progress'), '0');
+
+  idx = 0;
+  const collapsed = panels.Progress();
+  const collapsedToggle = findByTestId(collapsed, 'agy-progress-toggle');
+  assert.equal(collapsedToggle.props['aria-expanded'], false);
+  const collapsedText = collectText(collapsed);
+  assert.ok(collapsedText.includes('任务进度'));
+  assert.ok(collapsedText.includes('已完成 1:05'));
+  assert.ok(!collapsedText.includes('Read app.js'));
+  assert.equal(collapsedText.includes('\u00b7'), false);
+});

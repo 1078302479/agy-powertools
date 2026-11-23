@@ -44,7 +44,7 @@ It addresses four common friction points in daily Antigravity usage:
 - **Codex-like conversation flow**: Same-font compact layout, plus live stage updates while tools run that automatically fold into the top duration bar once the turn completes.
 - **Context ring and dynamic speed gauge**: Separate composer controls for context usage (including cache reuse, compaction count, and Orchestrator per-model context bars) and live generation speed (`tok/s`, TTFT, and model vs. tool timing), including zero-footprint remote session, subagent, and dashboard telemetry in OpenSSH remote windows (`SSH: ...`).
 - **Lossless session branching and message editing**: Fork a new chat from any historical reply with full prior steps and tool records preserved, or open the native composer in place to edit a sent message and regenerate.
-- **Task progress, persistent outline, and taskbar unread reminders**: Track checklist completion, recent tool activity, and elapsed time in the right Overview panel, keep the left turn outline visible, and surface unread counts with native taskbar highlighting when background turns finish.
+- **Task progress, Overview quota, persistent outline, and unread badges**: Track collapsible checklist progress, recent tool activity, elapsed time, and optional active-account quota directly in the right Overview panel, keep the left turn outline visible, and surface unread counts in the window title when background turns finish.
 - **Multilingual UI (`English` / `简体中文` / `繁體中文`)**: Switch between English, Simplified Chinese, and Traditional Chinese across Powertools panels and common native Antigravity menus and settings without first-paint flicker.
 - **Local usage, error, and quota dashboard**: A dedicated `Powertools` sidebar page with a 53-week usage heatmap, model health timeline, token and cost donuts, request filters, one-click error copy, quota bars, and official API reference pricing.
 - **Multi-account switching and quota management (opt-in)**: Isolate and switch multiple Google accounts locally via the OS keyring without storing plaintext tokens; integrates a bottom-left sidebar switcher with the native Settings entry, 5H/weekly quota views, list/card layouts, drag reordering, credential verification, and optional auto-switch on depletion.
@@ -224,7 +224,7 @@ All options can be toggled live in **Powertools -> Settings** and persist automa
 | Always show conversation outline | On | Keeps the turn navigation rail visible in multi-turn chats even when Overview reserves space |
 | Keep Overview open when switching chats | On | Preserves the open state of the right Overview panel across chats |
 | Conversations per project | `Default (6)` | Controls how many conversations are shown per project in the sidebar (`Default (6)`, `1`, `2`, `3`, `4`, `5`, `10`, or `Show all`) before collapsing into "See all" |
-| Taskbar unread reminder | On | Shows unread count in the taskbar title and highlights the window when background chats finish |
+| Taskbar unread badge | On | Shows unread count in the window and taskbar title when background chats finish, clearing automatically on focus |
 
 ### Accounts & switching
 
@@ -243,7 +243,9 @@ All options can be toggled live in **Powertools -> Settings** and persist automa
 | Default Overview range | `Current weekly quota` | Default time range shown on the Powertools Overview tab (`Current weekly quota`, `Today`, `Last 24 hours`, `Yesterday`, `This week`, `This month`, `Last 30 days`, or `All time`) |
 | Context ring | On | Shows the context usage ring and breakdown popover in the composer (including step cache reuse and Orchestrator per-model context; ring-only at 0 usage) |
 | Speed & statistics | On | Shows a circular dynamic speed dial with latest throughput in the composer and opens session telemetry |
-| Task progress | On | Renders checklist progress, live execution phase (approval wait, retry reason, running tool, thinking, streaming), recent tool activity, and elapsed timer inside Overview |
+| Task progress | On | Renders a collapsible section in Overview for checklist progress, live execution phase (approval wait, retry reason, running tool, thinking, streaming), recent tool activity, and elapsed timer |
+| Show quota in Overview | Off | Opt-in. Displays a collapsible active-account quota section in the Overview panel with equal-width 5-hour and weekly pills (click to open the Quota tab) |
+| Composer quota halo | Off | Opt-in. Draws a perimeter quota halo around the composer using the lower remaining percentage of the active model's 5-hour and weekly limits, draining clockwise from the top-left (`>=50%` emerald, `20-49%` amber, `<20%` solid red) |
 | Subagent context & telemetry | On | Displays per-subagent model, context usage, tokens, cache hit rate, speed, and estimated cost in Overview subagent rows, subagent composer bars, and main composer popovers |
 | Turn duration | On | Displays completion duration at the top of each finished turn |
 | Expand tools from duration | On | Click the turn duration label to expand or collapse tool calls and stage updates |
@@ -281,6 +283,17 @@ All options can be toggled live in **Powertools -> Settings** and persist automa
 | `~/.gemini/antigravity/plugin_data/agy-powertools/` | User preferences (`settings.json`), component cache, and official pricing cache |
 
 ## Changelog
+
+### v2.13.7
+- **Added opt-in Composer quota halo and Overview quota panel (#18, disabled by default)**:
+  - Enable `Composer quota halo` under `Settings -> Telemetry & progress` to draw a subtle perimeter ring around each composer matching its selected model group (automatically using the lower remaining percentage of its 5-hour and weekly limits). The ring drains clockwise from the top-left and shifts from emerald (`>=50%`) to amber (`20-49%`) to steady red (`<20%`).
+  - Enable `Show quota in Overview` to show active-account 5-hour and weekly remaining quota in the right Overview panel using equal-width aligned pills that jump to the Quota tab on click.
+  - Upgraded both `Task progress` and `Quota` in Overview to native-style collapsible sections with persisted state and compact status/minimum-quota badges when collapsed.
+- **Incremental checkpoint calibration for multi-device weekly quota estimates (#19)**: Records per-cycle incremental checkpoints in `quota-samples.json` and excludes external quota drops observed with zero local requests, fixing underestimated weekly API-equivalent budgets when sharing one account across Mac and Windows.
+- **Eliminated AV false positives and redundant hook subprocess spawns (#20)**:
+  - Removed the hidden Windows PowerShell `Add-Type` `FlashWindowEx` taskbar flashing call; `Taskbar unread badge` now uses pure window/taskbar title `(N)` counters with zero background PowerShell invocations.
+  - Disabled the legacy unused `agy-powertools-telemetry` hook in `hooks.json` so completed turns no longer spawn extra Node child processes.
+- **Expanded high-frequency native UI translations**: Added Simplified and Traditional Chinese translations for the sidebar project menu (`Copy Project Name`, `Project Settings`, `Reveal in Finder`, `Show in File Explorer`, `Delete Project`), permission approval options and dynamic rule templates, `Thought Process`, `Thought for Xs`, and `Step X of Y`.
 
 ### v2.13.6
 - **Streamlined the Overview Task Progress panel and activity trail**:

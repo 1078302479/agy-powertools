@@ -20,6 +20,12 @@ test('settings persist, merge safely, and reject unknown options without changin
     assert.equal(store.get().userBubblePreset, 'sage');
     assert.equal(store.get().userBubbleColor, '#3D7A64');
     store.set({ userBubbleTint: false, userBubblePreset: 'accent', userBubbleColor: '#2F75C3' });
+    assert.equal(store.get().overviewQuota, false);
+    assert.equal(store.get().composerQuotaHalo, false);
+    store.set({ overviewQuota: true, composerQuotaHalo: true });
+    assert.equal(store.get().overviewQuota, true);
+    assert.equal(store.get().composerQuotaHalo, true);
+    store.set({ overviewQuota: false, composerQuotaHalo: false });
     assert.equal(store.get().messageEdit, true);
     assert.equal(store.get().fileContextMenu, true);
     assert.equal(store.get().subagentTelemetry, true);

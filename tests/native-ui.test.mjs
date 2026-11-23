@@ -427,3 +427,62 @@ test('native-bindings resolves 2.34.0 notification hook without type:"add" and s
   const resolvedNoToast = makeEnv(null);
   assert.equal(resolvedNoToast.bindings.um, undefined);
 });
+
+test('overview mounts both progress and overviewQuota in stable order without insertBefore ping-pong', async () => {
+  const p = page(true);
+  p.context.location.pathname = '/c/conv-ov';
+  const children = [];
+  let insertCount = 0;
+  const syncSiblings = () => {
+    for (let i = 0; i < children.length; i++) children[i].nextSibling = children[i + 1] || null;
+  };
+  const overview = {
+    isConnected: true,
+    insertBefore(node, before) {
+      insertCount++;
+      const idx = children.indexOf(node);
+      if (idx >= 0) children.splice(idx, 1);
+      node.isConnected = true;
+      if (before && children.includes(before)) children.splice(children.indexOf(before), 0, node);
+      else children.push(node);
+      syncSiblings();
+    }
+  };
+  let observerCb = null;
+  let scheduled = null;
+  p.context.MutationObserver = class {
+    constructor(cb) { observerCb = cb; }
+    observe() {}
+    disconnect() {}
+  };
+  p.context.setTimeout = cb => { scheduled = cb; return 1; };
+  p.context.ReactDOM = { createRoot() { return { render() {}, unmount() {} }; } };
+  p.context.__agyNativeAdapter.installPage = () => true;
+  p.context.__agyPanels = () => ({ Page: () => null, Sidebar: () => null, Progress: () => null, OverviewQuota: () => null, dispose() {} });
+  p.context.__agyPowertoolsHost = raw => {
+    const req = JSON.parse(raw);
+    if (req.method === 'settings.get') {
+      queueMicrotask(() => p.context.__agyPowertoolsReceive(req.id, { enabled: true, progress: true, overviewQuota: true }));
+      return;
+    }
+    if (req.method === 'state') {
+      queueMicrotask(() => p.context.__agyPowertoolsReceive(req.id, { conversationId: 'conv-ov', turns: [], requests: [], progress: { status: 'complete', tasks: [] } }));
+      return;
+    }
+    queueMicrotask(() => p.context.__agyPowertoolsReceive(req.id, {}));
+  };
+  p.document.querySelector = sel => sel === '[data-testid="overview-panel"]' ? overview : null;
+  p.context.__agyInitialSettings = { enabled: true, progress: true, overviewQuota: true };
+  vm.runInContext(source, p.context);
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+  assert.equal(children.map(c => c.dataset.agyPowertoolsRoot).join(','), 'progress,overview-quota');
+  const stableCount = insertCount;
+  // Re-trigger mount cycles multiple times -> zero extra insertBefore mutations
+  for (let i = 0; i < 4; i++) {
+    observerCb?.([{ target: { closest: () => null } }]);
+    scheduled?.();
+  }
+  assert.equal(insertCount, stableCount);
+  p.context.__agyPowertools.dispose();
+});

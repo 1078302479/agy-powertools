@@ -348,6 +348,7 @@ function createPanelHarness(accountsData, opts = {}, hooks = {}) {
     renderOverview: dashboard => { activeComponent = 'overview'; hookIdx = 0; return panels.Overview({ dashboard }); },
     renderEventTable: (dashboard, errors = false) => { activeComponent = errors ? 'errors' : 'requests'; hookIdx = 0; return panels.EventTable({ dashboard, errors }); },
     renderSwitcher: () => { activeComponent = 'switcher'; hookIdx = 0; return panels.AccountSwitcher(); },
+    renderOverviewQuota: () => { activeComponent = 'overview-quota'; hookIdx = 0; return panels.OverviewQuota(); },
     renderQuotas: () => { activeComponent = 'quotas'; hookIdx = 0; return panels.Quotas(); },
     renderSettings: () => { activeComponent = 'settings'; hookIdx = 0; return panels.Settings(); },
     collectText,
@@ -783,6 +784,89 @@ test('quota tracker backfills multi-account timeline from existing quota-samples
     } finally {
       rmSync(singleDir, { recursive: true, force: true });
     }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('quota tracker uses incremental checkpoint calibration when cross-device usage occurs and OverviewQuota renders compact 5h/weekly pills', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agy-quota-multidev-'));
+  try {
+    const tracker = createQuotaTracker(dir);
+    const base = 1_795_400_000_000;
+    const weeklyReset = base + 6 * 86400_000;
+    const rates = [{ model: 'gemini-4-neon', input: 2, output: 12, cache: 0.2 }];
+    const mkReq = (id, ts, inputTokens = 1_000_000) => ({
+      id, model: 'Gemini 4 Neon (High)', timestampMs: ts, durationMs: 1000,
+      inputTokens, cacheReadTokens: 0, outputTokens: 50_000 // cost = $2 + $0.6 = $2.60
+    });
+
+    // Step 1: Another device (Mac) already spent 20% of the weekly quota before Windows starts (fraction = 0.80, 0 local requests)
+    const first = tracker.observe(
+      [{ buckets: [{ bucketId: 'gemini-weekly', window: 'weekly', remainingFraction: 0.80, resetTimeMs: weeklyReset }] }],
+      [],
+      rates,
+      base,
+      'alice@example.com'
+    );
+    assert.equal(first.estimates[0].estimateUsd, null);
+
+    // Step 2: Windows runs 4 local requests ($10.40 total) and weekly fraction drops 0.80 -> 0.72 (local delta = 0.08)
+    // True 100% weekly budget = $10.40 / 0.08 = $130 (naive whole-cycle would wrongly give $10.40 / 0.28 = $37.14!)
+    const winReqs = [1, 2, 3, 4].map(i => mkReq(`w${i}`, base + i * 60_000));
+    const second = tracker.observe(
+      [{ buckets: [{ bucketId: 'gemini-weekly', window: 'weekly', remainingFraction: 0.72, resetTimeMs: weeklyReset }] }],
+      winReqs,
+      rates,
+      base + 10 * 60_000,
+      'alice@example.com'
+    );
+    assert.equal(second.estimates[0].observedRequests, 4);
+    assert.ok(Math.abs(second.estimates[0].estimateUsd - 130) < 0.01, `Expected ~$130, got ${second.estimates[0].estimateUsd}`);
+
+    // Step 3: Another device spends 10% more mid-week (0.72 -> 0.62) with ZERO new local requests -> ignored cleanly!
+    const third = tracker.observe(
+      [{ buckets: [{ bucketId: 'gemini-weekly', window: 'weekly', remainingFraction: 0.62, resetTimeMs: weeklyReset }] }],
+      winReqs,
+      rates,
+      base + 3600_000,
+      'alice@example.com'
+    );
+    assert.ok(Math.abs(third.estimates[0].estimateUsd - 130) < 0.01);
+
+    // Step 4: OverviewQuota renders compact 5h + weekly pills when enabled and stays hidden when disabled
+    const accountMock = {
+      groups: [
+        {
+          displayName: 'Gemini Models',
+          buckets: [
+            { bucketId: 'gemini-weekly', window: 'weekly', remaining: { case: 'remainingFraction', value: 0.72 }, resetTime: { seconds: BigInt(Math.floor(weeklyReset / 1000)) } },
+            { bucketId: 'gemini-5h', window: '5h', remaining: { case: 'remainingFraction', value: 0.85 }, resetTime: { seconds: BigInt(Math.floor((base + 14400_000) / 1000)) } }
+          ]
+        }
+      ]
+    };
+    const offUi = createPanelHarness(null, { multiAccount: false, overviewQuota: false }, { account: accountMock });
+    assert.equal(offUi.renderOverviewQuota(), null);
+    const onUi = createPanelHarness(null, { multiAccount: false, overviewQuota: true }, { account: accountMock });
+    const qTree = onUi.renderOverviewQuota();
+    assert.ok(qTree);
+    const qText = onUi.collectText(qTree);
+    assert.ok(qText.includes('Gemini'));
+    assert.ok(qText.includes('85%'));
+    assert.ok(qText.includes('72%'));
+    assert.equal(qText.includes('\u00b7'), false);
+    const qToggle = onUi.find(qTree, 'agy-overview-quota-toggle');
+    assert.ok(qToggle);
+    assert.equal(qToggle.props['aria-expanded'], true);
+    qToggle.props.onClick();
+    const collapsedTree = onUi.renderOverviewQuota();
+    const collapsedToggle = onUi.find(collapsedTree, 'agy-overview-quota-toggle');
+    assert.equal(collapsedToggle.props['aria-expanded'], false);
+    const collapsedText = onUi.collectText(collapsedTree);
+    assert.ok(collapsedText.includes('当前额度'));
+    assert.ok(collapsedText.includes('72%'));
+    assert.ok(!collapsedText.includes('Gemini'));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
