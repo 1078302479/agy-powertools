@@ -20,6 +20,7 @@ import {
   scheduleRelaunchWithDebugPort,
   isRemoteSshEnvironment,
   resolveLocalFilePath,
+  resolveVerifiedLocalFilePath,
   isWindowsRunnableFile,
   openLocalFile,
   copyLocalFile,
@@ -359,7 +360,7 @@ test('Sidecar Aux Pane Web UI serves post-update prompt copy, enforces token aut
   }
 });
 
-test('resolveLocalFilePath parses local file URIs, strips fragments, and rejects remote hosts', () => {
+test('resolveLocalFilePath and resolveVerifiedLocalFilePath verify non-global IPs via DNS without domain suffix hardcoding', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'agy-file-uri-'));
   try {
     const file = join(dir, 'sample #1.md');
@@ -387,14 +388,41 @@ test('resolveLocalFilePath parses local file URIs, strips fragments, and rejects
     const encodedReadmeUri = `${rawReadmeUri.slice(0, readmeFragStart + 1)}${rawReadmeUri.slice(readmeFragStart + 1).replaceAll('/', '%2F')}%23installation`;
     assert.equal(resolveLocalFilePath(encodedReadmeUri), readmeInHashDir);
     assert.throws(() => resolveLocalFilePath('https://example.com/a.md'), /仅支持本地文件链接/);
-    assert.throws(() => resolveLocalFilePath('file://evil.example/share/a.md'), /仅支持本机文件路径/);
+    assert.throws(() => resolveLocalFilePath('file://evil.example/share/a.md'), /仅支持本机或局域网文件路径/);
+    assert.throws(() => resolveLocalFilePath('file://8.8.8.8/share/a.md', { platform: 'win32' }), /仅支持本机或局域网文件路径/);
+    assert.throws(() => resolveLocalFilePath('file://192.168.1.10/share/a.md', { platform: 'darwin' }), /仅支持本机或局域网文件路径/);
+    assert.equal(resolveLocalFilePath('file://192.168.1.10/share/%E4%BA%AE%E5%BA%A6%20%E5%AF%B9%E6%AF%94%E5%BA%A6.png', { platform: 'win32' }), '\\\\192.168.1.10\\share\\亮度 对比度.png');
+    assert.equal(resolveLocalFilePath('file:////192.168.1.10/share/shot.png', { platform: 'win32' }), '\\\\192.168.1.10\\share\\shot.png');
+    assert.equal(resolveLocalFilePath('file://100.64.1.2/media/clip.mp4', { platform: 'win32' }), '\\\\100.64.1.2\\media\\clip.mp4');
+    assert.equal(resolveLocalFilePath('file://wsl.localhost/Ubuntu-24.04/home/dev/a.txt', { platform: 'win32' }), '\\\\wsl.localhost\\Ubuntu-24.04\\home\\dev\\a.txt');
+    assert.equal(resolveLocalFilePath('file://wsl$/Ubuntu-24.04/home/dev/a.txt', { platform: 'win32' }), '\\\\wsl$\\Ubuntu-24.04\\home\\dev\\a.txt');
     assert.throws(() => resolveLocalFilePath(''), /文件路径无效/);
+
+    // Async DNS-before-SMB verification allows any hostname resolving strictly to non-global IPs (custom split-DNS, Tailscale MagicDNS, NetBIOS)
+    const dnsCalls = [];
+    const fakeLookup = async host => {
+      dnsCalls.push(host);
+      if (host === 'nas') return [{ address: '192.168.1.20', family: 4 }];
+      if (host === 'nas.mycompany.com') return [{ address: '10.20.30.40', family: 4 }];
+      if (host === 'synology.tail1a2b.ts.net') return [{ address: '100.64.2.9', family: 4 }, { address: 'fd7a:115c:a1e0::1', family: 6 }];
+      if (host === 'evil.example') return [{ address: '93.184.216.34', family: 4 }];
+      if (host === 'dual.example') return [{ address: '192.168.1.10', family: 4 }, { address: '8.8.8.8', family: 4 }];
+      throw new Error('ENOTFOUND');
+    };
+    assert.equal(await resolveVerifiedLocalFilePath('file://192.168.1.10/share/a.png', { platform: 'win32', lookup: fakeLookup }), '\\\\192.168.1.10\\share\\a.png');
+    assert.equal(dnsCalls.length, 0); // Literal IPs skip DNS completely
+    assert.equal(await resolveVerifiedLocalFilePath('file://nas/photos/test.png', { platform: 'win32', lookup: fakeLookup }), '\\\\nas\\photos\\test.png');
+    assert.equal(await resolveVerifiedLocalFilePath('file://nas.mycompany.com/share/doc.pdf', { platform: 'win32', lookup: fakeLookup }), '\\\\nas.mycompany.com\\share\\doc.pdf');
+    assert.equal(await resolveVerifiedLocalFilePath('file://synology.tail1a2b.ts.net/media/a.png', { platform: 'win32', lookup: fakeLookup }), '\\\\synology.tail1a2b.ts.net\\media\\a.png');
+    await assert.rejects(() => resolveVerifiedLocalFilePath('file://evil.example/share/a.md', { platform: 'win32', lookup: fakeLookup }), /仅支持本机或局域网文件路径/);
+    await assert.rejects(() => resolveVerifiedLocalFilePath('file://dual.example/share/a.md', { platform: 'win32', lookup: fakeLookup }), /仅支持本机或局域网文件路径/);
+    await assert.rejects(() => resolveVerifiedLocalFilePath('file://unknown-host/share/a.md', { platform: 'win32', lookup: fakeLookup }), /无法解析局域网主机路径/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test('openLocalFile dispatches platform commands and blocks runnable Windows files on open', () => {
+test('openLocalFile dispatches platform commands and blocks runnable Windows files on open', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'agy-open-file-'));
   try {
     const doc = join(dir, 'notes.md');
@@ -409,12 +437,12 @@ test('openLocalFile dispatches platform commands and blocks runnable Windows fil
       return { unref() {} };
     };
 
-    openLocalFile(pathToFileURL(doc).href, { action: 'open', platform: 'win32', spawnProcess: fakeSpawn });
-    openLocalFile(pathToFileURL(doc).href, { action: 'reveal', platform: 'win32', spawnProcess: fakeSpawn });
-    openLocalFile(pathToFileURL(commaFile).href, { action: 'reveal', platform: 'win32', spawnProcess: fakeSpawn });
-    openLocalFile(pathToFileURL(doc).href, { action: 'reveal', platform: 'darwin', spawnProcess: fakeSpawn });
-    openLocalFile(pathToFileURL(doc).href, { action: 'reveal', platform: 'linux', spawnProcess: fakeSpawn });
-    openLocalFile(pathToFileURL(script).href, { action: 'reveal', platform: 'win32', spawnProcess: fakeSpawn });
+    await openLocalFile(pathToFileURL(doc).href, { action: 'open', platform: 'win32', spawnProcess: fakeSpawn });
+    await openLocalFile(pathToFileURL(doc).href, { action: 'reveal', platform: 'win32', spawnProcess: fakeSpawn });
+    await openLocalFile(pathToFileURL(commaFile).href, { action: 'reveal', platform: 'win32', spawnProcess: fakeSpawn });
+    await openLocalFile(pathToFileURL(doc).href, { action: 'reveal', platform: 'darwin', spawnProcess: fakeSpawn });
+    await openLocalFile(pathToFileURL(doc).href, { action: 'reveal', platform: 'linux', spawnProcess: fakeSpawn });
+    await openLocalFile(pathToFileURL(script).href, { action: 'reveal', platform: 'win32', spawnProcess: fakeSpawn });
 
     assert.deepEqual(calls[0], { cmd: 'explorer.exe', args: [doc], opts: { detached: true, stdio: 'ignore' } });
     assert.deepEqual(calls[1], { cmd: 'explorer.exe', args: [`/select,${doc}`], opts: { detached: true, stdio: 'ignore' } });
@@ -423,10 +451,24 @@ test('openLocalFile dispatches platform commands and blocks runnable Windows fil
     assert.deepEqual(calls[4], { cmd: 'xdg-open', args: [dir], opts: { detached: true, stdio: 'ignore' } });
     assert.deepEqual(calls[5], { cmd: 'explorer.exe', args: [`/select,${script}`], opts: { detached: true, stdio: 'ignore' } });
 
+    // Windows LAN UNC paths with spaces quote cleanly for explorer /select
+    await openLocalFile('file://192.168.1.10/share/a%20b.png', {
+      action: 'reveal',
+      platform: 'win32',
+      spawnProcess: fakeSpawn,
+      exists: () => true,
+      stat: () => ({ isDirectory: () => false })
+    });
+    assert.deepEqual(calls[6], {
+      cmd: 'explorer.exe',
+      args: ['/select,"\\\\192.168.1.10\\share\\a b.png"'],
+      opts: { detached: true, stdio: 'ignore', windowsVerbatimArguments: true }
+    });
+
     assert.equal(isWindowsRunnableFile(script), true);
     assert.equal(isWindowsRunnableFile(doc), false);
-    assert.throws(() => openLocalFile(pathToFileURL(script).href, { action: 'open', platform: 'win32', spawnProcess: fakeSpawn }), /可能直接执行/);
-    assert.throws(() => openLocalFile(pathToFileURL(doc).href, { action: 'delete', spawnProcess: fakeSpawn }), /不支持的文件操作/);
+    await assert.rejects(() => openLocalFile(pathToFileURL(script).href, { action: 'open', platform: 'win32', spawnProcess: fakeSpawn }), /可能直接执行/);
+    await assert.rejects(() => openLocalFile(pathToFileURL(doc).href, { action: 'delete', spawnProcess: fakeSpawn }), /不支持的文件操作/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -566,7 +608,7 @@ test('scheduleRelaunchWithDebugPort reads saved proxy settings across platforms 
   }
 });
 
-test('readLocalFileForAttach returns base64 media for images/PDFs, mentions for code/folders/oversized, and rejects missing or remote URIs', () => {
+test('readLocalFileForAttach returns base64 media for images/PDFs, mentions for code/folders/oversized, and rejects missing or remote URIs', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'agy-attach-'));
   try {
     const imgPath = join(dir, 'sample.png');
@@ -579,33 +621,33 @@ test('readLocalFileForAttach returns base64 media for images/PDFs, mentions for 
     const subDir = join(dir, 'folder');
     mkdirSync(subDir);
 
-    const imgRes = readLocalFileForAttach(pathToFileURL(imgPath).href);
+    const imgRes = await readLocalFileForAttach(pathToFileURL(imgPath).href);
     assert.equal(imgRes.mode, 'media');
     assert.equal(imgRes.mimeType, 'image/png');
     assert.equal(imgRes.name, 'sample.png');
     assert.equal(imgRes.base64, imgBytes.toString('base64'));
 
-    const pdfRes = readLocalFileForAttach(pathToFileURL(pdfPath).href);
+    const pdfRes = await readLocalFileForAttach(pathToFileURL(pdfPath).href);
     assert.equal(pdfRes.mode, 'media');
     assert.equal(pdfRes.mimeType, 'application/pdf');
 
-    const oversizedRes = readLocalFileForAttach(pathToFileURL(imgPath).href, { maxMediaBytes: 4 });
+    const oversizedRes = await readLocalFileForAttach(pathToFileURL(imgPath).href, { maxMediaBytes: 4 });
     assert.equal(oversizedRes.mode, 'mention');
     assert.equal(oversizedRes.oversized, true);
     assert.equal(oversizedRes.base64, undefined);
 
-    const codeRes = readLocalFileForAttach(pathToFileURL(codePath).href);
+    const codeRes = await readLocalFileForAttach(pathToFileURL(codePath).href);
     assert.equal(codeRes.mode, 'mention');
     assert.equal(codeRes.kind, 'file');
     assert.equal(codeRes.isDirectory, false);
 
-    const dirRes = readLocalFileForAttach(pathToFileURL(subDir).href);
+    const dirRes = await readLocalFileForAttach(pathToFileURL(subDir).href);
     assert.equal(dirRes.mode, 'mention');
     assert.equal(dirRes.kind, 'directory');
     assert.equal(dirRes.isDirectory, true);
 
-    assert.throws(() => readLocalFileForAttach(pathToFileURL(join(dir, 'missing.png')).href), /不存在/);
-    assert.throws(() => readLocalFileForAttach('https://example.com/a.png'), /仅支持本地文件/);
+    await assert.rejects(() => readLocalFileForAttach(pathToFileURL(join(dir, 'missing.png')).href), /不存在/);
+    await assert.rejects(() => readLocalFileForAttach('https://example.com/a.png'), /仅支持本地文件/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

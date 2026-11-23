@@ -284,6 +284,11 @@ All options can be toggled live in **Powertools -> Settings** and persist automa
 
 ## Changelog
 
+### v2.13.9
+- **Added Windows LAN NAS / SMB share (UNC) support for the file context menu**:
+  - Separated RFC 8089 `file:` URI parsing (including 2-slash and 4-slash UNC forms) from network-level trust verification. Before touching SMB or the filesystem, verifies literal IPs or resolves hostnames via `dns.lookup` and allows access only when every resolved IP falls within IANA non-global address space (covering LAN IPs, NetBIOS names, split-DNS internal domains, Tailscale/VPN private IPs, and RFC 6761 `*.localhost` / `wsl$`) with no hardcoded domain suffix list, while continuing to block public Internet hosts against NTLM credential leaks.
+  - Properly quotes Windows UNC paths containing spaces when calling `explorer.exe /select`, enabling Open, Show in folder, Copy file, Copy path, and Attach to chat on NAS shares.
+
 ### v2.13.8
 - **Fixed composer quota halo wrapping header bars on New Chat**: Mounted the halo directly on `.surface-composer-card` instead of the outer `.surface-composer` container so project/branch bars above the input box are never outlined.
 - **Added `Quota halo window` selector**: When `Composer quota halo` is enabled, choose between `Auto (lower)`, `Weekly limit`, or `5-hour limit` (falling back safely if a model group only exposes one window).
