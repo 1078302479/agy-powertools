@@ -68,6 +68,7 @@ test('macOS and Linux credential vaults use stdin pipes for secrets and never pa
   const linuxCalls = [];
   const linuxVault = createCredentialVault({
     platform: 'linux',
+    wsl: false,
     runSpawn(cmd, args, opts) {
       linuxCalls.push({ cmd, args, inputText: opts?.input ? Buffer.from(opts.input).toString('utf8') : '' });
       if (args[0] === 'lookup') return { status: 0, stdout: Buffer.from('linux-token') };

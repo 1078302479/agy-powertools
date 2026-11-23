@@ -284,6 +284,12 @@ All options can be toggled live in **Powertools -> Settings** and persist automa
 
 ## Changelog
 
+### v2.14.0
+- **Native support for Windows Antigravity + WSL2 backend mode (#21, thanks `@Hopeless` for the architecture design and real-machine verification)**:
+  - **WSL2 detection and zero-config NAT/Mirrored CDP bridge**: Automatically resolves Windows `%APPDATA%\Antigravity\DevToolsActivePort` via WSL Interop; tries direct loopback first (Mirrored mode) and falls back automatically to a persistent Windows `node.exe` / `agy-node.exe` multiplexed TCP-over-stdio bridge in default NAT mode with page-context component discovery, requiring no `.wslconfig` or TUN routing changes.
+  - **WSL2 hybrid multi-account vault and runtime capability probing**: Added `vault.probe()` with explicit error reporting for headless Linux without `secret-tool` / Secret Service; in WSL2, reads/writes `~/.gemini/jetski-standalone-oauth-token` and `~/.config/antigravity/credential-user-scope` atomically (`0600`) while storing encrypted backup slots in Windows Credential Manager via stdin + `WSLENV` under an isolated `agy-powertools:wsl:<distro>:account:<id>` namespace.
+  - **Windows shortcut & relaunch delegation with graceful fallback**: Delegates `.lnk` maintenance, post-update prompts, and `Antigravity.exe` relaunches to Windows `powershell.exe` from WSL2; if automatic relaunch fails after switching credentials, surfaces `manualRestartRequired` cleanly instead of failing the switch; adds a non-login-shell `nvm` hint in the installer when no standard system `node` exists, and prunes dead-PID runtime JSON records on sidecar startup.
+
 ### v2.13.9
 - **Added Windows LAN NAS / SMB share (UNC) support for the file context menu**:
   - Separated RFC 8089 `file:` URI parsing (including 2-slash and 4-slash UNC forms) from network-level trust verification. Before touching SMB or the filesystem, verifies literal IPs or resolves hostnames via `dns.lookup` and allows access only when every resolved IP falls within IANA non-global address space (covering LAN IPs, NetBIOS names, split-DNS internal domains, Tailscale/VPN private IPs, and RFC 6761 `*.localhost` / `wsl$`) with no hardcoded domain suffix list, while continuing to block public Internet hosts against NTLM credential leaks.

@@ -286,6 +286,12 @@ sh ./uninstall.sh
 
 ## 更新日志
 
+### v2.14.0
+- **原生支持 Windows Antigravity + WSL2 后端模式（#21，感谢 `@Hopeless` 的完整方案设计与真机测试）**：
+  - **WSL2 识别与零配置 CDP 接入**：自动识别 WSL2 并定位 Windows 侧 `%APPDATA%\Antigravity\DevToolsActivePort`；优先直连 `127.0.0.1`（兼容 Mirrored 模式），默认 NAT 网络下自动通过 WSL Interop 拉起持久化 Windows `node.exe` / `agy-node.exe` 多路复用 TCP-over-stdio 桥接（页面组件发现自动走页面上下文 `fallbackFetch`），无需修改 `.wslconfig` 或改动 TUN 代理路由。
+  - **WSL2 混合多账号凭据库与运行期能力探测**：新增 `vault.probe()` 探测并透出真实报错原因（无 `secret-tool` / 桌面密钥环的纯无头 Linux 会明确提示）；WSL2 下活跃态原子 `0600` 成对读写 `~/.gemini/jetski-standalone-oauth-token` 与 `~/.config/antigravity/credential-user-scope`，备份槽位经 `stdin` + `WSLENV` 存入 Windows 凭据管理器并按 `agy-powertools:wsl:<distro>:account:<id>` 命名空间隔离，绝不落明文、不与 Windows 本机串号。
+  - **Windows 快捷方式、客户端重启委托与优雅降级**：WSL2 下安装、升级提示与切号自动重启均委托 Windows `powershell.exe` 维护 `.lnk` 与重启 `Antigravity.exe`；切号写完凭据后若自动重启失败改为返回 `manualRestartRequired` 提示手动重启（全平台生效）；安装器补充 WSL2 非系统路径 `nvm` Node 提示，并在 sidecar 启动时自动清理失活 PID 的旧运行态文件。
+
 ### v2.13.9
 - **文件右键菜单支持 Windows 局域网 NAS / SMB 共享路径（UNC）**：
   - 将 `file://` 路径解析与安全校验解耦，遵循 RFC 8089 兼容 2 斜杠与 4 斜杠 UNC URI；在触碰 SMB 之前通过字面量 IP 校验与系统 `dns.lookup` 核验所有解析结果均属于 IANA 非公网路由地址（覆盖局域网 IP、NetBIOS 短名、自定义内网域名、Tailscale / VPN 私网及 RFC 6761 `*.localhost` / `wsl$`），无需硬编码域名后缀表，同时继续拦截公网主机防止 NTLM 凭据外泄。
