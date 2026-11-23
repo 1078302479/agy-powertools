@@ -206,6 +206,10 @@ sh ./install.sh
 
 ## 更新日志
 
+### v2.14.1
+- **修复子智能体或后台任务运行中「任务进度」误显已完成的问题**：主会话挂起等待子智能体或非守护后台任务完成时保持运行状态，并细分为「子智能体运行中」和「等待后台任务完成」阶段（常驻守护进程仍正常结束）；同步支持同轮内 `SYSTEM_MESSAGE` 唤醒后的实时状态识别，以及未读角标与自动切号判定对齐。
+- **补全 Swarm 面板汉化**：补充非会话页引导语、蜂巢图例、成员与动态计数、任务完成度、导出进度与动态 tooltip 翻译（保留主界面 `Swarm` 入口原文与正文保护）。
+
 ### v2.14.0
 - **支持 Windows Antigravity + WSL2 后端模式（#21，感谢 `@Hopeless` 的方案设计与真机测试）**：
   - 自动识别 WSL2 并定位 Windows 侧 `%APPDATA%\Antigravity\DevToolsActivePort`；优先直连 `127.0.0.1`（兼容 Mirrored），默认 NAT 下自动通过 Windows `node.exe` / `agy-node.exe` 建立 TCP-over-stdio 桥接。
