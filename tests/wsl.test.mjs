@@ -195,6 +195,19 @@ test('WSL2 hybrid credential vault pairs file active state with isolated Windows
     assert.equal(readFileSync(tokenPath, 'utf8'), 'oauth-token-alpha\n');
     assert.equal(readFileSync(scopePath, 'utf8'), 'scope-alpha');
 
+    // WSL2 hybrid vault blocks mismatched expectedEmail on both saveActiveTo and restoreToActive
+    const betaJson = JSON.stringify({ token: { access_token: 'a' }, id_token_email: 'beta@example.com' });
+    writeFileSync(tokenPath, betaJson, 'utf8');
+    assert.equal(vault.inspectActive().email, 'beta@example.com');
+    const wslMismatchSave = vault.saveActiveTo('acct-alpha', { expectedEmail: 'alpha@example.com' });
+    assert.equal(wslMismatchSave.ok, false);
+    assert.equal(wslMismatchSave.mismatch, true);
+    assert.equal(wslMismatchSave.actualEmail, 'beta@example.com');
+    assert.equal(vault.saveActiveTo('acct-beta', { expectedEmail: 'beta@example.com' }).ok, true);
+    const wslMismatchRestore = vault.restoreToActive('acct-beta', { expectedEmail: 'alpha@example.com' });
+    assert.equal(wslMismatchRestore.ok, false);
+    assert.equal(wslMismatchRestore.mismatch, true);
+
     // Headless Linux without secret-tool reports clear probe failure and error reason
     const headlessVault = createCredentialVault({
       platform: 'linux',

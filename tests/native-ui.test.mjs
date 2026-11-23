@@ -486,3 +486,115 @@ test('overview mounts both progress and overviewQuota in stable order without in
   assert.equal(insertCount, stableCount);
   p.context.__agyPowertools.dispose();
 });
+
+test('startAddAccount awaits active sync and calls accounts.completeAdd, and refreshAccount skips quota.observe on credentialMismatch', async () => {
+  const p = page(true);
+  let capturedEnv = null;
+  let currentEmail = 'alpha@example.com';
+  const calls = [];
+  let mismatchNextSync = false;
+  let quotaRemaining = 0.9;
+
+  p.context.ReactDOM = { createRoot() { return { render() {}, unmount() {} }; } };
+  p.context.__agyNativeAdapter.installPage = () => true;
+  p.context.__agyNativeAdapter.capabilities = () => ({
+    email: currentEmail,
+    name: currentEmail.split('@')[0],
+    plan: 'Google AI Ultra',
+    planId: 'g1-ultra-tier'
+  });
+  p.context.__agyNativeAdapter.service = () => ({
+    retrieveUserQuotaSummary: async () => ({
+      response: {
+        groups: [{
+          displayName: 'Gemini Models',
+          buckets: [{ bucketId: 'gemini-5h', window: '5h', remaining: { case: 'remainingFraction', value: quotaRemaining }, resetTime: null }]
+        }]
+      }
+    })
+  });
+  p.context.__agyNativeAdapter.startAccountLogin = async () => {
+    currentEmail = 'beta@example.com';
+    return { ok: true, email: currentEmail };
+  };
+  p.context.__agyPanels = env => {
+    capturedEnv = env;
+    return { Page: () => null, Sidebar: () => null, AccountSwitcher: () => null, dispose() {} };
+  };
+  p.context.__agyPowertoolsHost = raw => {
+    const req = JSON.parse(raw);
+    calls.push(req);
+    queueMicrotask(() => {
+      if (req.method === 'settings.get') {
+        p.context.__agyPowertoolsReceive(req.id, { enabled: true, multiAccount: true, autoSwitchAccount: true, language: 'zh-CN' });
+      } else if (req.method === 'accounts.autoSwitchCandidate') {
+        p.context.__agyPowertoolsReceive(req.id, { candidate: { id: 'acct-a', email: 'alpha@example.com', name: 'Alpha' }, cooldownRemainingMs: 0 });
+      } else if (req.method === 'accounts.prepareAdd') {
+        p.context.__agyPowertoolsReceive(req.id, { ok: true, backedUpId: 'acct-a', prevCredHash: 'HASH_A', activeId: 'acct-a', accounts: [{ id: 'acct-a', email: 'alpha@example.com', hasCredential: true }] });
+      } else if (req.method === 'accounts.syncActive') {
+        if (mismatchNextSync) {
+          p.context.__agyPowertoolsReceive(req.id, {
+            activeId: 'acct-b',
+            accounts: [{ id: 'acct-b', email: 'beta@example.com', hasCredential: true }],
+            credentialMismatch: { uiEmail: 'beta@example.com', credentialEmail: 'alpha@example.com' }
+          });
+        } else {
+          p.context.__agyPowertoolsReceive(req.id, {
+            activeId: 'acct-b',
+            accounts: [
+              { id: 'acct-a', email: 'alpha@example.com', hasCredential: true },
+              { id: 'acct-b', email: 'beta@example.com', hasCredential: true }
+            ]
+          });
+        }
+      } else if (req.method === 'accounts.completeAdd') {
+        p.context.__agyPowertoolsReceive(req.id, {
+          ok: true,
+          relaunching: false,
+          manualRestartRequired: true,
+          account: { id: 'acct-b', email: 'beta@example.com', name: 'beta' },
+          activeId: 'acct-b',
+          accounts: [
+            { id: 'acct-a', email: 'alpha@example.com', hasCredential: true },
+            { id: 'acct-b', email: 'beta@example.com', hasCredential: true }
+          ]
+        });
+      } else {
+        p.context.__agyPowertoolsReceive(req.id, { ok: true });
+      }
+    });
+  };
+  p.context.__agyInitialSettings = { enabled: true, multiAccount: true, autoSwitchAccount: true, language: 'zh-CN' };
+  vm.runInContext(source, p.context);
+  await new Promise(r => setTimeout(r, 20));
+  assert.ok(capturedEnv);
+
+  // Even when the newly signed-in account has a depleted bucket and autoSwitchAccount is enabled,
+  // startAddAccount suppresses auto-switch so it never races with completeAdd / relaunch.
+  quotaRemaining = 0;
+  const addRes = await capturedEnv.startAddAccount('Backup');
+  assert.equal(addRes.ok, true);
+  assert.equal(addRes.manualRestartRequired, true);
+  assert.equal(calls.some(c => c.method === 'accounts.autoSwitchCandidate'), false);
+  assert.equal(p.context.document.querySelector('[data-testid="agy-autoswitch-banner"]'), null);
+  quotaRemaining = 0.9;
+  const methods = calls.map(c => c.method);
+  const prepIdx = methods.indexOf('accounts.prepareAdd');
+  const syncIdx = methods.lastIndexOf('accounts.syncActive');
+  const completeIdx = methods.indexOf('accounts.completeAdd');
+  assert.ok(prepIdx >= 0 && syncIdx > prepIdx && completeIdx > syncIdx, `Expected prepareAdd -> syncActive -> completeAdd, got ${methods.join(',')}`);
+  const completeCall = calls[completeIdx];
+  assert.equal(completeCall.email, 'beta@example.com');
+  assert.equal(completeCall.prevEmail, 'alpha@example.com');
+  assert.equal(completeCall.prevCredHash, 'HASH_A');
+  assert.equal(completeCall.relaunch, true);
+
+  // When syncActive reports credentialMismatch, refreshAccount MUST NOT call quota.observe
+  const beforeObserve = calls.filter(c => c.method === 'quota.observe').length;
+  mismatchNextSync = true;
+  await capturedEnv.refreshAccountQuotas('acct-b');
+  const afterObserve = calls.filter(c => c.method === 'quota.observe').length;
+  assert.equal(afterObserve, beforeObserve);
+
+  p.context.__agyPowertools.dispose();
+});
