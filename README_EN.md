@@ -245,7 +245,7 @@ All options can be toggled live in **Powertools -> Settings** and persist automa
 | Speed & statistics | On | Shows a circular dynamic speed dial with latest throughput in the composer and opens session telemetry |
 | Task progress | On | Renders a collapsible section in Overview for checklist progress, live execution phase (approval wait, retry reason, running tool, thinking, streaming), recent tool activity, and elapsed timer |
 | Show quota in Overview | Off | Opt-in. Displays a collapsible active-account quota section in the Overview panel with equal-width 5-hour and weekly pills (click to open the Quota tab) |
-| Composer quota halo | Off | Opt-in. Draws a perimeter quota halo around the composer using the lower remaining percentage of the active model's 5-hour and weekly limits, draining clockwise from the top-left (`>=50%` emerald, `20-49%` amber, `<20%` solid red) |
+| Composer quota halo | Off | Opt-in. Draws a perimeter quota halo around the composer card for the active model, draining clockwise from the top-left (`>=50%` emerald, `20-49%` amber, `<20%` solid red); when enabled, choose `Quota halo window` (`Auto (lower)` / `Weekly limit` / `5-hour limit`) |
 | Subagent context & telemetry | On | Displays per-subagent model, context usage, tokens, cache hit rate, speed, and estimated cost in Overview subagent rows, subagent composer bars, and main composer popovers |
 | Turn duration | On | Displays completion duration at the top of each finished turn |
 | Expand tools from duration | On | Click the turn duration label to expand or collapse tool calls and stage updates |
@@ -283,6 +283,11 @@ All options can be toggled live in **Powertools -> Settings** and persist automa
 | `~/.gemini/antigravity/plugin_data/agy-powertools/` | User preferences (`settings.json`), component cache, and official pricing cache |
 
 ## Changelog
+
+### v2.13.8
+- **Fixed composer quota halo wrapping header bars on New Chat**: Mounted the halo directly on `.surface-composer-card` instead of the outer `.surface-composer` container so project/branch bars above the input box are never outlined.
+- **Added `Quota halo window` selector**: When `Composer quota halo` is enabled, choose between `Auto (lower)`, `Weekly limit`, or `5-hour limit` (falling back safely if a model group only exposes one window).
+- **Fixed Release notes Markdown rendering in About**: Replaced raw `<pre>` output under `Settings -> About -> Release notes` with a safe pure-React Markdown renderer supporting headings, nested lists, bold text, inline code, horizontal rules, and `https://` links.
 
 ### v2.13.7
 - **Added opt-in Composer quota halo and Overview quota panel (#18, disabled by default)**:

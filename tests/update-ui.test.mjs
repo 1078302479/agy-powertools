@@ -49,3 +49,29 @@ test('releases without an installable package expose the download page without a
   const ui=surface({status:'available',version:'2.13.0',canInstall:false,releaseUrl:'https://github.com/test/project/releases/tag/v2.13.0'});
   ui.find(ui.render(),'agy-check-update').props.onClick();await tick();const tree=ui.render();assert.equal(ui.find(tree,'agy-install-update'),null);assert.ok(ui.find(tree,'agy-update-download'));assert.equal(ui.calls.some(call=>call.method==='update.install'),false);
 });
+
+test('About renders GitHub release notes Markdown safely without raw syntax or unsafe links',async()=>{
+  const md=[
+    '## 中文说明',
+    '- **新增功能**：支持 `v2.13.7` [查看详情](https://github.com/WhiteBr1ck/agy-powertools)',
+    '  - 嵌套子项与 [恶意链接](javascript:alert(1))'
+  ].join('\n');
+  const ui=surface({status:'available',version:'2.13.8',canInstall:true,notes:md,releaseUrl:'https://github.com/WhiteBr1ck/agy-powertools/releases/tag/v2.13.8'});
+  ui.find(ui.render(),'agy-check-update').props.onClick();await tick();
+  const tree=ui.render();
+  const body=ui.find(tree,'agy-release-notes-body');
+  assert.ok(body);
+  const walk=(node,fn)=>{if(!node||typeof node!=='object')return;fn(node);for(const c of [].concat(node.children||[]))walk(c,fn);};
+  const tags=[],links=[],codes=[],strongs=[];
+  walk(body,n=>{
+    if(typeof n.type==='string')tags.push(n.type);
+    if(n.type==='a')links.push(n.props.href);
+    if(n.type==='code')codes.push(n.children[0]);
+    if(n.type==='strong')strongs.push(n.children[0]);
+  });
+  assert.ok(tags.includes('h4'));
+  assert.ok(tags.includes('ul'));
+  assert.deepEqual(strongs,['新增功能']);
+  assert.deepEqual(codes,['v2.13.7']);
+  assert.deepEqual(links,['https://github.com/WhiteBr1ck/agy-powertools']);
+});
