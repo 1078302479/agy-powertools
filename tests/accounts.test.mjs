@@ -871,3 +871,143 @@ test('quota tracker uses incremental checkpoint calibration when cross-device us
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('createAccountsStore blocks cross-account credential clobbering on email mismatch and relaunches cleanly on completeAdd', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agy-accounts-mismatch-'));
+  let clock = 1_795_400_000_000;
+  let relaunches = 0;
+  const makeToken = (email, rev) => JSON.stringify({
+    token: { access_token: `acc-${email}-${rev}`, refresh_token: `rt-${email}` },
+    auth_method: 'consumer',
+    id_token_email: email
+  });
+  const emailOf = raw => {
+    try { return JSON.parse(raw).id_token_email.toLowerCase(); } catch { return ''; }
+  };
+  const slots = new Map([['gemini:antigravity', makeToken('alpha@example.com', 1)]]);
+  const hashOf = v => `H_${String(v)}`;
+  const vault = {
+    supported: true,
+    slots,
+    has: t => slots.has(t),
+    inspect(t) {
+      if (!slots.has(t)) return { exists: false, hash: '' };
+      const raw = slots.get(t);
+      const email = emailOf(raw);
+      return { exists: true, hash: hashOf(raw), ...(email ? { email } : {}) };
+    },
+    copy(from, to, { expectedEmail = '' } = {}) {
+      if (!slots.has(from)) return { ok: false, error: 'missing source' };
+      const raw = slots.get(from);
+      const actualEmail = emailOf(raw);
+      const expected = String(expectedEmail || '').trim().toLowerCase();
+      if (expected && actualEmail && actualEmail !== expected) {
+        return { ok: false, mismatch: true, actualEmail, expectedEmail: expected, error: 'mismatch' };
+      }
+      slots.set(to, raw);
+      return { ok: true, bytes: raw.length, hash: hashOf(raw), ...(actualEmail ? { email: actualEmail } : {}) };
+    },
+    remove: t => { slots.delete(t); return { ok: true }; },
+    saveActiveTo(id, opts) { return this.copy('gemini:antigravity', `agy-powertools:account:${id}`, opts); },
+    restoreToActive(id, opts) { return this.copy(`agy-powertools:account:${id}`, 'gemini:antigravity', opts); },
+    hasSaved(id) { return this.has(`agy-powertools:account:${id}`); },
+    inspectSaved(id) { return this.inspect(`agy-powertools:account:${id}`); },
+    inspectActive() { return this.inspect('gemini:antigravity'); },
+    removeSaved(id) { return this.remove(`agy-powertools:account:${id}`); }
+  };
+
+  try {
+    const store = createAccountsStore(dir, {
+      now: () => clock,
+      vault,
+      relaunch: () => { relaunches++; return { scheduled: true }; }
+    });
+
+    // 1. Initial sync of alpha
+    const s1 = store.syncActive({
+      email: 'alpha@example.com',
+      name: 'Alpha',
+      groups: [{ displayName: 'Gemini Models', buckets: [{ bucketId: 'gemini-weekly', window: 'weekly', remainingFraction: 0.14, resetTimeMs: clock + 86400_000 }] }]
+    });
+    const alphaId = s1.activeId;
+
+    // 2. prepareAdd -> sign in as beta -> syncActive -> completeAdd triggers relaunch + pendingSwitch lock
+    const prep = store.prepareAdd({ pendingAlias: 'Ultra 20X' });
+    assert.equal(prep.backedUpId, alphaId);
+    assert.ok(prep.prevCredHash);
+    slots.set('gemini:antigravity', makeToken('beta@example.com', 1));
+    clock += 5_000;
+    const s2 = store.syncActive({
+      email: 'beta@example.com',
+      name: 'Beta',
+      groups: [{ displayName: 'Gemini Models', buckets: [{ bucketId: 'gemini-weekly', window: 'weekly', remainingFraction: 0.95, resetTimeMs: clock + 7 * 86400_000 }] }]
+    });
+    const betaId = s2.activeId;
+    assert.notEqual(betaId, alphaId);
+    assert.equal(s2.accounts.find(a => a.id === betaId).alias, 'Ultra 20X');
+
+    const completed = store.completeAdd({ email: 'beta@example.com', prevEmail: 'alpha@example.com', prevCredHash: prep.prevCredHash });
+    assert.equal(completed.ok, true);
+    assert.equal(completed.relaunching, true);
+    assert.equal(completed.manualRestartRequired, false);
+    assert.equal(relaunches, 1);
+
+    // Stale alpha UI poll during shutdown is ignored by pendingSwitch
+    const duringShutdown = store.syncActive({ email: 'alpha@example.com', name: 'Alpha' });
+    assert.equal(duringShutdown.activeId, betaId);
+    // Relaunched as beta clears pendingSwitch
+    store.syncActive({ email: 'beta@example.com', name: 'Beta' });
+
+    // 3. Simulate stale language_server refresh overwriting active keyring with a NEW alpha token (different hash!) while UI still displays beta
+    slots.set('gemini:antigravity', makeToken('alpha@example.com', 2));
+    clock += 3000_000;
+    const drifted = store.syncActive({
+      email: 'beta@example.com',
+      name: 'Beta',
+      groups: [{ displayName: 'Gemini Models', buckets: [{ bucketId: 'gemini-weekly', window: 'weekly', remainingFraction: 0.08, resetTimeMs: clock + 86400_000 }] }]
+    });
+    assert.deepEqual(drifted.credentialMismatch, { uiEmail: 'beta@example.com', credentialEmail: 'alpha@example.com' });
+    // Beta's vault slot and saved 95% quota MUST remain intact!
+    assert.equal(emailOf(slots.get(`agy-powertools:account:${betaId}`)), 'beta@example.com');
+    assert.equal(drifted.accounts.find(a => a.id === betaId).groups[0].buckets[0].remainingFraction, 0.95);
+
+    // When UI later catches up and flips to alpha, beta's vault slot stays valid (not wiped by duplicate hash!)
+    const reverted = store.syncActive({ email: 'alpha@example.com', name: 'Alpha' });
+    assert.equal(reverted.accounts.find(a => a.id === betaId).hasCredential, true);
+    assert.equal(reverted.accounts.find(a => a.id === alphaId).hasCredential, true);
+
+    // 4. Even if beta's slot was previously corrupted with an alpha token of a DIFFERENT hash, refreshCredentials & switchAccount catch it via id_token_email
+    slots.set(`agy-powertools:account:${betaId}`, makeToken('alpha@example.com', 3));
+    const check = store.refreshCredentials({ accountId: betaId });
+    assert.equal(check.valid, 0);
+    assert.equal(check.invalid, 1);
+    assert.equal(check.account.hasCredential, false);
+    assert.throws(() => store.switchAccount(betaId), /不一致|重新登录/);
+
+    // 5. prepareAdd does not deadlock when active keyring already mismatches displayed account
+    slots.set('gemini:antigravity', makeToken('alpha@example.com', 4));
+    const prepMismatch = store.prepareAdd();
+    assert.equal(prepMismatch.ok, true);
+
+    // 6. completeAdd does NOT relaunch when nothing changed (cancelled login), and DOES relaunch on same-email token rotation
+    const unchanged = store.completeAdd({
+      email: 'alpha@example.com',
+      prevEmail: 'alpha@example.com',
+      prevCredHash: vault.inspectActive().hash
+    });
+    assert.equal(unchanged.relaunching, false);
+    assert.equal(relaunches, 1);
+
+    const prevHash = vault.inspectActive().hash;
+    slots.set('gemini:antigravity', makeToken('alpha@example.com', 5));
+    const rotated = store.completeAdd({
+      email: 'alpha@example.com',
+      prevEmail: 'alpha@example.com',
+      prevCredHash: prevHash
+    });
+    assert.equal(rotated.relaunching, true);
+    assert.equal(relaunches, 2);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

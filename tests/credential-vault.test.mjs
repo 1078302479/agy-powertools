@@ -4,6 +4,7 @@ import {
   ACTIVE_TARGET,
   ACTIVE_USERNAME,
   createCredentialVault,
+  extractCredentialEmail,
   vaultTargetFor
 } from '../lib/credential-vault.mjs';
 
@@ -79,4 +80,85 @@ test('macOS and Linux credential vaults use stdin pipes for secrets and never pa
   assert.equal(linuxVault.restoreToActive('acct-lin').ok, true);
   assert.equal(linuxCalls[2].args.includes('linux-token'), false);
   assert.equal(linuxCalls[2].inputText, 'linux-token');
+});
+
+test('credential vault extracts id_token_email and blocks mismatched writes across Linux, macOS, and Windows', () => {
+  const alphaPayload = JSON.stringify({
+    token: { access_token: 'tok-a', refresh_token: 'rt-a' },
+    auth_method: 'consumer',
+    id_token_email: 'Alpha@Example.com'
+  });
+  const wslEnvelope = JSON.stringify({
+    v: 1,
+    token: Buffer.from(alphaPayload, 'utf8').toString('base64'),
+    scope: null
+  });
+  assert.equal(extractCredentialEmail(alphaPayload), 'alpha@example.com');
+  assert.equal(extractCredentialEmail(Buffer.from(wslEnvelope, 'utf8')), 'alpha@example.com');
+  assert.equal(extractCredentialEmail('opaque-non-json-token'), '');
+
+  // Linux: inspect returns email, and mismatched saveActiveTo refuses without calling secret-tool store
+  const linuxOps = [];
+  const linuxVault = createCredentialVault({
+    platform: 'linux',
+    wsl: false,
+    runSpawn(cmd, args) {
+      linuxOps.push(args[0]);
+      if (args[0] === 'lookup') return { status: 0, stdout: Buffer.from(alphaPayload, 'utf8') };
+      return { status: 0, stdout: '' };
+    }
+  });
+  const inspected = linuxVault.inspectActive();
+  assert.equal(inspected.exists, true);
+  assert.equal(inspected.email, 'alpha@example.com');
+  const blocked = linuxVault.saveActiveTo('acct-beta', { expectedEmail: 'beta@example.com' });
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.mismatch, true);
+  assert.equal(blocked.actualEmail, 'alpha@example.com');
+  assert.equal(blocked.expectedEmail, 'beta@example.com');
+  assert.equal(linuxOps.includes('store'), false);
+  const allowed = linuxVault.saveActiveTo('acct-alpha', { expectedEmail: 'alpha@example.com' });
+  assert.equal(allowed.ok, true);
+  assert.equal(allowed.email, 'alpha@example.com');
+  assert.equal(linuxOps.includes('store'), true);
+
+  // macOS: mismatched restoreToActive refuses without calling security -i
+  const macOps = [];
+  const macVault = createCredentialVault({
+    platform: 'darwin',
+    runSpawn(_cmd, args) {
+      macOps.push(args[0]);
+      if (args.includes('-w')) return { status: 0, stdout: Buffer.from(alphaPayload + '\n', 'utf8') };
+      return { status: 0, stdout: '' };
+    }
+  });
+  assert.equal(macVault.inspectSaved('acct-alpha').email, 'alpha@example.com');
+  const macBlocked = macVault.restoreToActive('acct-beta', { expectedEmail: 'beta@example.com' });
+  assert.equal(macBlocked.ok, false);
+  assert.equal(macBlocked.mismatch, true);
+  assert.equal(macOps.includes('-i'), false);
+
+  // Windows: forwards AGY_CRED_EXPECTED_EMAIL and surfaces mismatch JSON cleanly
+  const winEnvs = [];
+  const winVault = createCredentialVault({
+    platform: 'win32',
+    runSpawn(_cmd, _args, opts) {
+      winEnvs.push(opts.env);
+      if (opts.env.AGY_CRED_OP === 'inspect') {
+        return { status: 0, stdout: '{"ok":true,"exists":true,"bytes":128,"hash":"AABBCCDDEEFF","email":"alpha@example.com"}\n', stderr: '' };
+      }
+      return {
+        status: 1,
+        stdout: '{"ok":false,"mismatch":true,"actualEmail":"alpha@example.com","expectedEmail":"beta@example.com","error":"credential email mismatch"}\n',
+        stderr: ''
+      };
+    }
+  });
+  assert.deepEqual(winVault.inspectSaved('acct-alpha'), { exists: true, hash: 'AABBCCDDEEFF', email: 'alpha@example.com' });
+  const winBlocked = winVault.saveActiveTo('acct-beta', { expectedEmail: 'Beta@Example.com' });
+  assert.equal(winBlocked.ok, false);
+  assert.equal(winBlocked.mismatch, true);
+  assert.equal(winBlocked.actualEmail, 'alpha@example.com');
+  assert.equal(winBlocked.expectedEmail, 'beta@example.com');
+  assert.equal(winEnvs[1].AGY_CRED_EXPECTED_EMAIL, 'beta@example.com');
 });
