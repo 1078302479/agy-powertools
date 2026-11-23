@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import {
   ACTIVE_TARGET,
   ACTIVE_USERNAME,
@@ -138,10 +139,11 @@ test('credential vault extracts id_token_email and blocks mismatched writes acro
   assert.equal(macBlocked.mismatch, true);
   assert.equal(macOps.includes('-i'), false);
 
-  // Windows: forwards AGY_CRED_EXPECTED_EMAIL and surfaces mismatch JSON cleanly
+  // Windows: forwards AGY_CRED_EXPECTED_EMAIL (and clears inherited value when omitted) and surfaces mismatch JSON cleanly
   const winEnvs = [];
   const winVault = createCredentialVault({
     platform: 'win32',
+    env: { AGY_CRED_EXPECTED_EMAIL: 'stale@example.com' },
     runSpawn(_cmd, _args, opts) {
       winEnvs.push(opts.env);
       if (opts.env.AGY_CRED_OP === 'inspect') {
@@ -155,10 +157,69 @@ test('credential vault extracts id_token_email and blocks mismatched writes acro
     }
   });
   assert.deepEqual(winVault.inspectSaved('acct-alpha'), { exists: true, hash: 'AABBCCDDEEFF', email: 'alpha@example.com' });
+  assert.equal(winEnvs[0].AGY_CRED_EXPECTED_EMAIL, '');
   const winBlocked = winVault.saveActiveTo('acct-beta', { expectedEmail: 'Beta@Example.com' });
   assert.equal(winBlocked.ok, false);
   assert.equal(winBlocked.mismatch, true);
   assert.equal(winBlocked.actualEmail, 'alpha@example.com');
   assert.equal(winBlocked.expectedEmail, 'beta@example.com');
   assert.equal(winEnvs[1].AGY_CRED_EXPECTED_EMAIL, 'beta@example.com');
+});
+
+test('Windows PowerShell WIN32_SCRIPT compiles Add-Type and extracts id_token_email across direct JSON, decoy keys, and WSL envelopes', { skip: process.platform !== 'win32' }, () => {
+  let capturedScript = '';
+  const probeVault = createCredentialVault({
+    platform: 'linux',
+    wsl: true,
+    runSpawn(cmd, args, opts) {
+      capturedScript = args[args.indexOf('-Command') + 1];
+      return spawnSync(cmd, args, { ...opts, timeout: 20000 });
+    }
+  });
+  const probed = probeVault.probe({ force: true });
+  assert.equal(probed.supported, true, `WIN32_SCRIPT probe failed: ${probed.reason}`);
+  assert.ok(capturedScript.includes('class AgyWinCred'));
+
+  const endMatch = capturedScript.match(/^"@/m);
+  assert.ok(endMatch && typeof endMatch.index === 'number');
+  const addTypeBlock = capturedScript.slice(0, endMatch.index + endMatch[0].length);
+  const directPayload = JSON.stringify({
+    token: { access_token: 'tok-a', refresh_token: 'rt-a' },
+    id_token_email: 'Alpha@Example.com'
+  });
+  const decoyPayload = JSON.stringify({
+    note: 'id_token_email',
+    other: 'decoy@example.com',
+    id_token_email: 'Real@Example.com'
+  });
+  const wslEnvelope = JSON.stringify({
+    v: 1,
+    token: Buffer.from(JSON.stringify({ id_token_email: 'Beta@Example.com' }), 'utf8').toString('base64'),
+    scope: null
+  });
+  const verifyScript = [
+    addTypeBlock,
+    '$cases = @($env:AGY_TEST_C1, $env:AGY_TEST_C2, $env:AGY_TEST_C3, $env:AGY_TEST_C4)',
+    '$out = foreach ($c in $cases) { [AgyWinCred]::ExtractEmail([System.Text.Encoding]::UTF8.GetBytes($c)) }',
+    'Write-Output ($out -join "|")'
+  ].join('\n');
+  const res = spawnSync(
+    'powershell.exe',
+    ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-Command', verifyScript],
+    {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 20000,
+      env: {
+        ...process.env,
+        AGY_TEST_C1: directPayload,
+        AGY_TEST_C2: decoyPayload,
+        AGY_TEST_C3: wslEnvelope,
+        AGY_TEST_C4: 'opaque-non-json-token'
+      }
+    }
+  );
+  assert.equal(res.status, 0, res.stderr || res.error?.message || 'powershell failed');
+  const line = String(res.stdout || '').trim().split(/\r?\n/).filter(Boolean).at(-1) || '';
+  assert.equal(line, 'alpha@example.com|real@example.com|beta@example.com|');
 });

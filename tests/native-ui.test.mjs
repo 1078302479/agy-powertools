@@ -493,6 +493,7 @@ test('startAddAccount awaits active sync and calls accounts.completeAdd, and ref
   let currentEmail = 'alpha@example.com';
   const calls = [];
   let mismatchNextSync = false;
+  let quotaRemaining = 0.9;
 
   p.context.ReactDOM = { createRoot() { return { render() {}, unmount() {} }; } };
   p.context.__agyNativeAdapter.installPage = () => true;
@@ -507,7 +508,7 @@ test('startAddAccount awaits active sync and calls accounts.completeAdd, and ref
       response: {
         groups: [{
           displayName: 'Gemini Models',
-          buckets: [{ bucketId: 'gemini-5h', window: '5h', remaining: { case: 'remainingFraction', value: 0.9 }, resetTime: null }]
+          buckets: [{ bucketId: 'gemini-5h', window: '5h', remaining: { case: 'remainingFraction', value: quotaRemaining }, resetTime: null }]
         }]
       }
     })
@@ -525,7 +526,9 @@ test('startAddAccount awaits active sync and calls accounts.completeAdd, and ref
     calls.push(req);
     queueMicrotask(() => {
       if (req.method === 'settings.get') {
-        p.context.__agyPowertoolsReceive(req.id, { enabled: true, multiAccount: true, language: 'zh-CN' });
+        p.context.__agyPowertoolsReceive(req.id, { enabled: true, multiAccount: true, autoSwitchAccount: true, language: 'zh-CN' });
+      } else if (req.method === 'accounts.autoSwitchCandidate') {
+        p.context.__agyPowertoolsReceive(req.id, { candidate: { id: 'acct-a', email: 'alpha@example.com', name: 'Alpha' }, cooldownRemainingMs: 0 });
       } else if (req.method === 'accounts.prepareAdd') {
         p.context.__agyPowertoolsReceive(req.id, { ok: true, backedUpId: 'acct-a', prevCredHash: 'HASH_A', activeId: 'acct-a', accounts: [{ id: 'acct-a', email: 'alpha@example.com', hasCredential: true }] });
       } else if (req.method === 'accounts.syncActive') {
@@ -561,14 +564,20 @@ test('startAddAccount awaits active sync and calls accounts.completeAdd, and ref
       }
     });
   };
-  p.context.__agyInitialSettings = { enabled: true, multiAccount: true, language: 'zh-CN' };
+  p.context.__agyInitialSettings = { enabled: true, multiAccount: true, autoSwitchAccount: true, language: 'zh-CN' };
   vm.runInContext(source, p.context);
   await new Promise(r => setTimeout(r, 20));
   assert.ok(capturedEnv);
 
+  // Even when the newly signed-in account has a depleted bucket and autoSwitchAccount is enabled,
+  // startAddAccount suppresses auto-switch so it never races with completeAdd / relaunch.
+  quotaRemaining = 0;
   const addRes = await capturedEnv.startAddAccount('Backup');
   assert.equal(addRes.ok, true);
   assert.equal(addRes.manualRestartRequired, true);
+  assert.equal(calls.some(c => c.method === 'accounts.autoSwitchCandidate'), false);
+  assert.equal(p.context.document.querySelector('[data-testid="agy-autoswitch-banner"]'), null);
+  quotaRemaining = 0.9;
   const methods = calls.map(c => c.method);
   const prepIdx = methods.indexOf('accounts.prepareAdd');
   const syncIdx = methods.lastIndexOf('accounts.syncActive');

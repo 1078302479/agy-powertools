@@ -1007,6 +1007,49 @@ test('createAccountsStore blocks cross-account credential clobbering on email mi
     });
     assert.equal(rotated.relaunching, true);
     assert.equal(relaunches, 2);
+
+    // Clear pendingSwitch from rotation before testing slow-Redux add
+    store.syncActive({ email: 'alpha@example.com', name: 'Alpha' });
+
+    // 7. Slow-Redux race: OAuth wrote gamma@example.com to OS keyring before UI capabilities().email left alpha@example.com.
+    // completeAdd MUST adopt gamma instead of restoring alpha's backup over gamma's fresh credential.
+    const prepSlow = store.prepareAdd({ pendingAlias: 'Slow UI' });
+    slots.set('gemini:antigravity', makeToken('gamma@example.com', 1));
+    clock += 6_000;
+    const slowComplete = store.completeAdd({
+      email: 'alpha@example.com',
+      prevEmail: 'alpha@example.com',
+      prevCredHash: prepSlow.prevCredHash
+    });
+    assert.equal(slowComplete.ok, true);
+    assert.equal(slowComplete.accountChanged, true);
+    assert.equal(slowComplete.relaunching, true);
+    assert.equal(relaunches, 3);
+    assert.equal(slowComplete.account.email, 'gamma@example.com');
+    assert.equal(slowComplete.account.alias, 'Slow UI');
+    assert.equal(emailOf(slots.get('gemini:antigravity')), 'gamma@example.com');
+    assert.equal(emailOf(slots.get(`agy-powertools:account:${slowComplete.activeId}`)), 'gamma@example.com');
+    // Relaunching into gamma clears pendingSwitch and hydrates name cleanly
+    const gammaSynced = store.syncActive({ email: 'gamma@example.com', name: 'Gamma' });
+    assert.equal(gammaSynced.activeId, slowComplete.activeId);
+
+    // 8. Cancelled login while pre-drifted (UI=gamma, keyring=alpha, hash unchanged) MUST NOT throw or clobber keyring, and clears stale pendingAlias
+    slots.set('gemini:antigravity', makeToken('alpha@example.com', 6));
+    const prepCancel = store.prepareAdd({ pendingAlias: 'Cancelled Alias' });
+    const cancelled = store.completeAdd({
+      email: 'gamma@example.com',
+      prevEmail: 'gamma@example.com',
+      prevCredHash: prepCancel.prevCredHash
+    });
+    assert.equal(cancelled.ok, true);
+    assert.equal(cancelled.relaunching, false);
+    assert.equal(cancelled.manualRestartRequired, false);
+    assert.equal(relaunches, 3);
+    assert.equal(emailOf(slots.get('gemini:antigravity')), 'alpha@example.com');
+    // Subsequent new account sync does not inherit the cancelled alias
+    slots.set('gemini:antigravity', makeToken('delta@example.com', 1));
+    const deltaSynced = store.syncActive({ email: 'delta@example.com', name: 'Delta' });
+    assert.equal(deltaSynced.accounts.find(a => a.email === 'delta@example.com').alias, '');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
