@@ -111,6 +111,16 @@
 
 ---
 
+## 没什么用的功能（但很帅）
+
+<p align="center">
+  <img src="docs/images/card-border-beam.webp" alt="工作时输入框流光预览" width="100%" />
+</p>
+
+- **工作时输入框流光（默认关闭）**：灵感来自 [border-beam-ios](https://github.com/ismnoiet/border-beam-ios)，基于圆角矩形 SDF 的轻量 WebGL 着色器。Agent 工作时沿输入框边缘匀速旋转流光与柔和内泛光，本轮结束丝滑淡出并停止渲染（空闲零 CPU / GPU 占用）；与「输入框额度光环」同时开启时会自动交叉渐变切换，内置 `Gemini`、`极光`、`炫彩`、`霓虹`、`主题色`、`额度色` 6 套色板与实时「试用预览」按钮。
+
+---
+
 ## 安装与卸载
 
 > 环境要求：先安装并启动过一次 Antigravity。优先使用本机 Node.js `>= 22.13`，没有时自动使用客户端自带的 `agy-node`，无需 `npm install` 或管理员权限。
