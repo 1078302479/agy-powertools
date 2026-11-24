@@ -200,6 +200,7 @@ Every setting applies live in **Powertools -> Settings** and saves automatically
 | Parallel search & read | Off | Guides the agent to batch file searches and reads in one turn |
 | Full-text search in native picker | On | Extends the native conversation search modal to search message bodies, code blocks, and commands, jumping straight to the matched turn |
 | Branching / Message edit / File menu | On | Native session branching, inline message editing, and local/NAS/Files tree context menu (with dynamic Open With apps and `#L:C` jump) |
+| Recognize pasted SSH commands | On | Extracts `user@host:port` when pasting `ssh -p PORT user@host` into Create New Project -> SSH Host (discards appended passwords) |
 | Enable multi-account switching | Off | Opt-in with risk notice; sidebar switcher, list/card views, 5H/weekly toggle, and auto-switch |
 | Application proxy (no TUN) | Off | Protocol/host/port fields, connectivity checks, cold-start prompt, and Force HTTP/1.1 |
 | Context target (Experimental) | `Default` | Choose `Default`, `256K`, `500K`, or `1M` (`Default` leaves native settings unchanged) |
@@ -218,6 +219,13 @@ Every setting applies live in **Powertools -> Settings** and saves automatically
 ---
 
 ## Changelog
+
+### v2.15.4
+- **Fix long-conversation touch-scroll lag and Windows IME toolbar flicker (#37)**: Added dirty checks for `<html>` style properties, render-signature skipping for unchanged historical turns, WeakMap caching for completed responses and flex anchors, `[contenteditable]` / `[data-markdown-root]` observer filtering, touch-drag and IME composition mount deferral, and throttled pruning in `native-i18n.js`.
+- **Fix streaming speed calculation (#36)**: Excludes TTFT for genuine streamed responses (`streamingMs >= 500ms` and `outputTokens >= 20`) while keeping whole-request fallback for short buffered tails, and adds a full hover breakdown (decode speed, end-to-end throughput, TTFT, streaming duration) in the Requests table.
+- **Faster Overview loading with shimmer skeletons**: Decoupled local dashboard loading from slow remote quota RPCs and added equal-height shimmer skeletons for Overview and EventTable on initial load instead of flashing placeholder zeros.
+- **Titlebar quick overview multiline status tooltip and dismissible first-time alert (#38, thanks `@Hi-Jiajun`)**: Explains active low-quota or pending-proxy alerts in a multiline hover tooltip and a dismissible callout with Got it / Don't remind (restorable in Settings).
+- **Paste SSH connection commands (#33, thanks `@wangbingnan136`)**: Extracts `user@host:port` when pasting `ssh -p PORT user@host` into the native SSH Host input while discarding any appended password, toggled under Conversation enhancements.
 
 ### v2.15.3
 - **Fix Windows "Open containing folder" falling back to Documents on paths with spaces**: Pass `/select,"<path>"` with `windowsVerbatimArguments: true` for all non-root Windows reveal calls (fixing both "Open containing folder" and "Open with > File Explorer", plus direct open for drive roots) without affecting macOS or Linux.

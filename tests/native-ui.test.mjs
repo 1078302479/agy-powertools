@@ -1144,3 +1144,122 @@ test('composerWorkingBeam cross-fades with ComposerQuotaHalo when active and sta
   p.context.__agyPowertools.dispose();
   assert.ok(unmounted >= 1);
 });
+
+test('SSH command paste observes setting changes without reinstalling its listener', async () => {
+  const p = page(true);
+  const settings = { enabled: true };
+  p.context.__agyInitialSettings = settings;
+  let change, enabled, installs = 0;
+  p.context.__agyNativeAdapter.installPage = () => true;
+  p.context.__agyPanels = env => { change = env.change; return { Page: () => null, Sidebar: () => null, dispose() {} }; };
+  p.context.installSshCommandPaste = (_document, options) => { enabled = options.enabled; installs++; };
+  p.context.__agyPowertoolsHost = raw => {
+    const { id, method, settings: patch } = JSON.parse(raw);
+    if (method === 'settings.set') Object.assign(settings, patch);
+    queueMicrotask(() => p.context.__agyPowertoolsReceive?.(id, { ...settings }));
+  };
+  vm.runInContext(source, p.context);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(enabled(), true);
+  await change({ sshCommandPaste: false });
+  assert.equal(enabled(), false);
+  await change({ sshCommandPaste: true });
+  assert.equal(enabled(), true);
+  assert.equal(installs, 1);
+  p.context.__agyPowertools.dispose();
+});
+
+test('long-conversation mount skips redundant document style writes, skips unchanged root renders, and defers during IME/touch', async () => {
+  const p = page(true);
+  let styleWrites = 0;
+  const styleProps = new Map();
+  p.document.documentElement.style = {
+    setProperty(k, v) { styleWrites++; styleProps.set(k, v); },
+    removeProperty(k) { styleProps.delete(k); }
+  };
+  let renderCount = 0;
+  const userActions = { children: [], isConnected: true, insertBefore(n) { n.isConnected = true; this.children.push(n); } };
+  const userStep = { isConnected: true, querySelector: sel => sel === '[data-testid="user-message-actions"]' ? userActions : null };
+  p.document.querySelectorAll = sel => sel === '[data-testid="user-input-step"]' ? [userStep] : [];
+  p.context.location.pathname = '/c/conv-perf-1';
+  p.context.ReactDOM = { createRoot() { return { render() { renderCount++; }, unmount() {} }; } };
+  let observerCb = null;
+  p.context.MutationObserver = class {
+    constructor(cb) { observerCb = cb; }
+    observe() {}
+    disconnect() {}
+  };
+  const timers = [];
+  p.context.setTimeout = (fn, delay) => { const entry = { fn, delay, cleared: false }; timers.push(entry); return entry; };
+  p.context.clearTimeout = entry => { if (entry) entry.cleared = true; };
+  p.context.__agyInitialSettings = { enabled: true, userBubbleTint: true, userBubblePreset: 'ocean', userBubbleStrength: 40, messageEdit: true };
+  p.context.__agyPowertoolsHost = raw => {
+    const req = JSON.parse(raw);
+    queueMicrotask(() => {
+      if (req.method === 'settings.get') p.context.__agyPowertoolsReceive(req.id, p.context.__agyInitialSettings);
+      else if (req.method === 'state') p.context.__agyPowertoolsReceive(req.id, { conversationId: 'conv-perf-1', turns: [{ turnNumber: 1, status: 'complete' }], contextWindow: {} });
+      else p.context.__agyPowertoolsReceive(req.id, {});
+    });
+  };
+  vm.runInContext(source, p.context);
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+  const writesAfterBoot = styleWrites;
+  const rendersAfterBoot = renderCount;
+  assert.ok(writesAfterBoot > 0);
+  assert.ok(rendersAfterBoot >= 1);
+
+  // Mutations inside [contenteditable] or [data-markdown-root] should be ignored completely
+  const timersBefore = timers.length;
+  observerCb([{ target: { closest: sel => sel.includes('[contenteditable]') ? {} : null } }]);
+  observerCb([{ target: { closest: sel => sel.includes('[data-markdown-root]') ? {} : null } }]);
+  assert.equal(timers.length, timersBefore);
+
+  // During active IME composition, non-ignored mutations defer mount until compositionend
+  const compStart = p.callbacks.get('compositionstart')?.[0];
+  const compEnd = p.callbacks.get('compositionend')?.[0];
+  assert.ok(compStart && compEnd);
+  compStart();
+  observerCb([{ target: { closest: () => null } }]);
+  assert.equal(timers.length, timersBefore);
+  compEnd();
+  assert.ok(timers.length > timersBefore);
+  // Running the deferred mount should do ZERO redundant style writes and ZERO redundant MessageEdit renders
+  const lastTimer = timers.at(-1);
+  lastTimer.fn();
+  assert.equal(styleWrites, writesAfterBoot);
+  assert.equal(renderCount, rendersAfterBoot);
+  p.context.__agyPowertools.dispose();
+});
+
+test('loadDashboard returns local dashboard immediately without blocking on slow remote quota RPC', async () => {
+  const p = page(true);
+  let capturedEnv = null;
+  let resolveQuota = null;
+  p.context.__agyNativeAdapter.installPage = () => true;
+  p.context.__agyNativeAdapter.service = () => ({
+    retrieveUserQuotaSummary: () => new Promise(resolve => { resolveQuota = resolve; })
+  });
+  p.context.__agyPanels = env => {
+    capturedEnv = env;
+    return { Page: () => null, Sidebar: () => null, dispose() {} };
+  };
+  p.context.__agyInitialSettings = { enabled: true };
+  p.context.__agyPowertoolsHost = raw => {
+    const req = JSON.parse(raw);
+    queueMicrotask(() => {
+      if (req.method === 'dashboard') {
+        p.context.__agyPowertoolsReceive(req.id, { requests: [{ id: 'local-fast-1' }], errors: [] });
+      } else {
+        p.context.__agyPowertoolsReceive(req.id, req.method === 'settings.get' ? { enabled: true } : {});
+      }
+    });
+  };
+  vm.runInContext(source, p.context);
+  await new Promise(r => setImmediate(r));
+  const data = await capturedEnv.loadDashboard(true);
+  assert.equal(data.requests[0].id, 'local-fast-1');
+  assert.equal(p.context.__agyPowertools.dashboard.requests[0].id, 'local-fast-1');
+  resolveQuota?.({ response: { groups: [] } });
+  p.context.__agyPowertools.dispose();
+});

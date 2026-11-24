@@ -43,6 +43,10 @@ test('settings persist, merge safely, and reject unknown options without changin
     store.set({ overviewQuota: false, composerQuotaHalo: false, composerQuotaHaloWindow: 'auto', composerWorkingBeam: false, composerWorkingBeamPalette: 'gemini' });
     assert.equal(store.get().messageEdit, true);
     assert.equal(store.get().fileContextMenu, true);
+    assert.equal(store.get().sshCommandPaste, true);
+    store.set({ sshCommandPaste: false });
+    assert.equal(store.get().sshCommandPaste, false);
+    store.set({ sshCommandPaste: true });
     assert.equal(store.get().sessionSearch, true);
     store.set({ sessionSearch: false });
     assert.equal(store.get().sessionSearch, false);

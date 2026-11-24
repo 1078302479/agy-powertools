@@ -644,6 +644,14 @@ test('Overview defaults to Current weekly quota (本轮周限额内用量), disp
   const untouchedText = untouchedUi.collectText(untouchedUi.find(untouchedTree, 'agy-range-summary'));
   assert.ok(untouchedText.includes('本轮周限额尚未开始消耗（剩余 100%）'));
   assert.equal(untouchedText.includes('\u00b7'), false);
+
+  // Loading state (dashboard === null) shows equal-height skeleton instead of fake zeros or empty text
+  const skelOverview = untouchedUi.renderOverview(null);
+  assert.ok(untouchedUi.find(skelOverview, 'agy-overview-skeleton'));
+  assert.equal(untouchedUi.find(skelOverview, 'agy-usage-heatmap'), null);
+  const skelEvents = untouchedUi.renderEventTable(null, false);
+  assert.ok(untouchedUi.find(skelEvents, 'agy-events-skeleton'));
+  assert.equal(untouchedUi.find(skelEvents, 'agy-requests-table'), null);
 });
 
 test('quota tracker account timeline isolates multi-account quota estimates and guards pre-upgrade mixed history', () => {
@@ -1389,14 +1397,84 @@ test('QuickPopover reuses full panels across all 6 tabs with lazy loading, badge
   assert.equal(previewOn, true);
   assert.equal(beamUi.find(beamUi.renderSettings(), 'agy-beam-preview-toggle')?.props?.['aria-pressed'], true);
 
-  // Closed by default: zero lazy loads; ignores disabled 1% bucket, warns on 18% active bucket
+  // Closed by default: zero lazy loads; ignores disabled 1% bucket, warns on 18% active bucket and shows multiline tooltip + first-time alert callout
   let tree = ui.renderQuickPopover();
   const trigger = ui.find(tree, 'agy-titlebar-quick-trigger');
   assert.ok(trigger);
   assert.equal(ui.find(tree, 'agy-quick-trigger-badge')?.props?.['data-tone'], 'warning');
+  assert.equal(trigger.props['aria-label'], 'Powertools 快捷概览（低额度：Claude/GPT 5h 18%）');
+  const tipNode = ui.find(tree, 'agy-quick-trigger-tooltip');
+  assert.ok(tipNode);
+  const tipRows = ui.findAll(tipNode, n => n.props?.className === 'pt-qp-tip-row');
+  assert.equal(tipRows.length, 1);
+  assert.equal(tipRows[0].props['data-tone'], 'warning');
+  assert.equal(ui.collectText(tipRows[0]).trim(), '低额度：Claude/GPT 5h 18%');
+  assert.ok(ui.find(tree, 'agy-quick-alert-callout'));
   assert.equal(ui.find(tree, 'agy-quick-popover'), null);
   assert.equal(dashboardLoads.length, 0);
   assert.equal(proxyLoads, 0);
+
+  // Clicking "我知道了" hides both the callout and the corner dot for the current alert event
+  ui.find(tree, 'agy-quick-alert-ack').props.onClick();
+  tree = ui.renderQuickPopover();
+  assert.equal(ui.find(tree, 'agy-quick-alert-callout'), null);
+  assert.equal(ui.find(tree, 'agy-quick-trigger-badge'), null);
+  assert.ok(ui.find(tree, 'agy-quick-trigger-tooltip'));
+
+  // Multiline tooltip covers critical + warning + pending proxy and "不再提醒" mutes until restored in Settings
+  const critProxyUi = createPanelHarness(
+    {
+      activeId: 'acct-1',
+      accounts: [{
+        id: 'acct-1',
+        email: 'alice@example.com',
+        name: 'Alice Chen',
+        groups: [
+          { displayName: 'Gemini Models', buckets: [{ bucketId: 'g-5h', window: '5h', remainingFraction: 0.06 }] },
+          { displayName: 'Claude and GPT models', buckets: [{ bucketId: 'c-w', window: 'weekly', remainingFraction: 0.19 }] }
+        ]
+      }]
+    },
+    { enabled: true, titlebarQuickPanel: true, language: 'zh-CN' },
+    { proxyStatus: () => ({ reason: 'not-applied', mismatch: true }) }
+  );
+  let critTree = critProxyUi.renderQuickPopover();
+  assert.equal(critProxyUi.find(critTree, 'agy-quick-trigger-badge')?.props?.['data-tone'], 'critical');
+  assert.ok(critProxyUi.find(critTree, 'agy-quick-alert-callout'));
+  const critTipBox = critProxyUi.find(critTree, 'agy-quick-trigger-tooltip');
+  const critRows = critProxyUi.findAll(critTipBox, n => n.props?.className === 'pt-qp-tip-row');
+  assert.deepEqual(
+    critRows.map(r => [r.props['data-tone'], critProxyUi.collectText(r).trim()]),
+    [
+      ['critical', '额度告急：Gemini 5h 6%'],
+      ['warning', '低额度：Claude/GPT 周 19%'],
+      ['warning', '独立代理待重启生效']
+    ]
+  );
+  const critText = critProxyUi.collectText(critTipBox);
+  for (const forbidden of ['\u00b7', '\u2022', '\u2027', '\u30fb']) assert.equal(critText.includes(forbidden), false);
+  assert.equal(critProxyUi.find(critProxyUi.renderSettings(), 'agy-setting-row-quickBadgeMuted'), null);
+  critProxyUi.find(critTree, 'agy-quick-alert-mute').props.onClick();
+  critTree = critProxyUi.renderQuickPopover();
+  assert.equal(critProxyUi.find(critTree, 'agy-quick-alert-callout'), null);
+  assert.equal(critProxyUi.find(critTree, 'agy-quick-trigger-badge'), null);
+  const unmuteBtn = critProxyUi.find(critProxyUi.renderSettings(), 'agy-quick-badge-unmute');
+  assert.ok(unmuteBtn);
+  unmuteBtn.props.onClick();
+  critTree = critProxyUi.renderQuickPopover();
+  assert.equal(critProxyUi.find(critTree, 'agy-quick-trigger-badge')?.props?.['data-tone'], 'critical');
+  assert.ok(critProxyUi.find(critTree, 'agy-quick-alert-callout'));
+
+  const healthyUi = createPanelHarness(
+    { activeId: 'acct-1', accounts: [{ id: 'acct-1', email: 'alice@example.com', groups: [{ displayName: 'Gemini Models', buckets: [{ bucketId: 'g-5h', window: '5h', remainingFraction: 0.9 }] }] }] },
+    { enabled: true, titlebarQuickPanel: true, language: 'zh-CN' },
+    { proxyStatus: () => ({ reason: 'disabled', mismatch: false }) }
+  );
+  const healthyTree = healthyUi.renderQuickPopover();
+  assert.equal(healthyUi.find(healthyTree, 'agy-quick-trigger-badge'), null);
+  assert.equal(healthyUi.find(healthyTree, 'agy-quick-alert-callout'), null);
+  assert.equal(healthyUi.find(healthyTree, 'agy-quick-trigger-tooltip'), null);
+  assert.equal(healthyUi.find(healthyTree, 'agy-titlebar-quick-trigger')?.props?.['aria-label'], 'Powertools 快捷概览');
 
   // Open -> lazy loads once; all 6 full native components render cleanly with zero middle dots
   trigger.props.onClick();
