@@ -103,7 +103,7 @@
 - **Context and speed telemetry**: Adds a context usage ring (with cache reuse, compaction count, and Orchestrator planner/executor bars) and a speed dial (`tok/s`, TTFT, model vs. tool duration, and estimated session cost) next to the composer, including subagent stats.
 - **Local usage and request dashboard**: Adds a `Powertools` sidebar page with usage overview (53-week heatmap, token/cost donuts, model table), per-request log, short-interval cache anomaly flags, one-click error copy, quota estimates, and official API pricing refresh.
 - **Compact layout and live stage updates**: Keeps your client font size while tightening line height and block spacing; reports short progress updates during multi-step tool runs and folds them into the top duration header once finished.
-- **Session branching, inline editing, and side-chat slash command**: Fork a new chat from any reply or conversation menu with full history preserved (including chats that used subagents), edit a sent message in place using Antigravity's native composer, or type `/侧` / `/side` in the composer to open a right-hand Side Chat from the native `/` menu (or send an inline question directly).
+- **Session branching and inline editing**: Fork a new chat from any reply or conversation menu with full history preserved (including chats that used subagents), or edit a sent message in place using Antigravity's native composer.
 - **Multi-account switching (off by default)**: Uses Windows Credential Manager, macOS Keychain, or Linux Secret Service to keep multiple Google accounts isolated without plaintext tokens; check 5-hour/weekly quotas and switch from the sidebar, with optional auto-switch on depletion.
 - **No-TUN application proxy (off by default)**: Injects proxy flags and environment variables for Antigravity alone on relaunch, with HTTP CONNECT / SOCKS5 testing, cold-start prompts, and optional `GODEBUG=http2client=0` to reduce `EOF` disconnects.
 - **SSH remote and WSL2 support**: Reads remote session, subagent, and dashboard metrics in desktop `SSH` windows over local OpenSSH without installing anything on the server; supports Windows Antigravity with built-in WSL2 backends across NAT and Mirrored networking, hybrid credential storage, and relaunch delegation.
@@ -186,7 +186,6 @@ Every setting applies live in **Powertools -> Settings** and saves automatically
 | --- | --- | --- |
 | Stage updates | On | Reports brief progress updates during tool runs and folds them on completion |
 | Parallel search & read | Off | Guides the agent to batch file searches and reads in one turn |
-| Side chat slash command | On | Type `/侧` or `/side` in the composer to open a right-hand Side Chat from the native `/` menu (or send an inline question) without polluting the main chat |
 | Branching / Message edit / File menu | On | Native session branching, inline message editing, and local/NAS/Files tree context menu |
 | Enable multi-account switching | Off | Opt-in with risk notice; sidebar switcher, list/card views, 5H/weekly toggle, and auto-switch |
 | Application proxy (no TUN) | Off | Protocol/host/port fields, connectivity checks, cold-start prompt, and Force HTTP/1.1 |
