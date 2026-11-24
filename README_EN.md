@@ -175,6 +175,7 @@ Every setting applies live in **Powertools -> Settings** and saves automatically
 | Speed & statistics | On | Shows the speed dial and opens session telemetry and estimated cost |
 | Task progress | On | Collapsible Overview section with checklist progress, live phase, and step durations |
 | Show quota in Overview | Off | Collapsible Overview section showing 5-hour and weekly remaining quotas |
+| Titlebar quick overview | Off | Adds a top-right titlebar Powertools trigger to open the full 6-tab popover over your current chat |
 | Composer quota halo | Off | Draws remaining quota clockwise around the composer card (emerald, amber, or red) |
 | Quota halo window | `Auto (lower)` | Choose `Auto (lower)`, `Weekly limit`, or `5-hour limit` when the halo is enabled |
 | Subagent context & telemetry | On | Shows per-subagent model, context usage, tokens, cache hit rate, speed, and cost |
@@ -206,6 +207,10 @@ Every setting applies live in **Powertools -> Settings** and saves automatically
 ---
 
 ## Changelog
+
+### v2.15.1
+- **Titlebar quick overview popover (off by default; thanks `@Hi-Jiajun` for the concept and titlebar mount in #32)**: Enable **Titlebar quick overview** in **Powertools -> Settings -> Telemetry & progress** to add a `28x28` trigger next to top-right titlebar actions (with low-quota / pending-proxy indicator dot) that opens all 6 full panels right over your current conversation.
+- **Streamlined single-row About card**: Combines project link, version pill, and a single morphing update button (check, inline spinner, up-to-date state with zero layout shift, and one-click install stages) into one compact card.
 
 ### v2.15.0
 - **Full-text transcript search integrated directly into the native search modal (thanks `@wangbingnan136` for the search engine foundation in #24)**: Typing in the native Conversations picker now displays local and SSH message body, code block, and terminal command matches right inside the modal with scope pills, one-click copy, and direct turn jump (zero visual change when empty).

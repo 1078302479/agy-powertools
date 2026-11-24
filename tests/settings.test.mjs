@@ -23,6 +23,10 @@ test('settings persist, merge safely, and reject unknown options without changin
     assert.equal(store.get().userBubbleStrength, 100);
     store.set({ userBubbleTint: false, userBubblePreset: 'accent', userBubbleColor: '#2F75C3', userBubbleStrength: 20 });
     assert.equal(store.get().overviewQuota, false);
+    assert.equal(store.get().titlebarQuickPanel, false);
+    store.set({ titlebarQuickPanel: true });
+    assert.equal(store.get().titlebarQuickPanel, true);
+    store.set({ titlebarQuickPanel: false });
     assert.equal(store.get().composerQuotaHalo, false);
     assert.equal(store.get().composerQuotaHaloWindow, 'auto');
     store.set({ overviewQuota: true, composerQuotaHalo: true, composerQuotaHaloWindow: 'weekly' });
