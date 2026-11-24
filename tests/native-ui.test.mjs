@@ -604,3 +604,212 @@ test('startAddAccount awaits active sync and calls accounts.completeAdd, and ref
 
   p.context.__agyPowertools.dispose();
 });
+
+test('refreshAccount handles out-of-order concurrency, failure retry without 60s lockout, missing buckets, vaultReason preservation, and loadDashboard(true) override', async () => {
+  const p = page(true);
+  let capturedEnv = null;
+  const calls = [];
+  const quotaCalls = [];
+  let pendingFirstQuota = null;
+  let quotaMode = 'stall-first';
+  let failSyncActive = false;
+  let pendingDashboard = null;
+  let stallFirstDashboard = true;
+
+  p.context.ReactDOM = { createRoot() { return { render() {}, unmount() {} }; } };
+  p.context.__agyNativeAdapter.installPage = () => true;
+  p.context.__agyNativeAdapter.capabilities = () => ({
+    email: 'alice@example.com',
+    name: 'Alice',
+    plan: 'Google AI Ultra',
+    planId: 'g1-ultra-tier'
+  });
+  p.context.__agyNativeAdapter.service = () => ({
+    retrieveUserQuotaSummary: opts => {
+      quotaCalls.push(opts || {});
+      if (quotaMode === 'stall-first') {
+        quotaMode = 'fresh-second';
+        return new Promise(resolve => { pendingFirstQuota = resolve; });
+      }
+      if (quotaMode === 'fresh-second') {
+        quotaMode = 'normal';
+        return Promise.resolve({
+          response: {
+            groups: [
+              { displayName: 'Missing Buckets Group' },
+              {
+                displayName: 'Gemini Models',
+                buckets: [
+                  { bucketId: 'g-5h', window: '5h', remaining: { case: 'remainingFraction', value: 0.42 }, resetTime: { seconds: 1800000000n } },
+                  { bucketId: 'g-untouched', window: 'weekly', remaining: { case: 'remainingFraction', value: 1 }, resetTime: { seconds: 1800600000n }, description: '' },
+                  { bucketId: 'g-off', window: '5h', remaining: { case: 'remainingFraction', value: 0 }, disabled: true }
+                ]
+              }
+            ]
+          }
+        });
+      }
+      if (quotaMode === 'fail-once') {
+        quotaMode = 'normal';
+        return Promise.reject(new Error('network blip'));
+      }
+      return Promise.resolve({
+        response: {
+          groups: [{
+            displayName: 'Gemini Models',
+            buckets: [{ bucketId: 'g-5h', window: '5h', remaining: { case: 'remainingFraction', value: 0.66 }, resetTime: null }]
+          }]
+        }
+      });
+    }
+  });
+  p.context.__agyPanels = env => {
+    capturedEnv = env;
+    return { Page: () => null, Sidebar: () => null, AccountSwitcher: () => null, dispose() {} };
+  };
+  const baseAccounts = {
+    activeId: 'acct-1',
+    vaultSupported: false,
+    vaultReason: 'Keyring unavailable in sandbox',
+    lastAutoSwitchAtMs: 0,
+    accounts: [
+      { id: 'acct-1', email: 'alice@example.com', name: 'Alice', hasCredential: true },
+      { id: 'acct-2', email: 'bob@example.com', name: 'Bob', hasCredential: true }
+    ]
+  };
+  p.context.__agyPowertoolsHost = raw => {
+    const req = JSON.parse(raw);
+    calls.push(req);
+    if (req.method === 'dashboard' && stallFirstDashboard && !req.force) {
+      stallFirstDashboard = false;
+      pendingDashboard = () => p.context.__agyPowertoolsReceive(req.id, { requests: [{ id: 'stale-dash' }] });
+      return;
+    }
+    queueMicrotask(() => {
+      if (req.method === 'settings.get') {
+        p.context.__agyPowertoolsReceive(req.id, { enabled: true, multiAccount: true, language: 'zh-CN' });
+      } else if (req.method === 'accounts.list' || req.method === 'accounts.rename' || req.method === 'accounts.refreshLocalQuotas') {
+        p.context.__agyPowertoolsReceive(req.id, { ok: true, ...baseAccounts });
+      } else if (req.method === 'accounts.syncActive') {
+        if (failSyncActive) {
+          p.context.__agyPowertoolsReceive(req.id, { error: 'syncActive timeout' });
+        } else {
+          p.context.__agyPowertoolsReceive(req.id, { ...baseAccounts });
+        }
+      } else if (req.method === 'dashboard') {
+        p.context.__agyPowertoolsReceive(req.id, { requests: [{ id: req.force ? 'fresh-dash' : 'normal-dash' }] });
+      } else {
+        p.context.__agyPowertoolsReceive(req.id, { ok: true, estimates: [] });
+      }
+    });
+  };
+  p.context.__agyInitialSettings = { enabled: true, multiAccount: true, language: 'zh-CN' };
+  vm.runInContext(source, p.context);
+  await new Promise(r => setTimeout(r, 20));
+  assert.ok(capturedEnv);
+  assert.ok(pendingFirstQuota, 'Initial passive refreshAccount should be in-flight');
+
+  // 1. Trigger forced refreshAccountQuotas('acct-1') while passive refresh is still pending
+  const refreshPromise = capturedEnv.refreshAccountQuotas('acct-1');
+  await refreshPromise;
+  // Fresh forced value (0.42) applied; groups sanitized (missing buckets survived, disabled filtered, untouched 100% description:'' stripped)
+  assert.equal(p.context.__agyPowertools.account.groups[1].buckets[0].remaining.value, 0.42);
+  const lastSync = calls.filter(c => c.method === 'accounts.syncActive').at(-1);
+  assert.equal(lastSync.snapshot.groups.length, 2);
+  assert.deepEqual(lastSync.snapshot.groups[0].buckets, []);
+  assert.equal(lastSync.snapshot.groups[1].buckets.length, 2);
+  assert.equal(lastSync.snapshot.groups[1].buckets[1].resetTimeMs, null);
+  // Active-target refresh MUST pass accountId: '' to accounts.refreshLocalQuotas so inactive windows update too
+  const lastLocal = calls.filter(c => c.method === 'accounts.refreshLocalQuotas').at(-1);
+  assert.equal(lastLocal.accountId, '');
+
+  // Now resolve the stale first passive request with 0.99 -> MUST NOT overwrite 0.42!
+  pendingFirstQuota({
+    response: {
+      groups: [{ displayName: 'Gemini Models', buckets: [{ bucketId: 'g-5h', window: '5h', remaining: { case: 'remainingFraction', value: 0.99 }, resetTime: null }] }]
+    }
+  });
+  await new Promise(r => setTimeout(r, 20));
+  assert.equal(p.context.__agyPowertools.account.groups[1].buckets[0].remaining.value, 0.42);
+
+  // 2. 'live-current' also resolves as active refresh and passes accountId: '' to refreshLocalQuotas
+  await capturedEnv.refreshAccountQuotas('live-current');
+  assert.equal(calls.filter(c => c.method === 'accounts.refreshLocalQuotas').at(-1).accountId, '');
+
+  // 3. vaultReason is preserved across renameAccount and refreshAccountQuotas
+  await capturedEnv.renameAccount('acct-1', 'Work');
+  assert.equal(p.context.__agyPowertools.accounts.vaultReason, 'Keyring unavailable in sandbox');
+
+  // 4. Failed retrieveUserQuotaSummary propagates error without locking out immediate retry, and syncActive error rejects refreshAccountQuotas
+  quotaMode = 'fail-once';
+  await assert.rejects(() => capturedEnv.refreshAccountQuotas('acct-1'), /network blip/);
+  await capturedEnv.refreshAccountQuotas('acct-1');
+  assert.equal(p.context.__agyPowertools.account.groups[0].buckets[0].remaining.value, 0.66);
+
+  failSyncActive = true;
+  await assert.rejects(() => capturedEnv.refreshAccountQuotas('acct-1'), /syncActive timeout/);
+  failSyncActive = false;
+
+  // 5. loadDashboard(true) while loadDashboard(false) is in-flight MUST NOT be swallowed, and stale dashboard(false) MUST NOT overwrite dashboard(true)
+  const passiveDash = capturedEnv.loadDashboard(false);
+  const forcedDash = capturedEnv.loadDashboard(true);
+  await forcedDash;
+  assert.equal(p.context.__agyPowertools.dashboard.requests[0].id, 'fresh-dash');
+  pendingDashboard();
+  await passiveDash;
+  assert.equal(p.context.__agyPowertools.dashboard.requests[0].id, 'fresh-dash');
+  assert.ok(quotaCalls.some(c => c.forceRefresh === true));
+
+  p.context.__agyPowertools.dispose();
+});
+
+test('refresh loop triggers forced quota refresh when a conversation turn finishes', async () => {
+  const p = page(true);
+  p.context.location.pathname = '/c/conv-turn';
+  const intervalCbs = [];
+  p.context.setInterval = cb => { intervalCbs.push(cb); return intervalCbs.length; };
+  let execState = { conversationId: 'conv-turn', status: 2 };
+  const quotaCalls = [];
+  let fakeNow = 1_795_600_000_000;
+  p.context.Date = class extends Date {
+    static now() { return fakeNow; }
+  };
+  p.context.__agyNativeAdapter.executionState = () => execState;
+  p.context.__agyNativeAdapter.capabilities = () => ({ email: 'alice@example.com', name: 'Alice' });
+  p.context.__agyNativeAdapter.service = () => ({
+    retrieveUserQuotaSummary: opts => {
+      quotaCalls.push(opts || {});
+      return Promise.resolve({ response: { groups: [] } });
+    }
+  });
+  p.context.__agyPowertoolsHost = raw => {
+    const req = JSON.parse(raw);
+    queueMicrotask(() => {
+      if (req.method === 'settings.get') p.context.__agyPowertoolsReceive(req.id, { enabled: true });
+      else if (req.method === 'state') p.context.__agyPowertoolsReceive(req.id, { conversationId: 'conv-turn', turns: [], requests: [] });
+      else p.context.__agyPowertoolsReceive(req.id, { ok: true });
+    });
+  };
+  p.context.__agyInitialSettings = { enabled: true };
+  vm.runInContext(source, p.context);
+  await new Promise(r => setTimeout(r, 20));
+  assert.equal(quotaCalls.length, 1);
+  assert.equal(Boolean(quotaCalls[0].forceRefresh), false);
+
+  // Advance > 15s and finish the running turn -> triggers forced refresh
+  fakeNow += 20_000;
+  execState = { conversationId: 'conv-turn', status: 1, terminationReason: 0, notFullyIdle: false };
+  intervalCbs[0]();
+  await new Promise(r => setTimeout(r, 20));
+  assert.equal(quotaCalls.length, 2);
+  assert.equal(quotaCalls[1].forceRefresh, true);
+
+  // Advance 3 minutes while foreground visible -> periodic poll upgrades to forceRefresh: true
+  fakeNow += 180_000;
+  intervalCbs[0]();
+  await new Promise(r => setTimeout(r, 20));
+  assert.equal(quotaCalls.length, 3);
+  assert.equal(quotaCalls[2].forceRefresh, true);
+
+  p.context.__agyPowertools.dispose();
+});
