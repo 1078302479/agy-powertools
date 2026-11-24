@@ -147,7 +147,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 sh ./install.sh
 ```
 
-Reinstalling keeps your saved settings and does not force-close Antigravity. Restart Antigravity once you finish your current task; **Powertools** will appear in the left sidebar. On macOS, a launcher app with the native icon is generated in `~/Applications/` so you can drag it into your Dock.
+Reinstalling keeps your saved settings and does not force-close Antigravity. Restart Antigravity once you finish your current task; **Powertools** will appear in the left sidebar. On macOS, no duplicate `.app` launcher is created: opening the original `Antigravity.app` automatically relaunches once with the debug flag when needed (with built-in loop protection, and a toggle in Settings or Plugins -> Powertools to switch to manual restart anytime).
 
 ### Updates and uninstall
 
@@ -219,6 +219,12 @@ Every setting applies live in **Powertools -> Settings** and saves automatically
 ---
 
 ## Changelog
+
+### v2.15.5
+- **macOS single-app launch with automatic cold-start relaunch**:
+  - No longer creates a duplicate `~/Applications/Antigravity (Powertools).app` wrapper (automatically cleans up legacy wrappers on upgrade) so you simply open the original `/Applications/Antigravity.app`.
+  - Automatically relaunches once with `--remote-debugging-port=0` on cold start when the debug port is absent (drops `osascript` to avoid macOS Automation permission prompts, guarded by per-session tracking, a 120s cooldown, and a 2-attempt circuit breaker).
+  - Adds an opt-out **Auto-relaunch on cold start (macOS)** toggle in both **Powertools -> Settings** (macOS only) and the native **Plugins -> Powertools** side pane alongside the manual **Restart to Enable** button.
 
 ### v2.15.4
 - **Fix long-conversation touch-scroll lag and Windows IME toolbar flicker (#37)**: Added dirty checks for `<html>` style properties, render-signature skipping for unchanged historical turns, WeakMap caching for completed responses and flex anchors, `[contenteditable]` / `[data-markdown-root]` observer filtering, touch-drag and IME composition mount deferral, and throttled pruning in `native-i18n.js`.

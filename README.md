@@ -147,7 +147,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 sh ./install.sh
 ```
 
-覆盖安装会保留已有设置，不会强制关闭客户端。完成当前任务后重启 Antigravity，左侧栏出现 **Powertools** 即可使用。macOS 会自动在 `~/Applications/` 生成带原版图标的启动器，拖入 Dock 替代原图标即可。
+覆盖安装会保留已有设置，不会强制关闭客户端。完成当前任务后重启 Antigravity，左侧栏出现 **Powertools** 即可使用。macOS 无需创建第二个 `.app` 图标，正常打开原版 Antigravity 时若未检测到调试端口，插件会自动带参数重启一次生效（内置防循环保护，亦可在设置或右侧「插件 -> Powertools」关闭自动重启并改为手动点击重启）。
 
 ### 更新与卸载
 
@@ -219,6 +219,12 @@ sh ./install.sh
 ---
 
 ## 更新日志
+
+### v2.15.5
+- **macOS 告别双 `.app` 图标，改为冷启动自动重启启用**：
+  - 不再创建冗余的 `~/Applications/Antigravity (Powertools).app`（老用户升级或覆盖安装时自动清理旧启动器），全程直接使用原版 `/Applications/Antigravity.app`。
+  - 正常打开原版 Antigravity 时若未检测到调试端口，自动带 `--remote-debugging-port=0` 优雅退出并重启一次（移除 `osascript` 避免系统自动化权限弹窗；内置同会话防重、120 秒冷却与连续 2 次失败熔断保护）。
+  - 在 **Powertools -> 设置**（仅 macOS 显示）以及右侧原生 **插件 -> Powertools** 面板均提供「冷启动自动重启启用（macOS）」开关与手动「立即重启启用」按钮，随时可切回手动重启。
 
 ### v2.15.4
 - **修复长对话触屏拖动卡顿与 Windows 输入法悬浮栏闪烁（#37）**：给 `<html>` 样式变量加脏检查避免整页重算，给 `renderRoot` 加渲染签名跳过未变化的历史轮次重渲染，对已完成历史回复走 `WeakMap` O(1) 缓存并缓存输入框 flex 父节点；监听跳过 `[contenteditable]` 与 `[data-markdown-root]` 并在触屏拖动与输入法组合期间自动延迟挂载，同步优化 `native-i18n.js` 流式 `characterData` 过滤与节流清理。

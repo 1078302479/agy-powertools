@@ -43,6 +43,10 @@ test('settings persist, merge safely, and reject unknown options without changin
     store.set({ overviewQuota: false, composerQuotaHalo: false, composerQuotaHaloWindow: 'auto', composerWorkingBeam: false, composerWorkingBeamPalette: 'gemini' });
     assert.equal(store.get().messageEdit, true);
     assert.equal(store.get().fileContextMenu, true);
+    assert.equal(store.get().macAutoRelaunch, true);
+    store.set({ macAutoRelaunch: false });
+    assert.equal(store.get().macAutoRelaunch, false);
+    store.set({ macAutoRelaunch: true });
     assert.equal(store.get().sshCommandPaste, true);
     store.set({ sshCommandPaste: false });
     assert.equal(store.get().sshCommandPaste, false);
