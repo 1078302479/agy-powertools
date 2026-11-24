@@ -448,11 +448,25 @@ test('openLocalFile dispatches platform commands and blocks runnable Windows fil
     await openLocalFile(pathToFileURL(script).href, { action: 'reveal', platform: 'win32', spawnProcess: fakeSpawn });
 
     assert.deepEqual(calls[0], { cmd: 'explorer.exe', args: [doc], opts: { detached: true, stdio: 'ignore' } });
-    assert.deepEqual(calls[1], { cmd: 'explorer.exe', args: [`/select,${doc}`], opts: { detached: true, stdio: 'ignore' } });
+    assert.deepEqual(calls[1], { cmd: 'explorer.exe', args: [`/select,"${doc}"`], opts: { detached: true, stdio: 'ignore', windowsVerbatimArguments: true } });
     assert.deepEqual(calls[2], { cmd: 'explorer.exe', args: [`/select,"${commaFile}"`], opts: { detached: true, stdio: 'ignore', windowsVerbatimArguments: true } });
     assert.deepEqual(calls[3], { cmd: 'open', args: ['-R', doc], opts: { detached: true, stdio: 'ignore' } });
     assert.deepEqual(calls[4], { cmd: 'xdg-open', args: [dir], opts: { detached: true, stdio: 'ignore' } });
-    assert.deepEqual(calls[5], { cmd: 'explorer.exe', args: [`/select,${script}`], opts: { detached: true, stdio: 'ignore' } });
+    assert.deepEqual(calls[5], { cmd: 'explorer.exe', args: [`/select,"${script}"`], opts: { detached: true, stdio: 'ignore', windowsVerbatimArguments: true } });
+
+    // Windows local drive paths with spaces and Unicode quote only the path after /select,
+    await openLocalFile('file:///D:/work/2026%20%E9%A1%B9%E7%9B%AE%E5%BD%92%E6%A1%A3/demo-%E5%8E%9F%E5%9B%BE.gif', {
+      action: 'reveal',
+      platform: 'win32',
+      spawnProcess: fakeSpawn,
+      exists: () => true,
+      stat: () => ({ isDirectory: () => false })
+    });
+    assert.deepEqual(calls[6], {
+      cmd: 'explorer.exe',
+      args: ['/select,"D:\\work\\2026 项目归档\\demo-原图.gif"'],
+      opts: { detached: true, stdio: 'ignore', windowsVerbatimArguments: true }
+    });
 
     // Windows LAN UNC paths with spaces quote cleanly for explorer /select
     await openLocalFile('file://192.168.1.10/share/a%20b.png', {
@@ -462,10 +476,24 @@ test('openLocalFile dispatches platform commands and blocks runnable Windows fil
       exists: () => true,
       stat: () => ({ isDirectory: () => false })
     });
-    assert.deepEqual(calls[6], {
+    assert.deepEqual(calls[7], {
       cmd: 'explorer.exe',
       args: ['/select,"\\\\192.168.1.10\\share\\a b.png"'],
       opts: { detached: true, stdio: 'ignore', windowsVerbatimArguments: true }
+    });
+
+    // Drive roots open directly without /select
+    await openLocalFile('file:///D:/', {
+      action: 'reveal',
+      platform: 'win32',
+      spawnProcess: fakeSpawn,
+      exists: () => true,
+      stat: () => ({ isDirectory: () => true })
+    });
+    assert.deepEqual(calls[8], {
+      cmd: 'explorer.exe',
+      args: ['D:\\'],
+      opts: { detached: true, stdio: 'ignore' }
     });
 
     assert.equal(isWindowsRunnableFile(script), true);

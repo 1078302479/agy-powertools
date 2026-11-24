@@ -219,6 +219,9 @@ sh ./install.sh
 
 ## 更新日志
 
+### v2.15.3
+- **修复 Windows 下含空格路径「打开所在文件夹」跳回「文档」的问题**：统一将 Windows 资源管理器 `reveal` 传参改为 `/select,"路径"` 搭配 `windowsVerbatimArguments: true`（同步修复右键「打开所在文件夹」和「打开方式 > 文件资源管理器」，并兼容盘符根目录直开），不影响 macOS 与 Linux。
+
 ### v2.15.2
 - **新增「工作时输入框流光」（默认关闭，灵感来自 [border-beam-ios](https://github.com/ismnoiet/border-beam-ios)）**：
   - 基于圆角矩形 SDF 与周长弧长参数化的轻量 WebGL 着色器，Agent 工作时沿输入框边缘匀速平滑旋转彗星流光与柔和内泛光，结束时丝滑淡出并停止渲染（空闲零 CPU/GPU 占用，兼容减弱动态效果与无 WebGL 降级）。

@@ -219,6 +219,9 @@ Every setting applies live in **Powertools -> Settings** and saves automatically
 
 ## Changelog
 
+### v2.15.3
+- **Fix Windows "Open containing folder" falling back to Documents on paths with spaces**: Pass `/select,"<path>"` with `windowsVerbatimArguments: true` for all non-root Windows reveal calls (fixing both "Open containing folder" and "Open with > File Explorer", plus direct open for drive roots) without affecting macOS or Linux.
+
 ### v2.15.2
 - **Working composer border beam (off by default; inspired by [border-beam-ios](https://github.com/ismnoiet/border-beam-ios))**:
   - Uses a lightweight rounded-rectangle SDF WebGL shader parameterized by perimeter arc length so the comet and soft inner glow glide at constant linear speed around any composer aspect ratio, fading out cleanly to zero idle CPU/GPU cost (with `prefers-reduced-motion` and SVG fallback support).
