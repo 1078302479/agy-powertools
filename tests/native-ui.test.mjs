@@ -91,7 +91,6 @@ test('side-question and split-pane composers fetch and render independent contex
   const renderedByMount = new Map();
   const mountOrder = [];
   p.context.React = { createElement: (type, props, ...children) => ({ type, props, children }) };
-  p.context.__agyNativeAdapter.wrap = el => el;
   p.context.ReactDOM = {
     createRoot(mount) {
       mountOrder.push(mount);
@@ -109,6 +108,7 @@ test('side-question and split-pane composers fetch and render independent contex
   };
   const mainTrigger = makeComposerTrigger('main-conv');
   const btwTrigger = makeComposerTrigger('btw-conv');
+  p.context.__agyNativeAdapter.wrap = el => el;
   p.context.__agyNativeAdapter.composerCascadeId = el => el?.cid || '';
   const stateRequests = [];
   p.context.__agyPowertoolsHost = raw => {
@@ -812,4 +812,120 @@ test('refresh loop triggers forced quota refresh when a conversation turn finish
   assert.equal(quotaCalls[2].forceRefresh, true);
 
   p.context.__agyPowertools.dispose();
+});
+
+test('userBubbleStrength updates CSS variables and readable foreground contrast, and worked-for merges split/sibling triggers without duplicates or middle dots', async () => {
+  const p = page(true);
+  const styleProps = new Map();
+  p.document.documentElement.style = {
+    setProperty: (k, v) => styleProps.set(k, v),
+    removeProperty: k => styleProps.delete(k)
+  };
+  const renderedCompletions = [];
+  p.context.React = { createElement: (type, props, ...children) => ({ type, props: props || {}, children }) };
+  p.context.HU = m => m?.index;
+  p.context.ReactDOM = {
+    createRoot: mount => ({
+      render(el) {
+        if (mount.dataset?.agyPowertoolsRoot === 'completion') renderedCompletions.push(el);
+      },
+      unmount() {}
+    })
+  };
+  p.context.location.pathname = '/c/conv-worked';
+
+  // Build a turn where native worked-for button lives in the enclosing turn scope (not inside agent-response)
+  // and has split spans: "Worked for 8m 28s" + "<dot> 4 updates"
+  const mainSpan = { isConnected: true, textContent: 'Worked for 8m 28s', contains: () => false };
+  const updSpan = { isConnected: true, textContent: '\u00b7 4 updates', contains: () => false };
+  const attrs = new Map();
+  const workedBtn = {
+    isConnected: true,
+    get textContent() { return `${mainSpan.textContent} ${updSpan.textContent}`; },
+    closest: () => null,
+    querySelectorAll: sel => sel === 'span' ? [mainSpan, updSpan] : [],
+    getAttribute: k => attrs.get(k) ?? null,
+    setAttribute: (k, v) => attrs.set(k, v),
+    removeAttribute: k => attrs.delete(k)
+  };
+  const response = {
+    isConnected: true,
+    firstChild: null,
+    children: [],
+    insertBefore(child) { child.isConnected = true; this.children.unshift(child); },
+    closest: sel => sel === '[data-turn-content]' ? turnScopeEl : null,
+    querySelector: () => null,
+    querySelectorAll: () => []
+  };
+  const turnScopeEl = {
+    querySelector: () => null,
+    querySelectorAll: sel => sel === 'button,[role="button"]' ? [workedBtn] : []
+  };
+  p.document.querySelectorAll = sel => sel === '[data-testid="agent-response"]' ? [response] : [];
+  p.context.__agyNativeAdapter.wrap = el => el;
+  p.context.__agyNativeAdapter.installPage = () => true;
+  p.context.__agyNativeAdapter.onEditChange = () => () => {};
+  p.context.__agyNativeAdapter.fiber = () => ({ memoizedProps: { container: { steps: [{ step: { case: 'userInput' }, metadata: { index: 0 } }] } }, return: null });
+  p.context.__agyPowertoolsHost = raw => {
+    const req = JSON.parse(raw);
+    queueMicrotask(() => {
+      if (req.method === 'settings.get') {
+        p.context.__agyPowertoolsReceive(req.id, {
+          enabled: true, timing: true, userBubbleTint: true,
+          userBubblePreset: 'custom', userBubbleColor: '#173E76', userBubbleStrength: 100, language: 'zh-CN'
+        });
+      } else if (req.method === 'state') {
+        p.context.__agyPowertoolsReceive(req.id, {
+          conversationId: 'conv-worked',
+          turns: [{ turnNumber: 1, stepIndexStart: 0, stepIndexEnd: 5, status: 'complete', completedAtIso: '2026-11-24T00:00:00Z', durationMs: 508000, toolCalls: [] }],
+          requests: []
+        });
+      } else {
+        p.context.__agyPowertoolsReceive(req.id, { ok: true });
+      }
+    });
+  };
+  p.context.__agyInitialSettings = {
+    enabled: true, timing: true, userBubbleTint: true,
+    userBubblePreset: 'custom', userBubbleColor: '#173E76', userBubbleStrength: 100, language: 'zh-CN'
+  };
+  vm.runInContext(source, p.context);
+  await new Promise(r => setTimeout(r, 30));
+
+  // Verify Issue #27 solid tint + readable contrast foreground
+  assert.equal(styleProps.get('--agy-bubble-tint'), '#173E76');
+  assert.equal(styleProps.get('--agy-bubble-bg'), '100%');
+  assert.equal(styleProps.get('--agy-bubble-border'), '100%');
+  assert.equal(styleProps.get('--agy-bubble-fg'), '#ffffff');
+  assert.equal(p.document.documentElement.hasAttribute('data-agy-bubble-fg'), true);
+
+  // Verify Issue #29 in-place merge without duplicate row or middle dots
+  assert.equal(mainSpan.textContent, '用时 8分28秒 4 条进度');
+  assert.equal(mainSpan.textContent.includes('\u00b7'), false);
+  assert.equal(updSpan.textContent, '');
+  assert.equal(attrs.get('data-tooltip-id'), 'agy-completed-conv-worked-1');
+  assert.ok(renderedCompletions.length >= 1);
+  const findTooltipOnly = node => {
+    if (!node || typeof node !== 'object') return undefined;
+    if (node.props && 'tooltipOnly' in node.props) return node.props.tooltipOnly;
+    for (const c of Array.isArray(node.children) ? node.children : [node.children]) {
+      const hit = findTooltipOnly(c);
+      if (hit !== undefined) return hit;
+    }
+    return undefined;
+  };
+  assert.equal(findTooltipOnly(renderedCompletions.at(-1)), true);
+
+  // Verify Issue #25 CSS prevents OverviewQuota wrapping
+  const panelsSrc = readFileSync(new URL('../lib/native-panels.js', import.meta.url), 'utf8');
+  assert.ok(panelsSrc.includes('grid-auto-columns:72px'));
+  assert.ok(panelsSrc.includes('width:72px;height:21px;padding:0 6px;border-radius:6px;font-size:11px;white-space:nowrap'));
+
+  // Dispose restores both split worked-for spans and clears bubble CSS vars
+  p.context.__agyPowertools.dispose();
+  assert.equal(mainSpan.textContent, 'Worked for 8m 28s');
+  assert.equal(updSpan.textContent, '\u00b7 4 updates');
+  assert.equal(attrs.has('data-tooltip-id'), false);
+  assert.equal(styleProps.has('--agy-bubble-bg'), false);
+  assert.equal(styleProps.has('--agy-bubble-fg'), false);
 });

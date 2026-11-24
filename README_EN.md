@@ -160,7 +160,7 @@ Every setting applies live in **Powertools -> Settings** and saves automatically
 | Enable Powertools | On | Master switch; pauses all UI enhancements while keeping saved settings |
 | Language | `简体中文` | Choose `简体中文`, `繁體中文`, or `English` |
 | Compact layout | On | Tightens line height (`1.4`), block spacing, and tool rows while keeping client font size |
-| Tint user message bubbles | Off | Adds a subtle tint and border to user messages (Accent, 5 presets, or custom color) |
+| Tint user message bubbles | Off | Adds a tint and border to user messages (Accent, 5 presets, custom color, and 10%-100% blend slider) |
 | Always show conversation outline | On | Keeps the turn navigation rail visible in multi-turn chats |
 | Keep Overview open when switching chats | On | Preserves the right Overview panel open state across conversations |
 | Conversations per project | `Default (6)` | Controls visible chats per project in the sidebar (`Default (6)`, `1-10`, or `Show all`) |
@@ -186,7 +186,8 @@ Every setting applies live in **Powertools -> Settings** and saves automatically
 | --- | --- | --- |
 | Stage updates | On | Reports brief progress updates during tool runs and folds them on completion |
 | Parallel search & read | Off | Guides the agent to batch file searches and reads in one turn |
-| Branching / Message edit / File menu | On | Native session branching, inline message editing, and local/NAS/Files tree context menu |
+| Full-text search in native picker | On | Extends the native conversation search modal to search message bodies, code blocks, and commands, jumping straight to the matched turn |
+| Branching / Message edit / File menu | On | Native session branching, inline message editing, and local/NAS/Files tree context menu (with dynamic Open With apps and `#L:C` jump) |
 | Enable multi-account switching | Off | Opt-in with risk notice; sidebar switcher, list/card views, 5H/weekly toggle, and auto-switch |
 | Application proxy (no TUN) | Off | Protocol/host/port fields, connectivity checks, cold-start prompt, and Force HTTP/1.1 |
 | Context target (Experimental) | `Default` | Choose `Default`, `256K`, `500K`, or `1M` (`Default` leaves native settings unchanged) |
@@ -205,6 +206,14 @@ Every setting applies live in **Powertools -> Settings** and saves automatically
 ---
 
 ## Changelog
+
+### v2.15.0
+- **Full-text transcript search integrated directly into the native search modal (thanks `@wangbingnan136` for the search engine foundation in #24)**: Typing in the native Conversations picker now displays local and SSH message body, code block, and terminal command matches right inside the modal with scope pills, one-click copy, and direct turn jump (zero visual change when empty).
+- **Dynamic "Open with >" submenu in the file context menu (with `#L:C` line jump)**: Auto-detects installed editors, IDEs, and terminals on Windows, macOS, and Linux without extra settings; fixes Windows percent-encoded drive colons (`file:///d%3A/...`) and hardens Windows `.cmd` spawning against shell metacharacters.
+- **Multi-account quota refresh reliability and display accuracy (#28, thanks `@Hi-Jiajun`)**: Added request sequencing and `.db/-wal` incremental caching to prevent UI stalls and stale overwrites, unified active account live quota views, filtered untouched `100%` placeholder countdowns, and marked expired inactive estimates with `≈` alongside weekly risk cues.
+- **UI polish and fixes**:
+  - Added a `10%-100%` blend strength slider (up to solid fill with automatic text contrast) for user message bubble tinting (#27).
+  - Fixed Overview Quota `5h 100%` wrapping on macOS (#25), merged native `Worked for` headers with Powertools turn durations to prevent duplicate rows (#29), and refined Chinese Side Question terminology.
 
 ### v2.14.3
 - **Antigravity 2.35.0 compatibility**: Updated native popover content (`JC`) binding detection for Antigravity 2.35.0 while keeping backward compatibility with 2.34.0, restoring all native panels and popovers.

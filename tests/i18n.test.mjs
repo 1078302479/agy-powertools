@@ -18,8 +18,8 @@ test('native settings translations preserve product names and English input term
  assert.equal(t('See all','zh-CN'),'查看全部');assert.equal(t('Conversation Name','zh-CN'),'会话名称');assert.equal(t('Conversation ID','zh-CN'),'会话 ID');assert.equal(t('Project Name','zh-CN'),'项目名称');
  assert.equal(t('Split Right','zh-CN'),'向右拆分');assert.equal(t('Split Down','zh-CN'),'向下拆分');assert.equal(t('Replace with New','zh-CN'),'替换为新会话');
  assert.equal(t('Search or enter a URL','zh-CN'),'搜索或输入网址');assert.equal(t('Open File','zh-CN'),'打开文件');
- assert.equal(t('Side Question','zh-CN'),'支线提问');assert.equal(t('New Side Question','zh-CN'),'新建支线提问');
- assert.equal(t('Ask a side question without interrupting the main conversation','zh-CN'),'发起支线提问，不打断主对话');
+ assert.equal(t('Side Question','zh-CN'),'侧边对话');assert.equal(t('New Side Question','zh-CN'),'新建侧边对话');
+ assert.equal(t('Ask a side question without interrupting the main conversation','zh-CN'),'发起侧边对话，不打断主对话');
  assert.equal(t('12 files changed','zh-CN'),'12 个文件已更改');assert.equal(t('1 file changed','zh-CN'),'1 个文件已更改');
  assert.equal(t('5h limit','zh-CN'),'5 小时限额');assert.equal(t('55% left','zh-CN'),'剩余 55%');assert.equal(t('100% left','zh-CN'),'剩余 100%');
  assert.equal(t('Resets in 5d 1h','zh-CN'),'5 天 1 小时后重置');assert.equal(t('Resets in 3h 33m','zh-CN'),'3 小时 33 分钟后重置');
@@ -153,6 +153,13 @@ test('Swarm UI strings translate cleanly in zh-CN and zh-TW without middle dots 
   assert.equal(t('Prevent sleep', 'zh-CN'), '防止休眠');
   assert.equal(t('Context and quota indicator', 'zh-TW'), '上下文與額度指示器');
   assert.equal(t('Delete Permanently', 'zh-TW'), '永久刪除');
+  const workedSingle = t('Worked for 5m', 'zh-CN');
+  assert.equal(workedSingle, '用时 5分');
+  const workedUpdates = t(`Worked for 8m 28s \u00b7 4 updates`, 'zh-CN');
+  assert.equal(workedUpdates, '用时 8分28秒 4 条进度');
+  assert.equal(workedUpdates.includes('\u00b7'), false);
+  assert.equal(t(`Worked for 8m 28s \u00b7 4 updates`, 'zh-TW'), '用時 8分28秒 4 條進度');
+  assert.equal(t(`\u00b7 3 updates`, 'zh-CN'), '3 条进度');
   const i18nSrc = readFileSync('lib/native-i18n.js', 'utf8');
   assert.ok(i18nSrc.includes('.post-body') && i18nSrc.includes('#ov-frame'));
 });

@@ -15,11 +15,13 @@ test('settings persist, merge safely, and reject unknown options without changin
     assert.equal(store.get().userBubbleTint, false);
     assert.equal(store.get().userBubblePreset, 'accent');
     assert.equal(store.get().userBubbleColor, '#2F75C3');
-    store.set({ userBubbleTint: true, userBubblePreset: 'sage', userBubbleColor: '#3d7a64' });
+    assert.equal(store.get().userBubbleStrength, 20);
+    store.set({ userBubbleTint: true, userBubblePreset: 'sage', userBubbleColor: '#3d7a64', userBubbleStrength: 100 });
     assert.equal(store.get().userBubbleTint, true);
     assert.equal(store.get().userBubblePreset, 'sage');
     assert.equal(store.get().userBubbleColor, '#3D7A64');
-    store.set({ userBubbleTint: false, userBubblePreset: 'accent', userBubbleColor: '#2F75C3' });
+    assert.equal(store.get().userBubbleStrength, 100);
+    store.set({ userBubbleTint: false, userBubblePreset: 'accent', userBubbleColor: '#2F75C3', userBubbleStrength: 20 });
     assert.equal(store.get().overviewQuota, false);
     assert.equal(store.get().composerQuotaHalo, false);
     assert.equal(store.get().composerQuotaHaloWindow, 'auto');
@@ -32,6 +34,10 @@ test('settings persist, merge safely, and reject unknown options without changin
     store.set({ overviewQuota: false, composerQuotaHalo: false, composerQuotaHaloWindow: 'auto' });
     assert.equal(store.get().messageEdit, true);
     assert.equal(store.get().fileContextMenu, true);
+    assert.equal(store.get().sessionSearch, true);
+    store.set({ sessionSearch: false });
+    assert.equal(store.get().sessionSearch, false);
+    store.set({ sessionSearch: true });
     assert.equal(store.get().subagentTelemetry, true);
     store.set({ subagentTelemetry: false }); assert.equal(store.get().subagentTelemetry, false);
     store.set({ subagentTelemetry: true }); assert.equal(store.get().subagentTelemetry, true);
@@ -72,7 +78,7 @@ test('settings persist, merge safely, and reject unknown options without changin
     store.set({contextLimit:256000});assert.equal(store.get().contextLimit,256000);
     store.set({contextLimit:0});assert.equal(store.get().contextLimit,0);
     const before = readFileSync(join(directory, 'settings.json'), 'utf8');
-    for (const value of [{ compact: 'false' }, { userBubbleTint: 'yes' }, { userBubblePreset: 'neon' }, { userBubbleColor: 'red' }, { userBubbleColor: '#123;color:red' }, { composerQuotaHaloWindow: '1d' }, { unknown: true }, { toString: false }, {language:'invalid'}, {overviewRange:'custom'}, {overviewRange:'invalid'}, {accountViewMode:'grid'}, {accountQuotaWindow:'1h'}, {proxyUrl:'ftp://127.0.0.1:21'}, {proxyUrl:'http://127.0.0.1:7897;calc'}, {proxyBypass:'localhost"bad'}, {contextLimit:999999}, []]) assert.throws(() => store.set(value), /设置/);
+    for (const value of [{ compact: 'false' }, { userBubbleTint: 'yes' }, { userBubblePreset: 'neon' }, { userBubbleColor: 'red' }, { userBubbleColor: '#123;color:red' }, { userBubbleStrength: 5 }, { userBubbleStrength: 105 }, { userBubbleStrength: 20.5 }, { sessionSearch: 'yes' }, { composerQuotaHaloWindow: '1d' }, { unknown: true }, { toString: false }, {language:'invalid'}, {overviewRange:'custom'}, {overviewRange:'invalid'}, {accountViewMode:'grid'}, {accountQuotaWindow:'1h'}, {proxyUrl:'ftp://127.0.0.1:21'}, {proxyUrl:'http://127.0.0.1:7897;calc'}, {proxyBypass:'localhost"bad'}, {contextLimit:999999}, []]) assert.throws(() => store.set(value), /设置/);
     assert.equal(readFileSync(join(directory, 'settings.json'), 'utf8'), before);
     store.set(DEFAULT_SETTINGS); assert.deepEqual(store.get(), DEFAULT_SETTINGS);
   } finally { rmSync(directory, { recursive: true, force: true }); }

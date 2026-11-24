@@ -24,7 +24,10 @@ import {
   isWindowsRunnableFile,
   openLocalFile,
   copyLocalFile,
-  readLocalFileForAttach
+  readLocalFileForAttach,
+  parseFileUriAnchor,
+  discoverOpenWithApps,
+  openFileWithApp
 } from '../lib/launcher.mjs';
 import { startSidecarWebUi, renderAuxPaneHtml } from '../lib/sidecar-ui.mjs';
 
@@ -648,6 +651,110 @@ test('readLocalFileForAttach returns base64 media for images/PDFs, mentions for 
 
     await assert.rejects(() => readLocalFileForAttach(pathToFileURL(join(dir, 'missing.png')).href), /不存在/);
     await assert.rejects(() => readLocalFileForAttach('https://example.com/a.png'), /仅支持本地文件/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('parseFileUriAnchor, discoverOpenWithApps, and openFileWithApp detect installed local apps, jump to exact lines, open terminals in parent dir, and guard Windows .cmd', async () => {
+  assert.deepEqual(parseFileUriAnchor('file:///repo/a.js#L42'), { line: 42, column: null });
+  assert.deepEqual(parseFileUriAnchor('file:///repo/a.js#L18C7-L25'), { line: 18, column: 7 });
+  assert.deepEqual(parseFileUriAnchor('file:///repo/a.js#L9:3'), { line: 9, column: 3 });
+  assert.deepEqual(parseFileUriAnchor('file:///repo/README.md#overview'), { line: null, column: null });
+
+  const wslResolved = resolveLocalFilePath('file://wsl.localhost/Ubuntu/home/dev/app.ts#L12', { platform: 'linux' });
+  assert.equal(wslResolved, '/home/dev/app.ts');
+  const encodedWinDrive = resolveLocalFilePath('file:///d%3A/repo/lib/launcher.mjs', { platform: 'win32' });
+  assert.equal(encodedWinDrive, 'd:\\repo\\lib\\launcher.mjs');
+
+  const dir = mkdtempSync(join(tmpdir(), 'agy-editor-'));
+  try {
+    const posixBin = '/mock/bin';
+    const cursorBin = join(posixBin, 'cursor');
+    const zedBin = join(posixBin, 'zed');
+    const kittyBin = join(posixBin, 'kitty');
+    const posixFile = '/workspace/main.mjs';
+    const linuxExists = p => p === posixFile || p === cursorBin || p === zedBin || p === kittyBin;
+
+    const linuxApps = discoverOpenWithApps({ platform: 'linux', env: { PATH: posixBin }, home: '/mock/home', exists: linuxExists, readdir: () => [] });
+    assert.deepEqual(linuxApps.map(a => a.id), ['cursor', 'zed', 'default', 'explorer', 'kitty']);
+
+    const calls = [];
+    const fakeSpawn = (cmd, args, opts) => {
+      calls.push({ cmd, args, opts });
+      return { on() {}, unref() {} };
+    };
+
+    const uriWithLine = 'file:///workspace/main.mjs#L27C4';
+    const resCursor = await openFileWithApp(uriWithLine, 'cursor', {
+      platform: 'linux',
+      env: { PATH: posixBin },
+      home: '/mock/home',
+      exists: linuxExists,
+      readdir: () => [],
+      stat: () => ({ isDirectory: () => false }),
+      spawnProcess: fakeSpawn
+    });
+    assert.equal(resCursor.appId, 'cursor');
+    assert.equal(resCursor.line, 27);
+    assert.equal(resCursor.column, 4);
+    assert.deepEqual(calls[0].args, ['-g', `${posixFile}:27:4`]);
+
+    const resZed = await openFileWithApp(uriWithLine, 'zed', {
+      platform: 'linux',
+      env: { PATH: posixBin },
+      home: '/mock/home',
+      exists: linuxExists,
+      readdir: () => [],
+      stat: () => ({ isDirectory: () => false }),
+      spawnProcess: fakeSpawn
+    });
+    assert.equal(resZed.appId, 'zed');
+    assert.deepEqual(calls[1].args, [`${posixFile}:27:4`]);
+
+    await openFileWithApp(uriWithLine, 'kitty', {
+      platform: 'linux',
+      env: { PATH: posixBin },
+      home: '/mock/home',
+      exists: linuxExists,
+      readdir: () => [],
+      stat: () => ({ isDirectory: () => false }),
+      spawnProcess: fakeSpawn
+    });
+    assert.equal(calls[2].opts.cwd, '/workspace');
+
+    await assert.rejects(
+      () => openFileWithApp(uriWithLine, 'windsurf', {
+        platform: 'linux',
+        env: { PATH: posixBin },
+        home: '/mock/home',
+        exists: linuxExists,
+        readdir: () => [],
+        stat: () => ({ isDirectory: () => false }),
+        spawnProcess: fakeSpawn
+      }),
+      /未在本机检测到/
+    );
+
+    // Windows .cmd fallback blocks shell metacharacters (&, |, %, etc.) to prevent cmd.exe injection
+    const binDir = join(dir, 'bin');
+    mkdirSync(binDir);
+    const winCmd = join(binDir, 'code.cmd');
+    writeFileSync(winCmd, '@echo off\r\n');
+    const unsafeFile = join(dir, 'a&calc.js');
+    writeFileSync(unsafeFile, '');
+    await assert.rejects(
+      () => openFileWithApp(pathToFileURL(unsafeFile).href, 'vscode', {
+        platform: 'win32',
+        env: { PATH: binDir },
+        home: dir,
+        exists: p => p === winCmd || p === unsafeFile,
+        readdir: () => [],
+        stat: () => ({ isDirectory: () => false }),
+        spawnProcess: fakeSpawn
+      }),
+      /敏感字符/
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
