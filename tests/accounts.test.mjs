@@ -260,7 +260,9 @@ function createPanelHarness(accountsData, opts = {}, hooks = {}) {
       if (!(i in states)) states[i] = typeof init === 'function' ? init() : init;
       return [states[i], val => { states[i] = typeof val === 'function' ? val(states[i]) : val; }];
     },
-    useEffect: () => {},
+    useEffect: (fn, deps) => {
+      if (typeof hooks.useEffect === 'function') hooks.useEffect(fn, deps);
+    },
     useSyncExternalStore: (_, getSnap) => getSnap()
   };
   const dashboardCode = readFileSync(new URL('../lib/dashboard.mjs', import.meta.url), 'utf8').replaceAll('export function', 'function');
@@ -272,8 +274,8 @@ function createPanelHarness(accountsData, opts = {}, hooks = {}) {
     URL,
     window: { addEventListener() {}, removeEventListener() {} },
     document: { createElement: () => ({ dataset: {}, remove() {} }), head: { append() {} } },
-    setInterval: () => 1,
-    clearInterval() {},
+    setInterval: hooks.setInterval || (() => 1),
+    clearInterval: hooks.clearInterval || (() => {}),
     UP: 'row',
     TP: 'card',
     VP: 'section',
@@ -303,13 +305,16 @@ function createPanelHarness(accountsData, opts = {}, hooks = {}) {
     accounts: () => accountsData,
     account: () => hooks.account ?? null,
     accountFetchedAt: () => hooks.accountFetchedAt ?? null,
-    capabilities: () => ({ plan: 'Google AI Ultra', planId: 'g1-ultra-tier', email: 'alice@example.com', name: 'Alice Chen' }),
+    capabilities: () => hooks.capabilities ?? { plan: 'Google AI Ultra', planId: 'g1-ultra-tier', email: 'alice@example.com', name: 'Alice Chen' },
     estimates: () => hooks.estimates ?? [],
     subscribe: () => () => {},
     revision: () => 0,
     change: patch => { Object.assign(currentOpts, patch); hooks.onChange?.(patch); return Promise.resolve(); },
     openNativeSettings: () => hooks.onOpenSettings?.(),
-    refreshAccountQuotas: id => { hooks.onRefreshQuotas?.(id); return Promise.resolve({ ok: true }); },
+    refreshAccountQuotas: id => {
+      hooks.onRefreshQuotas?.(id);
+      return hooks.refreshAccountQuotasImpl ? hooks.refreshAccountQuotasImpl(id) : Promise.resolve({ ok: true });
+    },
     refreshAccountCredentials: id => { hooks.onRefreshCredentials?.(id); return Promise.resolve({ ok: true }); }
   });
   function collectText(node) {
@@ -1053,4 +1058,244 @@ test('createAccountsStore blocks cross-account credential clobbering on email mi
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('accountBucketStatus, summarizeAccountQuota, and accounts store guard unknown/active/skewed resets, disabled buckets, and untouched 100% countdowns', () => {
+  const now = 1_795_500_000_000;
+
+  // 1. Unknown rawFraction (null) MUST NOT be fabricated as 100% when resetTimeMs has passed
+  const unknownExpired = accountBucketStatus({ bucketId: 'g-5h', window: '5h', remainingFraction: null, resetTimeMs: now - 30_000 }, now);
+  assert.equal(unknownExpired.isReset, false);
+  assert.equal(unknownExpired.effectiveFraction, null);
+  assert.equal(unknownExpired.tone, 'unknown');
+
+  // 2. Active account MUST NOT override live fraction to 100% under slight clock/cache skew
+  const activeSkewed = accountBucketStatus({ bucketId: 'g-5h', window: '5h', remainingFraction: 0.34, resetTimeMs: now - 15_000 }, now, { isActive: true });
+  assert.equal(activeSkewed.isReset, false);
+  assert.equal(activeSkewed.effectiveFraction, 0.34);
+  assert.equal(activeSkewed.tone, 'ok');
+
+  // 3. Inactive account snapshot captured AFTER resetTimeMs (syncedAtMs >= resetTimeMs) MUST NOT falsely reset
+  const inactiveSkewed = accountBucketStatus(
+    { bucketId: 'g-5h', window: '5h', remainingFraction: 0.22, resetTimeMs: now - 20_000 },
+    now,
+    { isActive: false, syncedAtMs: now - 10_000 }
+  );
+  assert.equal(inactiveSkewed.isReset, false);
+  assert.equal(inactiveSkewed.effectiveFraction, 0.22);
+  assert.equal(inactiveSkewed.tone, 'warning');
+
+  // 4. Untouched 100% bucket with explicit description: '' strips placeholder resetTimeMs, while legacy fixture without description keeps it
+  const untouchedPlaceholder = accountBucketStatus({ bucketId: 'g-5h', window: '5h', remainingFraction: 1, resetTimeMs: now + 18_000_000, description: '' }, now);
+  assert.equal(untouchedPlaceholder.resetTimeMs, null);
+  const legacyFull = accountBucketStatus({ bucketId: 'g-5h', window: '5h', remainingFraction: 1, resetTimeMs: now + 18_000_000 }, now);
+  assert.equal(legacyFull.resetTimeMs, now + 18_000_000);
+
+  // 5. summarizeAccountQuota filters disabled buckets and propagates syncedAtMs
+  const summary = summarizeAccountQuota({
+    syncedAtMs: now - 5_000,
+    groups: [{
+      displayName: 'Gemini Models',
+      buckets: [
+        { bucketId: 'g-disabled', window: '5h', remainingFraction: 0, resetTimeMs: now + 3600_000, disabled: true },
+        { bucketId: 'g-5h', window: '5h', remainingFraction: 0.4, resetTimeMs: now - 10_000 }
+      ]
+    }]
+  }, now);
+  assert.equal(summary.groups[0].buckets.length, 1);
+  assert.equal(summary.groups[0].buckets[0].bucketId, 'g-5h');
+  assert.equal(summary.groups[0].buckets[0].isReset, false);
+  assert.equal(summary.groups[0].buckets[0].effectiveFraction, 0.4);
+
+  // 6. Store syncActive with empty groups preserves existing groups and syncedAtMs, and refreshLocalQuotas respects syncedAtMs >= resetTimeMs
+  const dir = mkdtempSync(join(tmpdir(), 'agy-accounts-accuracy-'));
+  let clock = now;
+  const vault = createFakeVault({ 'gemini:antigravity': 'tok-a' });
+  try {
+    const store = createAccountsStore(dir, { now: () => clock, vault });
+    const s1 = store.syncActive({
+      email: 'alpha@example.com',
+      name: 'Alpha',
+      groups: [{
+        displayName: 'Gemini Models',
+        buckets: [
+          { bucketId: 'g-5h', window: '5h', remainingFraction: 0.55, resetTimeMs: clock - 5_000 },
+          { bucketId: 'g-untouched', window: 'weekly', remainingFraction: 1, resetTimeMs: clock + 604_800_000, description: '' },
+          { bucketId: 'g-off', window: '5h', remainingFraction: 0, resetTimeMs: clock + 3600_000, disabled: true }
+        ]
+      }]
+    });
+    const alpha = s1.accounts[0];
+    assert.equal(alpha.syncedAtMs, now);
+    assert.equal(alpha.groups[0].buckets.length, 2);
+    assert.equal(alpha.groups[0].buckets[1].resetTimeMs, null);
+
+    // Subsequent syncActive with groups: [] (e.g. startAddAccount fallback) preserves groups and syncedAtMs
+    clock += 120_000;
+    const s2 = store.syncActive({ email: 'alpha@example.com', name: 'Alpha', groups: [] });
+    assert.equal(s2.accounts[0].groups[0].buckets[0].remainingFraction, 0.55);
+    assert.equal(s2.accounts[0].syncedAtMs, now);
+    assert.equal(s2.accounts[0].lastUsedAtMs, clock);
+
+    // Switch to beta so alpha becomes inactive, then run refreshLocalQuotas -> alpha's skewed bucket (syncedAtMs >= resetTimeMs) stays 0.55
+    vault.slots.set('gemini:antigravity', 'tok-b');
+    store.syncActive({
+      email: 'beta@example.com',
+      name: 'Beta',
+      groups: [{ displayName: 'Gemini Models', buckets: [{ bucketId: 'g-5h', window: '5h', remainingFraction: 0.9, resetTimeMs: clock + 3600_000 }] }]
+    });
+    clock += 60_000;
+    const refreshed = store.refreshLocalQuotas({ accountId: '' });
+    assert.equal(refreshed.accounts.find(a => a.email === 'alpha@example.com').groups[0].buckets[0].remainingFraction, 0.55);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Quotas and AccountSwitcher fuse live active data, fix header identity drift, show popover errors, tick countdowns while open, and flag weekly risk on 5H view', async () => {
+  const now = Date.now();
+  const accountsData = {
+    activeId: 'acct-1',
+    accounts: [
+      {
+        id: 'acct-1',
+        email: 'alice@example.com',
+        name: 'Alice Chen',
+        alias: '主力号',
+        tier: { id: 'g1-ultra-tier', name: 'Google AI Ultra' },
+        disabled: false,
+        hasCredential: true,
+        syncedAtMs: now - 120_000,
+        lastUsedAtMs: now - 120_000,
+        // Stale store snapshot has 90%, while live env.account() has 35% with slightly past resetTime
+        groups: [
+          { displayName: 'Gemini Models', buckets: [{ bucketId: 'g-5h', window: '5h', remainingFraction: 0.9, resetTimeMs: now + 3600_000 }] }
+        ]
+      },
+      {
+        id: 'acct-2',
+        email: 'bob@example.com',
+        name: 'Bob Lin',
+        alias: '',
+        tier: { id: 'g1-pro-tier', name: 'Google AI Pro' },
+        disabled: false,
+        hasCredential: true,
+        syncedAtMs: now - 7_200_000,
+        lastUsedAtMs: now - 7_200_000,
+        // Expired 5h (estimated 100%) but critical weekly (5%)
+        groups: [
+          {
+            displayName: 'Gemini Models',
+            buckets: [
+              { bucketId: 'g-5h', window: '5h', remainingFraction: 0.1, resetTimeMs: now - 60_000 },
+              { bucketId: 'g-weekly', window: 'weekly', remainingFraction: 0.05, resetTimeMs: now + 3 * 86400_000 }
+            ]
+          }
+        ]
+      }
+    ]
+  };
+
+  const liveAccount = {
+    groups: [
+      {
+        displayName: 'Gemini Models',
+        buckets: [
+          { bucketId: 'gemini-5h', window: '5h', remaining: { case: 'remainingFraction', value: 0.35 }, resetTime: { seconds: BigInt(Math.floor((now - 5_000) / 1000)) } },
+          { bucketId: 'gemini-weekly-pool', remainingFraction: 0.62, resetTimeMs: now + 4 * 86400_000 },
+          { bucketId: 'gemini-untouched', window: '5h', remainingFraction: 1, resetTimeMs: now + 18_000_000, description: '' },
+          { bucketId: 'gemini-disabled', window: '5h', remainingFraction: 0, resetTimeMs: now + 3600_000, disabled: true }
+        ]
+      }
+    ]
+  };
+
+  let intervalCount = 0;
+  let clearedCount = 0;
+  let lastEffectOpen = undefined;
+  let activeCleanup = null;
+  const ui = createPanelHarness(
+    accountsData,
+    { multiAccount: true, accountViewMode: 'list', accountQuotaWindow: '5h' },
+    {
+      account: liveAccount,
+      accountFetchedAt: now,
+      useEffect: (fn, deps) => {
+        if (!Array.isArray(deps) || deps.length !== 1 || typeof deps[0] !== 'boolean') return;
+        if (deps[0] === lastEffectOpen) return;
+        lastEffectOpen = deps[0];
+        activeCleanup?.();
+        activeCleanup = fn() || null;
+      },
+      setInterval: () => ++intervalCount,
+      clearInterval: () => { clearedCount++; },
+      refreshAccountQuotasImpl: () => Promise.reject(new Error('刷新接口超时'))
+    }
+  );
+
+  // 1. Quotas top cards filter disabled bucket, classify weekly via bucketId regex, support remainingFraction,
+  //    and fuse live 35% (NOT 90% stale store, NOT 100% false reset) into active row!
+  const qTree = ui.renderQuotas();
+  const qText = ui.collectText(qTree);
+  assert.ok(qText.includes('35.0%'));
+  assert.ok(qText.includes('62.0%'));
+  assert.ok(qText.includes('100.0%'));
+  assert.ok(qText.includes('周限额'));
+  assert.equal(/(?:^|[^\d])0\.0%/.test(qText), false);
+  const quotaBuckets = ui.findAll(qTree, n => n.props?.className === 'pt-quota');
+  assert.equal(quotaBuckets.length, 3);
+  assert.equal(ui.collectText(quotaBuckets[2]).includes(':'), false);
+  const activeRow = ui.find(qTree, 'agy-account-row-acct-1');
+  assert.ok(ui.collectText(activeRow).includes('35%'));
+  assert.equal(ui.collectText(activeRow).includes('90%'), false);
+
+  // Inactive row in 5H view shows weekly risk escalation (data-weekly-risk="critical") + ≈100% + 周 5% with zero banned words
+  const bobRow = ui.find(qTree, 'agy-account-row-acct-2');
+  const bobChip = ui.findAll(bobRow, n => n.props?.className === 'pt-acct-quota-chip')[0];
+  assert.equal(bobChip.props['data-estimated'], 'true');
+  assert.equal(bobChip.props['data-weekly-risk'], 'critical');
+  assert.equal(bobChip.props['data-tone'], 'critical');
+  assert.ok(ui.collectText(bobChip).includes('≈100%'));
+  assert.ok(ui.collectText(bobChip).includes('周 5%'));
+  for (const banned of ['实时同步', '额度充裕', '部分限额接近耗尽', '切入后自动刷新最新额度', '5 小时已回满', '已重置（预计 100%）', '已重置', '\u00b7']) {
+    assert.equal(qText.includes(banned), false, `Unexpected banned text in Quotas: ${banned}`);
+  }
+
+  // 2. AccountSwitcher: live fusion, periodic now timer while open with cleanup, and inline error display on failed refresh
+  let swTree = ui.renderSwitcher();
+  assert.equal(intervalCount, 0);
+  ui.find(swTree, 'agy-account-switcher-trigger').props.onClick();
+  swTree = ui.renderSwitcher();
+  assert.equal(intervalCount, 1);
+  const swActiveRow = ui.find(swTree, 'agy-account-row-acct-1');
+  assert.ok(ui.collectText(swActiveRow).includes('35%'));
+  await ui.find(swTree, 'agy-popover-refresh-quotas').props.onClick();
+  await new Promise(r => setTimeout(r, 10));
+  swTree = ui.renderSwitcher();
+  const popErr = ui.find(swTree, 'agy-popover-error');
+  assert.ok(popErr);
+  assert.ok(ui.collectText(popErr).includes('刷新接口超时'));
+  // Closing popover clears the periodic timer and stale error
+  ui.find(swTree, 'agy-account-switcher-trigger').props.onClick();
+  swTree = ui.renderSwitcher();
+  assert.equal(clearedCount, 1);
+  assert.equal(ui.find(swTree, 'agy-popover-error'), null);
+
+  // 3. Quotas top header identity follows capabilities().email when store.activeId temporarily drifts,
+  //    and does NOT leak live groups into the mismatched store.activeId row.
+  const driftUi = createPanelHarness(
+    accountsData,
+    { multiAccount: true, accountViewMode: 'list' },
+    {
+      account: liveAccount,
+      capabilities: { plan: 'Google AI Pro', planId: 'g1-pro-tier', email: 'bob@example.com', name: 'Bob Lin' }
+    }
+  );
+  const driftQuotas = driftUi.renderQuotas();
+  const topPlanRow = driftUi.find(driftQuotas, 'agy-setting-row-current-plan');
+  assert.ok(driftUi.collectText(topPlanRow).includes('bob@example.com'));
+  assert.equal(driftUi.collectText(topPlanRow).includes('alice@example.com'), false);
+  const driftedAcct1Row = driftUi.find(driftQuotas, 'agy-account-row-acct-1');
+  assert.ok(driftUi.collectText(driftedAcct1Row).includes('90%'));
+  assert.equal(driftUi.collectText(driftedAcct1Row).includes('35%'), false);
 });
