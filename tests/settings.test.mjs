@@ -31,6 +31,9 @@ test('settings persist, merge safely, and reject unknown options without changin
     assert.equal(store.get().composerQuotaHaloWindow, '5h');
     store.set({ overviewQuota: false, composerQuotaHalo: false, composerQuotaHaloWindow: 'auto' });
     assert.equal(store.get().messageEdit, true);
+    assert.equal(store.get().sideChatCommand, true);
+    store.set({ sideChatCommand: false }); assert.equal(store.get().sideChatCommand, false);
+    store.set({ sideChatCommand: true }); assert.equal(store.get().sideChatCommand, true);
     assert.equal(store.get().fileContextMenu, true);
     assert.equal(store.get().subagentTelemetry, true);
     store.set({ subagentTelemetry: false }); assert.equal(store.get().subagentTelemetry, false);
