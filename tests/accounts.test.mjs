@@ -316,6 +316,8 @@ function createPanelHarness(accountsData, opts = {}, hooks = {}) {
     loadDashboard: force => { hooks.onLoadDashboard?.(force); return Promise.resolve(typeof hooks.dashboard === 'function' ? hooks.dashboard() : hooks.dashboard); },
     loadAccounts: () => { hooks.onLoadAccounts?.(); return Promise.resolve(accountsData); },
     loadProxyStatus: () => { hooks.onLoadProxyStatus?.(); return Promise.resolve(typeof hooks.proxyStatus === 'function' ? hooks.proxyStatus() : hooks.proxyStatus); },
+    beamPreview: () => typeof hooks.beamPreview === 'function' ? hooks.beamPreview() : Boolean(hooks.beamPreview),
+    setBeamPreview: v => hooks.onSetBeamPreview?.(v),
     openManagementTab: tab => hooks.onOpenManagementTab?.(tab),
     openNativeSettings: () => hooks.onOpenSettings?.(),
     refreshAccountQuotas: id => {
@@ -1365,10 +1367,27 @@ test('QuickPopover reuses full panels across all 6 tabs with lazy loading, badge
     }
   );
 
-  // Settings exposes single titlebarQuickPanel toggle (no redundant mode/custom settings)
+  // Settings exposes single titlebarQuickPanel toggle (no redundant mode/custom settings) and composerWorkingBeam (default off, hides palette row)
   const settingsTree = ui.renderSettings();
   assert.ok(ui.find(settingsTree, 'agy-setting-titlebarQuickPanel'));
   assert.equal(ui.find(settingsTree, 'agy-setting-row-titlebarQuickPanelMode'), null);
+  assert.ok(ui.find(settingsTree, 'agy-setting-composerWorkingBeam'));
+  assert.equal(ui.find(settingsTree, 'agy-setting-row-composerWorkingBeamPalette'), null);
+  let previewOn = false;
+  const beamUi = createPanelHarness(
+    accountsData,
+    { enabled: true, composerWorkingBeam: true, composerWorkingBeamPalette: 'aurora' },
+    { beamPreview: () => previewOn, onSetBeamPreview: v => { previewOn = Boolean(v); } }
+  );
+  const beamSettings = beamUi.renderSettings();
+  assert.ok(beamUi.find(beamSettings, 'agy-setting-row-composerWorkingBeamPalette'));
+  assert.equal(beamUi.find(beamSettings, 'agy-beam-palette-aurora')?.props?.['aria-pressed'], true);
+  const previewBtn = beamUi.find(beamSettings, 'agy-beam-preview-toggle');
+  assert.ok(previewBtn);
+  assert.equal(previewBtn.props['aria-pressed'], false);
+  previewBtn.props.onClick();
+  assert.equal(previewOn, true);
+  assert.equal(beamUi.find(beamUi.renderSettings(), 'agy-beam-preview-toggle')?.props?.['aria-pressed'], true);
 
   // Closed by default: zero lazy loads; ignores disabled 1% bucket, warns on 18% active bucket
   let tree = ui.renderQuickPopover();

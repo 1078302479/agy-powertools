@@ -1001,3 +1001,146 @@ test('titlebarQuickPanel mounts left of titlebar-more-actions, falls back to ove
   assert.equal(fallback.mounts[0].before, fallback.anchors.aux);
   fallback.p.context.__agyPowertools.dispose();
 });
+
+test('composerWorkingBeam cross-fades with ComposerQuotaHalo when active and stays idle/unmounted cleanly', async () => {
+  const p = page(true);
+  const renderedTrees = [];
+  let unmounted = 0;
+  const card = {
+    children: [],
+    isConnected: true,
+    firstChild: null,
+    getBoundingClientRect() { return { width: 640, height: 104 }; },
+    insertBefore(node, before) {
+      const idx = this.children.indexOf(node);
+      if (idx >= 0) this.children.splice(idx, 1);
+      node.isConnected = true;
+      if (before && this.children.includes(before)) this.children.splice(this.children.indexOf(before), 0, node);
+      else this.children.push(node);
+      this.firstChild = this.children[0] || null;
+      for (let i = 0; i < this.children.length; i++) this.children[i].nextSibling = this.children[i + 1] || null;
+    }
+  };
+  const model = {
+    isConnected: true,
+    textContent: 'Gemini 4 Neon',
+    parentElement: { children: [], insertBefore() {} },
+    nextSibling: null,
+    closest: sel => sel === '.surface-composer-card' ? card : null
+  };
+  p.context.getComputedStyle = el => el === card ? { borderRadius: '20px', display: 'flex' } : { display: 'flex', color: 'rgb(66, 133, 244)' };
+  p.context.React.createElement = (type, props, ...children) => ({ type, props: props || {}, children });
+  p.context.React.Fragment = 'fragment';
+  p.context.React.useRef = init => ({ current: init });
+  p.context.React.useId = () => ':r1:';
+  p.context.React.useState = init => [typeof init === 'function' ? init() : init, () => {}];
+  p.context.React.useEffect = fn => { fn(); };
+  p.context.__agyNativeAdapter.wrap = el => el;
+  p.context.ReactDOM = {
+    createRoot(mount) {
+      return {
+        render(tree) {
+          if (mount.dataset?.agyPowertoolsRoot === 'quota-halo') renderedTrees.push(tree);
+        },
+        unmount() { if (mount.dataset?.agyPowertoolsRoot === 'quota-halo') unmounted++; }
+      };
+    }
+  };
+  p.document.querySelectorAll = sel => sel === '[data-testid="model-selector-trigger"]' ? [model] : [];
+  let execStatus = 1;
+  p.context.__agyNativeAdapter.composerCascadeId = () => 'conv-beam-1';
+  p.context.__agyNativeAdapter.executionState = cid => cid === 'conv-beam-1' ? { conversationId: cid, status: execStatus, notFullyIdle: false } : null;
+  p.context.__agyNativeAdapter.service = () => ({
+    retrieveUserQuotaSummary: async () => ({
+      response: { groups: [{ displayName: 'Gemini Models', buckets: [{ bucketId: 'g-5h', window: '5h', remainingFraction: 0.72 }] }] }
+    })
+  });
+  let currentSettings = { enabled: true, composerQuotaHalo: true, composerWorkingBeam: true, composerWorkingBeamPalette: 'aurora' };
+  p.context.__agyPowertoolsHost = raw => {
+    const req = JSON.parse(raw);
+    queueMicrotask(() => {
+      if (req.method === 'settings.set') {
+        currentSettings = { ...currentSettings, ...req.settings };
+        p.context.__agyPowertoolsReceive(req.id, currentSettings);
+      } else if (req.method === 'settings.get') {
+        p.context.__agyPowertoolsReceive(req.id, currentSettings);
+      } else {
+        p.context.__agyPowertoolsReceive(req.id, {});
+      }
+    });
+  };
+  let capturedPanelsEnv = null;
+  p.context.__agyNativeAdapter.installPage = () => true;
+  p.context.__agyPanels = env => {
+    capturedPanelsEnv = env;
+    return { Page: () => null, Sidebar: () => null, dispose() {} };
+  };
+  p.context.__agyInitialSettings = { ...currentSettings };
+  vm.runInContext(source, p.context);
+  await new Promise(r => setTimeout(r, 30));
+
+  const renderNode = node => {
+    if (!node || typeof node !== 'object') return node;
+    if (Array.isArray(node)) return node.map(renderNode);
+    if (typeof node.type === 'function') {
+      const states = [];
+      let idx = 0;
+      const prevState = p.context.React.useState;
+      const prevEffect = p.context.React.useEffect;
+      p.context.React.useState = init => {
+        const i = idx++;
+        if (!(i in states)) states[i] = typeof init === 'function' ? init() : init;
+        return [states[i], v => { states[i] = typeof v === 'function' ? v(states[i]) : v; }];
+      };
+      p.context.React.useEffect = fn => { fn(); };
+      try {
+        let out = node.type({ ...node.props, children: node.children });
+        idx = 0;
+        p.context.React.useEffect = () => {};
+        out = node.type({ ...node.props, children: node.children });
+        return renderNode(out);
+      } finally {
+        p.context.React.useState = prevState;
+        p.context.React.useEffect = prevEffect;
+      }
+    }
+    return { ...node, children: (Array.isArray(node.children) ? node.children : [node.children]).map(renderNode) };
+  };
+  const findById = (node, id) => {
+    if (!node || typeof node !== 'object') return null;
+    if (Array.isArray(node)) { for (const x of node) { const r = findById(x, id); if (r) return r; } return null; }
+    if (node.props?.['data-testid'] === id) return node;
+    return findById(node.children, id);
+  };
+
+  assert.ok(renderedTrees.length >= 1);
+  // 1. Idle state: quota halo full brightness (not dimmed), working beam inactive
+  const idleTree = renderNode(renderedTrees.at(-1));
+  const idleQuota = findById(idleTree, 'agy-composer-quota-halo');
+  const idleBeam = findById(idleTree, 'agy-composer-working-beam');
+  assert.ok(idleQuota);
+  assert.equal(idleQuota.props['data-dimmed'], undefined);
+  assert.ok(idleBeam);
+  assert.equal(idleBeam.props['data-active'], 'false');
+  assert.equal(idleBeam.props['data-palette'], 'aurora');
+
+  // 2. Preview toggle forces beam active and completely hides quota halo even while idle
+  assert.equal(source.includes('.agy-quota-halo-svg[data-dimmed=true]{opacity:0}'), true);
+  capturedPanelsEnv.setBeamPreview(true);
+  const previewTree = renderNode(renderedTrees.at(-1));
+  assert.equal(findById(previewTree, 'agy-composer-quota-halo').props['data-dimmed'], 'true');
+  assert.equal(findById(previewTree, 'agy-composer-working-beam').props['data-active'], 'true');
+  capturedPanelsEnv.setBeamPreview(false);
+  assert.equal(findById(renderNode(renderedTrees.at(-1)), 'agy-composer-working-beam').props['data-active'], 'false');
+
+  // 3. Running state: Plan A cross-fade hides quota halo and activates beam
+  execStatus = 2;
+  const activeTree = renderNode(renderedTrees.at(-1));
+  const activeQuota = findById(activeTree, 'agy-composer-quota-halo');
+  const activeBeam = findById(activeTree, 'agy-composer-working-beam');
+  assert.equal(activeQuota.props['data-dimmed'], 'true');
+  assert.equal(activeBeam.props['data-active'], 'true');
+
+  p.context.__agyPowertools.dispose();
+  assert.ok(unmounted >= 1);
+});

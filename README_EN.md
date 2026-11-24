@@ -178,6 +178,7 @@ Every setting applies live in **Powertools -> Settings** and saves automatically
 | Titlebar quick overview | Off | Adds a top-right titlebar Powertools trigger to open the full 6-tab popover over your current chat |
 | Composer quota halo | Off | Draws remaining quota clockwise around the composer card (emerald, amber, or red) |
 | Quota halo window | `Auto (lower)` | Choose `Auto (lower)`, `Weekly limit`, or `5-hour limit` when the halo is enabled |
+| Working composer border beam | Off | Animates a smooth border beam around the composer while working (zero idle cost), transitions cleanly with the quota halo, with 6 palettes and Live preview |
 | Subagent context & telemetry | On | Shows per-subagent model, context usage, tokens, cache hit rate, speed, and cost |
 | Turn duration / Expand tools | On | Shows total duration on finished turns and expands tool details on click |
 
@@ -207,6 +208,12 @@ Every setting applies live in **Powertools -> Settings** and saves automatically
 ---
 
 ## Changelog
+
+### v2.15.2
+- **Working composer border beam (off by default; inspired by [border-beam-ios](https://github.com/ismnoiet/border-beam-ios))**:
+  - Uses a lightweight rounded-rectangle SDF WebGL shader parameterized by perimeter arc length so the comet and soft inner glow glide at constant linear speed around any composer aspect ratio, fading out cleanly to zero idle CPU/GPU cost (with `prefers-reduced-motion` and SVG fallback support).
+  - Seamlessly cross-fades with the Composer Quota Halo when both are enabled: the quota ring fades out completely while the working beam runs, then returns smoothly once the turn finishes.
+  - Enable in **Powertools -> Settings -> Telemetry & progress** to choose from 6 curated palettes (`Gemini`, `Aurora`, `Colorful`, `Neon`, `Accent`, `Quota`) and toggle **Try preview** to test palettes live on any chat composer.
 
 ### v2.15.1
 - **Titlebar quick overview popover (off by default; thanks `@Hi-Jiajun` for the concept and titlebar mount in #32)**: Enable **Titlebar quick overview** in **Powertools -> Settings -> Telemetry & progress** to add a `28x28` trigger next to top-right titlebar actions (with low-quota / pending-proxy indicator dot) that opens all 6 full panels right over your current conversation.
