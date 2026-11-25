@@ -377,6 +377,7 @@ function createPanelHarness(accountsData, opts = {}, hooks = {}) {
     renderQuickPopover: () => { activeComponent = 'quick-popover'; hookIdx = 0; return panels.QuickPopover(); },
     renderOverviewQuota: () => { activeComponent = 'overview-quota'; hookIdx = 0; return panels.OverviewQuota(); },
     renderQuotas: () => { activeComponent = 'quotas'; hookIdx = 0; return panels.Quotas(); },
+    renderPricing: dashboard => { activeComponent = 'pricing'; hookIdx = 0; return panels.Pricing({ dashboard }); },
     renderSettings: () => { activeComponent = 'settings'; hookIdx = 0; return panels.Settings(); },
     collectText,
     find,
@@ -1514,4 +1515,90 @@ test('QuickPopover reuses full panels across all 6 tabs with lazy loading, badge
   // Disabled toggle renders null
   const offUi = createPanelHarness(accountsData, { enabled: true, titlebarQuickPanel: false });
   assert.equal(offUi.renderQuickPopover(), null);
+});
+
+test('Pricing provides standard vs API promo basis switch, clean single-row rates, promo expiry badge, and Overview/Settings integration without middle dots', () => {
+  const changes = [];
+  const futureUntil = '2099-12-01';
+  const sampleDash = {
+    pricing: {
+      mode: 'standard',
+      status: 'live',
+      checkedAt: '2026-11-24T10:00:00Z',
+      rates: [
+        { model: 'gemini-4-carbon', input: 2, output: 10, cache: 0.1, until: futureUntil, next: { input: 4, output: 20, cache: 0.2 }, source: 'https://aistudio.google.com/docs/pricing' },
+        { model: 'gemini-4-neon', input: 3, output: 15, cache: 0.15, source: 'https://aistudio.google.com/docs/pricing' }
+      ]
+    },
+    requests: [
+      { id: 'r1', model: 'Gemini 4 Carbon (High)', status: 'success', timestampMs: Date.now() - 1000, inputTokens: 1000, cacheReadTokens: 0, outputTokens: 500, costUsd: 0.014 }
+    ],
+    errors: []
+  };
+  const ui = createPanelHarness(
+    { activeId: 'acct-1', accounts: [{ id: 'acct-1', email: 'alice@example.com', name: 'Alice Chen', tier: { id: 'g1-ultra-tier', name: 'Google AI Ultra 20x' }, groups: [] }] },
+    { enabled: true, language: 'zh-CN', pricingMode: 'standard', overviewRange: '24h' },
+    { onChange: patch => changes.push(patch) }
+  );
+
+  // 1. Default standard mode: clean toolbar without bloated context banner, single-line standard prices ($4/$20/$0.2), no promo tag noise
+  let priceTree = ui.renderPricing(sampleDash);
+  assert.equal(ui.find(priceTree, 'agy-price-context'), null);
+  assert.equal(ui.find(priceTree, 'agy-pricing-mode-standard')?.props?.['aria-pressed'], true);
+  assert.equal(ui.find(priceTree, 'agy-pricing-mode-promo')?.props?.['aria-pressed'], false);
+
+  const carbonRow = ui.findAll(priceTree, n => n.type === 'tr' && n.props?.['data-model'] === 'gemini-4-carbon')[0];
+  const neonRow = ui.findAll(priceTree, n => n.type === 'tr' && n.props?.['data-model'] === 'gemini-4-neon')[0];
+  assert.ok(carbonRow && neonRow);
+  const carbonText = ui.collectText(carbonRow);
+  assert.equal(ui.find(carbonRow, 'agy-price-promo-tag'), null);
+  assert.equal(carbonText.includes('API 优惠至'), false);
+  assert.ok(carbonText.includes('$4'));
+  assert.ok(carbonText.includes('$20'));
+  assert.equal(carbonText.includes('API 优惠 $2'), false);
+  assert.equal(ui.find(carbonRow, 'agy-price-alt'), null);
+  assert.equal(ui.find(neonRow, 'agy-price-promo-tag'), null);
+  for (const forbidden of ['\u00b7', '\u2022', '\u2027', '\u30fb']) {
+    assert.equal(ui.collectText(priceTree).includes(forbidden), false);
+  }
+
+  // 2. Overview & Settings reflect standard basis (with data-pt-tip theme tooltip)
+  const ovStd = ui.renderOverview(sampleDash);
+  assert.equal(ui.collectText(ui.find(ovStd, 'agy-overview-cost-basis')), 'API 正式标准价估值');
+  const reqStd = ui.renderEventTable(sampleDash, false);
+  const costTh = ui.findAll(reqStd, n => n.type === 'th' && n.props?.className?.includes('pt-cost-th'))[0];
+  assert.ok(costTh?.props?.['data-pt-tip']?.includes('正式标准单价'));
+  const settingsTree = ui.renderSettings();
+  assert.ok(ui.find(settingsTree, 'agy-setting-row-pricingMode'));
+  assert.equal(ui.find(settingsTree, 'agy-pricing-mode-select-standard')?.props?.selected, true);
+  assert.ok(ui.collectText(ui.find(settingsTree, 'agy-pricing-mode-select')).includes('正式标准价'));
+
+  // 3. Switch to promo mode via segmented control: shows $2/$10/$0.1 single-row values and active expiry tag
+  ui.find(priceTree, 'agy-pricing-mode-promo').props.onClick();
+  assert.equal(changes.length, 1);
+  assert.equal(changes[0].pricingMode, 'promo');
+  priceTree = ui.renderPricing({ ...sampleDash, pricing: { ...sampleDash.pricing, mode: 'promo' } });
+  assert.equal(ui.find(priceTree, 'agy-pricing-mode-promo')?.props?.['aria-pressed'], true);
+  const promoCarbonRow = ui.findAll(priceTree, n => n.type === 'tr' && n.props?.['data-model'] === 'gemini-4-carbon')[0];
+  const promoTag = ui.find(promoCarbonRow, 'agy-price-promo-tag');
+  assert.equal(promoTag?.props?.['data-active'], 'true');
+  const promoText = ui.collectText(promoCarbonRow);
+  assert.ok(promoText.includes('API 优惠至 2099-11-30'));
+  assert.ok(promoText.includes('$2'));
+  assert.ok(promoText.includes('$10'));
+  assert.equal(promoText.includes('正式 $4'), false);
+  assert.equal(ui.collectText(ui.find(ui.renderOverview(sampleDash), 'agy-overview-cost-basis')), '含 API 首发优惠口径');
+
+  // 4. English locale in promo mode shows clean expiry badge with zero middle dots (and hides it in standard mode)
+  const enUi = createPanelHarness(
+    { activeId: 'acct-1', accounts: [{ id: 'acct-1', email: 'alice@example.com', tier: { id: 'g1-pro-tier', name: 'Google AI Pro' }, groups: [] }] },
+    { enabled: true, language: 'en', pricingMode: 'promo' }
+  );
+  const enTree = enUi.renderPricing({ ...sampleDash, pricing: { ...sampleDash.pricing, mode: 'promo' } });
+  const enText = enUi.collectText(enTree);
+  assert.ok(enText.includes('API promo thru 2099-11-30'));
+  assert.equal(enText.includes('API promo $2'), false);
+  for (const forbidden of ['\u00b7', '\u2022', '\u2027', '\u30fb']) {
+    assert.equal(enText.includes(forbidden), false);
+  }
 });

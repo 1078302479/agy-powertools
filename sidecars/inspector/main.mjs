@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getAppDataDir, listRecentConversations, resolveConversationId, parseSessionData, exportTranscript } from '../../lib/session-parser.mjs';
@@ -13,7 +13,17 @@ import { startUpdate, updateStatus } from '../../lib/update-manager.mjs';
 
 export { getAppDataDir, listRecentConversations, resolveConversationId, parseSessionData, exportTranscript };
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+const isDirectRun = (() => {
+  if (!process.argv[1]) return false;
+  const norm = p => {
+    let resolved = p;
+    try { resolved = realpathSync(p); } catch {}
+    return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+  };
+  return norm(fileURLToPath(import.meta.url)) === norm(process.argv[1]);
+})();
+
+if (isDirectRun) {
   const paths = installationPaths();
   const settings = createSettingsStore();
   const remoteSsh = isRemoteSshEnvironment();
@@ -71,14 +81,14 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
         macAutoRelaunch: current.macAutoRelaunch !== false,
         mode: remoteSsh ? 'ssh-remote' : 'local',
         manualCommand: remoteSsh ? '' : manualLaunchCommand({ home: paths.home }),
-        update: updateStatus()
+        update: updateStatus(undefined, version)
       };
     },
     onRelaunch: () => remoteSsh ? { scheduled: false, reason: 'ssh-remote' } : scheduleRelaunchWithDebugPort({ dataDir: paths.data, home: paths.home }),
     onSetSettings: patch => settings.set(patch),
     onCheckUpdate: () => checkForUpdates({ currentVersion: version }),
     onInstallUpdate: ({ version: expectedVersion } = {}) => startUpdate({ currentVersion: version, expectedVersion }),
-    onUpdateStatus: () => updateStatus()
+    onUpdateStatus: () => updateStatus(undefined, version)
   }).catch(() => async () => {});
   const close = await serveRuntime({ directory: join(paths.data, 'runtime'), version, stop, health: stop.health });
   for (const event of ['SIGINT', 'SIGTERM']) process.on(event, async () => { await stop(); await closeWebUi(); await close(); process.exit(0); });
