@@ -273,6 +273,7 @@ function createPanelHarness(accountsData, opts = {}, hooks = {}) {
     Intl,
     URL,
     window: { addEventListener() {}, removeEventListener() {} },
+    location: { pathname: '/' },
     document: { createElement: () => ({ dataset: {}, remove() {} }), head: { append() {} } },
     setInterval: hooks.setInterval || (() => 1),
     clearInterval: hooks.clearInterval || (() => {}),
@@ -331,6 +332,12 @@ function createPanelHarness(accountsData, opts = {}, hooks = {}) {
     loginSession: () => (hooks.loginSession ? hooks.loginSession() : { active: false, authUrl: '', mode: 'none' }),
     onLoginSessionChange: cb => (hooks.onLoginSessionChange ? hooks.onLoginSessionChange(cb) : () => {}),
     cancelAccountLogin: () => hooks.onCancelAccountLogin?.(),
+    updateNotice: () => (typeof hooks.updateNotice === 'function' ? hooks.updateNotice() : (hooks.updateNotice ?? null)),
+    updateInstallState: () => (hooks.updateInstallState ?? { status: 'idle' }),
+    consumeExpandUpdateNotes: () => Boolean(hooks.expandUpdateNotes),
+    consumeScrollToAbout: () => Boolean(hooks.scrollToAbout),
+    openUpdateSettings: () => hooks.onOpenUpdateSettings?.(),
+    syncUpdateResult: res => hooks.onSyncUpdateResult?.(res),
     isTurnRunning: () => Boolean(hooks.isTurnRunning?.())
   });
   function renderChild(node) {
@@ -386,6 +393,8 @@ function createPanelHarness(accountsData, opts = {}, hooks = {}) {
     renderQuotas: () => { activeComponent = 'quotas'; hookIdx = 0; return panels.Quotas(); },
     renderPricing: dashboard => { activeComponent = 'pricing'; hookIdx = 0; return panels.Pricing({ dashboard }); },
     renderSettings: () => { activeComponent = 'settings'; hookIdx = 0; return panels.Settings(); },
+    renderSidebar: () => { activeComponent = 'sidebar'; hookIdx = 0; return panels.Sidebar(); },
+    renderAbout: () => { activeComponent = 'about'; hookIdx = 0; return panels.About(); },
     collectText,
     find,
     findAll
@@ -1804,4 +1813,120 @@ test('AccountSwitcher and Quotas isolate SSH remote windows and prefer live capa
   const triggerText = localUi.collectText(localUi.find(swTree, 'agy-account-switcher-trigger'));
   assert.ok(triggerText.includes('Live Window'));
   assert.ok(triggerText.includes('live@example.com'));
+});
+
+test('createAccountsStore tracks onboarding acceptance from app_storage.json and passes onboardingSync only for accepted accounts (Issue #59)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agy-onboarding-59-'));
+  try {
+    const appStoragePath = join(dir, 'app_storage.json');
+    const vault = createFakeVault({ 'gemini:antigravity': 'tok-alpha' });
+    const relaunchCalls = [];
+    const store = createAccountsStore(dir, {
+      vault,
+      appStoragePath,
+      relaunch: opts => { relaunchCalls.push(opts || null); return { scheduled: true }; }
+    });
+
+    // Account A has accepted onboarding in app_storage.json with isGcpTos = false
+    writeFileSync(appStoragePath, JSON.stringify({
+      'agy.onboarding.lastLoginUsername': 'alpha@example.com',
+      'agy.onboarding.lastLoginIsGcpTos': 'false'
+    }));
+    const s1 = store.syncActive({ email: 'alpha@example.com', name: 'Alpha', groups: [{ displayName: 'Gemini', buckets: [] }] });
+    assert.equal(s1.accounts[0].onboardingAccepted, true);
+    assert.equal(s1.accounts[0].isGcpTos, false);
+
+    // Prepare add and completeAdd for brand-new account B (not yet accepted in app_storage.json)
+    const prep = store.prepareAdd({ pendingAlias: 'NewB' });
+    vault.slots.set('gemini:antigravity', 'tok-beta');
+    const added = store.completeAdd({ email: 'beta@example.com', prevEmail: 'alpha@example.com', prevCredHash: prep.prevCredHash, triggerRelaunch: true });
+    assert.equal(added.accountChanged, true);
+    // Brand-new account must NOT suppress its first-time ToS dialog
+    assert.equal(relaunchCalls.at(-1), null);
+
+    // After user accepts ToS for B (isGcpTos = true) and enters main UI, syncActive captures B's onboarding state
+    writeFileSync(appStoragePath, JSON.stringify({
+      'agy.onboarding.lastLoginUsername': 'beta@example.com',
+      'agy.onboarding.lastLoginIsGcpTos': 'true'
+    }));
+    const s2 = store.syncActive({ email: 'beta@example.com', name: 'Beta', groups: [{ displayName: 'Gemini', buckets: [] }] });
+    const acctA = s2.accounts.find(a => a.email === 'alpha@example.com');
+    const acctB = s2.accounts.find(a => a.email === 'beta@example.com');
+    assert.equal(acctB.onboardingAccepted, true);
+    assert.equal(acctB.isGcpTos, true);
+
+    // Switching from B -> A passes A's saved onboardingSync (isGcpTos: false)
+    store.switchAccount(acctA.id, { triggerRelaunch: true });
+    assert.deepEqual(relaunchCalls.at(-1), { onboardingSync: { email: 'alpha@example.com', isGcpTos: false } });
+
+    // Simulate A active again and switch A -> B -> passes B's saved onboardingSync (isGcpTos: true)
+    writeFileSync(appStoragePath, JSON.stringify({ 'agy.onboarding.lastLoginUsername': 'alpha@example.com', 'agy.onboarding.lastLoginIsGcpTos': 'false' }));
+    store.syncActive({ email: 'alpha@example.com', name: 'Alpha' });
+    store.switchAccount(acctB.id, { triggerRelaunch: true });
+    assert.deepEqual(relaunchCalls.at(-1), { onboardingSync: { email: 'beta@example.com', isGcpTos: true } });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Sidebar badge, QuickPopover info dot, and About toggles reflect discovered updates cleanly without middle dots (Issue #45)', () => {
+  const changes = [];
+  let openedUpdateSettings = 0;
+  const ui = createPanelHarness(
+    { activeId: 'a1', accounts: [{ id: 'a1', email: 'alice@example.com', groups: [] }] },
+    { enabled: true, titlebarQuickPanel: true, autoCheckUpdates: true, autoInstallUpdates: false, language: 'zh-CN' },
+    {
+      onChange: p => changes.push(p),
+      onOpenUpdateSettings: () => openedUpdateSettings++,
+      updateNotice: {
+        status: 'available',
+        version: '2.17.0',
+        releaseUrl: 'https://github.com/WhiteBr1ck/agy-powertools/releases/tag/v2.17.0',
+        notes: '## 中文说明\n- **新功能**：自动检查更新',
+        canInstall: true,
+        dismissedVersion: ''
+      }
+    }
+  );
+  // 1. Sidebar displays compact update pill and clicking it jumps directly to Settings -> About
+  const sidebarTree = ui.renderSidebar();
+  const sideBadge = ui.find(sidebarTree, 'agy-sidebar-update-badge');
+  assert.ok(sideBadge);
+  assert.equal(ui.collectText(sideBadge), '新版');
+  let prevented = false, stopped = false;
+  sideBadge.props.onClick({ preventDefault() { prevented = true; }, stopPropagation() { stopped = true; } });
+  assert.equal(prevented, true);
+  assert.equal(stopped, true);
+  assert.equal(openedUpdateSettings, 1);
+
+  // 2. QuickPopover displays calm info dot (no top-right callout banner) with update tooltip row
+  const qpTree = ui.renderQuickPopover();
+  const qpDot = ui.find(qpTree, 'agy-quick-trigger-badge');
+  assert.ok(qpDot);
+  assert.equal(qpDot.props['data-tone'], 'info');
+  assert.equal(ui.find(qpTree, 'agy-quick-alert-callout'), null);
+  assert.ok(ui.collectText(ui.find(qpTree, 'agy-quick-trigger-tooltip')).includes('发现新版本 v2.17.0'));
+
+  // 3. About pre-populates discovered release, install button, release notes, and update switches
+  const aboutTree = ui.renderAbout();
+  assert.ok(ui.find(aboutTree, 'agy-install-update'));
+  assert.ok(ui.collectText(ui.find(aboutTree, 'agy-install-update')).includes('更新至 v2.17.0'));
+  assert.ok(ui.find(aboutTree, 'agy-setting-autoCheckUpdates'));
+  assert.ok(ui.find(aboutTree, 'agy-setting-autoInstallUpdates'));
+  ui.find(aboutTree, 'agy-setting-autoInstallUpdates').props.onCheckedChange(true);
+  assert.deepEqual(changes.map(c => ({ ...c })), [{ autoInstallUpdates: true }]);
+  for (const forbidden of ['\u00b7', '\u2022', '\u2027', '\u30fb']) {
+    assert.equal(ui.collectText(aboutTree).includes(forbidden), false);
+  }
+
+  // 4. Dismissed version hides Sidebar badge and QuickPopover info dot
+  const dismissedUi = createPanelHarness(
+    { activeId: 'a1', accounts: [{ id: 'a1', email: 'alice@example.com', groups: [] }] },
+    { enabled: true, titlebarQuickPanel: true, autoCheckUpdates: true, language: 'zh-CN' },
+    {
+      updateNotice: { status: 'available', version: '2.17.0', canInstall: true, dismissedVersion: '2.17.0' }
+    }
+  );
+  assert.equal(dismissedUi.find(dismissedUi.renderSidebar(), 'agy-sidebar-update-badge'), null);
+  assert.equal(dismissedUi.find(dismissedUi.renderQuickPopover(), 'agy-quick-trigger-badge'), null);
 });

@@ -211,3 +211,18 @@ test('localizer skips English text inside code editors, diff viewers, and monosp
   assert.equal(nodes[5].nodeValue, '设置');
   loc.dispose();
 });
+
+test('Skills and Customizations UI strings translate accurately in zh-CN and zh-TW (Issue #60)', () => {
+  const document = { nodeType: 9, createTreeWalker: () => ({ nextNode: () => null }), querySelectorAll: () => [] };
+  const context = vm.createContext({ document, NodeFilter: { SHOW_TEXT: 4 }, MutationObserver: class { observe() {} disconnect() {} }, __agyToZhTw: toZhTw });
+  vm.runInContext(readFileSync('lib/native-i18n.js', 'utf8'), context);
+  const t = context.__agyI18n.t;
+  assert.equal(t('Skills & Rules', 'zh-CN'), '技能与规则');
+  assert.equal(t('Skills & Rules', 'zh-TW'), '技能與規則');
+  assert.equal(t('Active Skills', 'zh-CN'), '已启用技能');
+  assert.equal(t('Enable Recommended Skills', 'zh-TW'), '啟用推薦技能');
+  assert.equal(t('Browse the Marketplace', 'zh-CN'), '浏览插件市场');
+  assert.equal(t('No skills or rules yet.', 'zh-TW'), '暫無技能或規則。');
+  assert.equal(t('Delete Skill', 'zh-CN'), '删除技能');
+  assert.equal(t('Copy Config File Path', 'zh-TW'), '複製設定檔路徑');
+});

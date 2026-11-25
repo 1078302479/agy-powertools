@@ -212,14 +212,16 @@ test('executable discovery, post-update prompt guards, and relaunch scheduling p
     assert.equal(spawned[0].opts.env.AGY_RELAUNCH_TARGET, exe);
     assert.ok(spawned[0].opts.env.AGY_RELAUNCH_SCRIPT.endsWith('relaunch-antigravity.ps1'));
     assert.ok(existsSync(spawned[0].opts.env.AGY_RELAUNCH_SCRIPT));
-    assert.equal(spawned[0].opts.detached, undefined);
-    assert.ok(spawned[0].args.includes('-EncodedCommand'));
-    const encodedIdx = spawned[0].args.indexOf('-EncodedCommand');
-    const decodedLauncher = Buffer.from(spawned[0].args[encodedIdx + 1], 'base64').toString('utf16le');
-    assert.ok(decodedLauncher.includes('FindWindowSW'));
-    assert.ok(decodedLauncher.includes('ShellExecute'));
-    assert.ok(decodedLauncher.includes('CreateProcessW'));
+    assert.equal(spawned[0].args.includes('-EncodedCommand'), false);
+    if (res.launchMethod === 'explorer-lnk') {
+      assert.match(spawned[0].cmd, /explorer\.exe$/i);
+      assert.ok(spawned[0].args[0].endsWith('relaunch-antigravity.lnk'));
+    } else {
+      assert.ok(spawned[0].args.includes('-File'));
+    }
     const psBody = readFileSync(spawned[0].opts.env.AGY_RELAUNCH_SCRIPT, 'utf8');
+    assert.equal(psBody.includes('FindWindowSW'), false);
+    assert.equal(psBody.includes('CreateProcessW'), false);
     assert.ok(psBody.includes('Start-Sleep -Milliseconds 350'));
     assert.ok(psBody.includes('--remote-debugging-port=0'));
     assert.ok(psBody.includes('Remove-Item -LiteralPath $PSCommandPath'));
@@ -1000,7 +1002,7 @@ test('relaunch scripts escalate lingering POSIX processes to SIGKILL, resolve Li
   }
 });
 
-test('Windows relaunch script verifies startup via ack file, scrubs Electron env, passes WorkingDirectory, falls back across launch tiers, and parses cleanly in PowerShell 5.1 (Issue #53)', () => {
+test('Windows relaunch uses zero-AMSI Explorer .lnk (no -EncodedCommand/DCOM/VBS), verifies proxy args, syncs onboarding app_storage.json post-exit, and parses cleanly in PowerShell 5.1 (Issues #53 & #59)', () => {
   const root = mkdtempSync(join(tmpdir(), 'agy-win-relaunch-53-'));
   try {
     const dataDir = join(root, 'data');
@@ -1014,47 +1016,107 @@ test('Windows relaunch script verifies startup via ack file, scrubs Electron env
     const winExe = join(root, 'AppData', 'Local', 'Programs', 'antigravity', 'Antigravity.exe');
     mkdirSync(join(root, 'AppData', 'Local', 'Programs', 'antigravity'), { recursive: true });
     writeFileSync(winExe, '');
+    const appStoragePath = join(root, 'AppData', 'Roaming', 'Antigravity', 'app_storage.json');
+    mkdirSync(join(root, 'AppData', 'Roaming', 'Antigravity'), { recursive: true });
+    writeFileSync(appStoragePath, JSON.stringify({ 'agy.onboarding.lastLoginUsername': 'old@example.com', 'agy.onboarding.lastLoginIsGcpTos': 'false' }));
+
     const spawned = [];
+    const helperCalls = [];
     const res = scheduleRelaunchWithDebugPort({
       dataDir,
       home: root,
       platform: 'win32',
       env: { LOCALAPPDATA: join(root, 'AppData', 'Local') },
+      onboardingSync: { email: 'bob@example.com', isGcpTos: true },
+      appStoragePath,
+      runPowerShellFile(exe, args, opts) {
+        helperCalls.push({ exe, args, opts });
+        writeFileSync(opts.env.AGY_RELAUNCH_LNK, 'LNK');
+        return { status: 0, stdout: '', stderr: '' };
+      },
       spawnProcess(cmd, args, opts) { spawned.push({ cmd, args, opts }); return { unref() {} }; }
     });
     assert.equal(res.scheduled, true);
     assert.equal(res.proxyActive, true);
+    assert.equal(res.launchMethod, 'explorer-lnk');
     assert.ok(res.scriptPath);
+    assert.equal(helperCalls.length, 1);
+    assert.ok(helperCalls[0].args.includes('-File'));
+    assert.equal(helperCalls[0].args.includes('-EncodedCommand'), false);
+    assert.match(spawned[0].cmd, /explorer\.exe$/i);
+    assert.ok(spawned[0].args[0].endsWith('relaunch-antigravity.lnk'));
+
     const psBody = readFileSync(spawned[0].opts.env.AGY_RELAUNCH_SCRIPT, 'utf8');
+    // Zero Defender AMSI / Huorong triggers
+    assert.equal(psBody.includes('9BA05972-F6A8-11CF-A442-00A0C90A8F39'), false);
+    assert.equal(psBody.includes('CreateProcessW'), false);
+    assert.equal(psBody.includes('WScript.Shell'), false);
+    // Verifies startup ack, env cleanup, proxy arg verification, onboarding sync, and self-cleanup of .lnk/.ack/.ps1
     assert.ok(psBody.includes("Set-Content -LiteralPath $ackPath -Value ('STARTED ' + $PID)"));
     assert.ok(psBody.includes('Remove-Item Env:ELECTRON_RUN_AS_NODE,Env:NODE_OPTIONS,Env:ANTIGRAVITY_LS_ADDRESS'));
-    assert.ok(psBody.includes('-ArgumentList $argLine -WorkingDirectory $targetDir'));
-    assert.ok(psBody.includes("Start-Process -FilePath 'cmd.exe'"));
-    assert.ok(psBody.includes('$d.Document.Application.ShellExecute($target, $argLine, $targetDir'));
-    assert.ok(spawned[0].opts.env.AGY_RELAUNCH_ACK);
-    assert.ok(spawned[0].opts.env.AGY_RELAUNCH_VBS);
+    assert.ok(psBody.includes("-ArgumentList $argLine -WorkingDirectory $targetDir"));
+    assert.ok(psBody.includes("CommandLine.Contains('--proxy-server=')"));
+    assert.ok(psBody.includes("agy.onboarding.lastLoginUsername"));
+    assert.ok(psBody.includes("'bob@example.com'"));
+    assert.ok(psBody.includes("agy.onboarding.lastLoginIsGcpTos"));
+    assert.ok(psBody.includes("'true'"));
+    assert.ok(psBody.includes("Remove-Item -LiteralPath $lnkPath -Force"));
 
-    const encIdx = spawned[0].args.indexOf('-EncodedCommand');
-    assert.ok(encIdx >= 0);
-    const launcherBody = Buffer.from(spawned[0].args[encIdx + 1], 'base64').toString('utf16le');
-    assert.ok(launcherBody.includes('function Wait-AgyAck'));
-    assert.ok(launcherBody.includes('if (Wait-AgyAck 1600) { $launched = $true }'));
-    assert.ok(launcherBody.includes("Set-Content -LiteralPath $vbs -Value"));
-    assert.ok(launcherBody.includes('-Encoding Unicode'));
-    assert.ok(launcherBody.includes('[uint32]0x09000000'));
-    assert.equal(launcherBody.includes('0x01000000u'), false);
+    // Fallback when .lnk creation fails uses plain powershell.exe -File (never -EncodedCommand)
+    const fallbackSpawned = [];
+    const fallbackRes = scheduleRelaunchWithDebugPort({
+      dataDir,
+      home: root,
+      platform: 'win32',
+      env: { LOCALAPPDATA: join(root, 'AppData', 'Local') },
+      runPowerShellFile: () => ({ status: 1, stdout: '', stderr: 'denied' }),
+      spawnProcess(cmd, args, opts) { fallbackSpawned.push({ cmd, args, opts }); return { unref() {} }; }
+    });
+    assert.equal(fallbackRes.launchMethod, 'powershell-file');
+    assert.match(fallbackSpawned[0].cmd, /powershell\.exe$/i);
+    assert.ok(fallbackSpawned[0].args.includes('-File'));
+    assert.equal(fallbackSpawned[0].args.includes('-EncodedCommand'), false);
+
+    // POSIX macOS/Linux relaunch also injects post-exit onboarding sync safely via env vars
+    const linExe = join(root, 'antigravity-lin');
+    writeFileSync(linExe, '');
+    const linSpawned = [];
+    scheduleRelaunchWithDebugPort({
+      dataDir,
+      home: root,
+      platform: 'linux',
+      env: { APPIMAGE: linExe },
+      onboardingSync: { email: 'bob@example.com', isGcpTos: false },
+      appStoragePath: join(root, 'lin_storage.json'),
+      spawnProcess(cmd, args, opts) { linSpawned.push({ cmd, args, opts }); return { unref() {} }; }
+    });
+    assert.equal(linSpawned[0].opts.env.AGY_ONBOARDING_EMAIL, 'bob@example.com');
+    assert.equal(linSpawned[0].opts.env.AGY_ONBOARDING_GCP_TOS, 'false');
+    assert.ok(linSpawned[0].args[1].includes('agy.onboarding.lastLoginUsername'));
+    if (process.platform !== 'win32') {
+      assert.equal(spawnSync('sh', ['-n', '-c', linSpawned[0].args[1]], { encoding: 'utf8' }).status, 0);
+    }
 
     if (process.platform === 'win32') {
-      const checkParse = scriptText => {
-        const probe = "$e = $null; [void][System.Management.Automation.Language.Parser]::ParseInput($env:AGY_PS_CHECK, [ref]$null, [ref]$e); if ($e -and $e.Count -gt 0) { $e | ForEach-Object { Write-Error $_.Message }; exit 1 }";
-        const out = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', probe], {
-          encoding: 'utf8',
-          env: { ...process.env, AGY_PS_CHECK: scriptText }
-        });
-        assert.equal(out.status, 0, `PowerShell 5.1 parse error: ${out.stderr}`);
-      };
-      checkParse(psBody.replace(/^\uFEFF/, ''));
-      checkParse(launcherBody);
+      // Real PowerShell 5.1 AST parse check AND real .lnk creation check on Windows
+      const probe = "$e = $null; [void][System.Management.Automation.Language.Parser]::ParseInput($env:AGY_PS_CHECK, [ref]$null, [ref]$e); if ($e -and $e.Count -gt 0) { $e | ForEach-Object { Write-Error $_.Message }; exit 1 }";
+      const out = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', probe], {
+        encoding: 'utf8',
+        env: { ...process.env, AGY_PS_CHECK: psBody.replace(/^\uFEFF/, '') }
+      });
+      assert.equal(out.status, 0, `PowerShell 5.1 parse error: ${out.stderr}`);
+
+      const realSpawned = [];
+      const realRes = scheduleRelaunchWithDebugPort({
+        dataDir: join(root, 'real-lnk'),
+        home: root,
+        platform: 'win32',
+        env: { LOCALAPPDATA: join(root, 'AppData', 'Local'), SystemRoot: process.env.SystemRoot },
+        spawnProcess(cmd, args, opts) { realSpawned.push({ cmd, args, opts }); return { unref() {} }; }
+      });
+      assert.equal(realRes.launchMethod, 'explorer-lnk');
+      assert.match(realSpawned[0].cmd, /explorer\.exe$/i);
+      assert.equal(existsSync(realSpawned[0].args[0]), true);
     }
   } finally {
     rmSync(root, { recursive: true, force: true });

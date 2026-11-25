@@ -2033,3 +2033,135 @@ test('SSH remote window hides local AccountSwitcher, preserves native settings b
   assert.equal(calls.includes('accounts.list'), false);
   p.context.__agyPowertools.dispose();
 });
+
+test('auto-check update banner shows one-click update/dismiss and optional autoInstallUpdates waits for idle same-major only (Issue #45)', async () => {
+  const timeouts = [];
+  const calls = [];
+  let runningIds = ['busy-conv-1'];
+  let remoteReply = {
+    status: 'available',
+    version: '2.17.0',
+    releaseUrl: 'https://github.com/WhiteBr1ck/agy-powertools/releases/tag/v2.17.0',
+    notes: '## 中文说明\n- **体验优化**：新增低频自动查更新与轻量提醒',
+    canInstall: true,
+    dismissedVersion: '',
+    clientUpgraded: false
+  };
+  const makeEl = tag => {
+    const el = {
+      tagName: String(tag || 'div').toUpperCase(),
+      dataset: {},
+      style: {},
+      className: '',
+      textContent: '',
+      children: [],
+      listeners: new Map(),
+      isConnected: true,
+      append(...items) { this.children.push(...items); },
+      appendChild(item) { this.children.push(item); return item; },
+      remove() { this.isConnected = false; },
+      setAttribute() {},
+      getAttribute: () => null,
+      removeAttribute() {},
+      addEventListener(type, fn) { if (!this.listeners.has(type)) this.listeners.set(type, []); this.listeners.get(type).push(fn); },
+      querySelector: () => null,
+      querySelectorAll: () => []
+    };
+    return el;
+  };
+  const body = makeEl('body');
+  const intervals = [];
+  const settings = { enabled: true, autoCheckUpdates: true, autoInstallUpdates: false, language: 'zh-CN' };
+  let capturedEnv = null;
+  const ctx = vm.createContext({
+    document: {
+      readyState: 'complete',
+      head: makeEl('head'),
+      body,
+      documentElement: { toggleAttribute() {}, removeAttribute() {}, setAttribute() {}, style: { setProperty() {}, removeProperty() {} } },
+      createElement: tag => makeEl(tag),
+      addEventListener() {},
+      querySelector: () => null,
+      querySelectorAll: () => []
+    },
+    window: { addEventListener() {}, removeEventListener() {} },
+    navigator: { userAgent: 'Antigravity/2.36.0' },
+    location: { pathname: '/c/conv-upd' },
+    AbortController,
+    React: { createElement: () => null, Fragment: 'fragment', useSyncExternalStore: (_, g) => g() },
+    ReactDOM: { createRoot: () => ({ render() {}, unmount() {} }) },
+    HC: () => null,
+    __agyPanels: env => { capturedEnv = env; return { dispose() {} }; },
+    __agyInitialSettings: { ...settings },
+    __agyNativeAdapter: {
+      wrap: el => el,
+      installPage: () => true,
+      executionState: () => ({ conversationId: 'conv-upd', status: 1 }),
+      runningConversationIds: () => runningIds,
+      capabilities: () => ({}),
+      setEnabled() {}, setStageUpdates() {}, setEfficientIO() {}, setContextLimit() {}, setSidebarProjectLimit() {},
+      dispose() {}
+    },
+    __agyPowertoolsHost: raw => {
+      const msg = JSON.parse(raw);
+      calls.push(msg);
+      if (msg.method === 'settings.get') ctx.__agyPowertoolsReceive(msg.id, { ...settings });
+      else if (msg.method === 'settings.set') { Object.assign(settings, msg.settings); ctx.__agyPowertoolsReceive(msg.id, { ...settings }); }
+      else if (msg.method === 'update.autoCheck') ctx.__agyPowertoolsReceive(msg.id, { ...remoteReply });
+      else if (msg.method === 'update.dismiss') { remoteReply.dismissedVersion = msg.version; ctx.__agyPowertoolsReceive(msg.id, { ...remoteReply }); }
+      else if (msg.method === 'update.install') ctx.__agyPowertoolsReceive(msg.id, { status: 'preparing', version: msg.version });
+      else if (msg.method === 'update.status') ctx.__agyPowertoolsReceive(msg.id, { status: 'completed', version: '2.17.0' });
+      else ctx.__agyPowertoolsReceive(msg.id, {});
+    },
+    MutationObserver: class { observe() {} disconnect() {} },
+    setInterval: (fn, ms) => { const item = { fn, ms, cleared: false }; intervals.push(item); return intervals.length; },
+    clearInterval: id => { if (intervals[id - 1]) intervals[id - 1].cleared = true; },
+    setTimeout: (fn, ms) => { const item = { fn, ms, cleared: false }; timeouts.push(item); return timeouts.length; },
+    clearTimeout: id => { if (timeouts[id - 1]) timeouts[id - 1].cleared = true; }
+  });
+  vm.runInContext(source, ctx);
+  await new Promise(r => setImmediate(r));
+
+  // Trigger startup 15s update check timer
+  const startupCheck = timeouts.find(t => t.ms === 15000 && !t.cleared);
+  assert.ok(startupCheck);
+  startupCheck.fn();
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+
+  const autoReq = calls.find(c => c.method === 'update.autoCheck');
+  assert.ok(autoReq);
+  assert.equal(autoReq.clientVersion, '2.36.0');
+  const banner = body.children.find(c => c.dataset?.testid === 'agy-update-prompt-banner' && c.isConnected);
+  assert.ok(banner, 'expected bottom-right update reminder banner');
+  const walk = (node, pred) => {
+    if (!node) return null;
+    if (pred(node)) return node;
+    for (const c of node.children || []) { const hit = walk(c, pred); if (hit) return hit; }
+    return null;
+  };
+  assert.ok(walk(banner, n => n.dataset?.testid === 'agy-update-banner-install'));
+  const dismissBtn = walk(banner, n => n.dataset?.testid === 'agy-update-banner-dismiss');
+  assert.ok(dismissBtn);
+
+  // Clicking dismiss persists update.dismiss and removes banner
+  for (const fn of dismissBtn.listeners.get('click') || []) fn();
+  await new Promise(r => setImmediate(r));
+  assert.equal(calls.some(c => c.method === 'update.dismiss' && c.version === '2.17.0'), true);
+  assert.equal(banner.isConnected, false);
+
+  // New version arrives + autoInstallUpdates enabled -> waits while runningIds non-empty, then auto-installs once idle
+  remoteReply = { ...remoteReply, version: '2.18.0', dismissedVersion: '' };
+  await capturedEnv.change({ autoInstallUpdates: true });
+  await capturedEnv.checkForUpdateNotice({ force: true });
+  assert.equal(calls.some(c => c.method === 'update.install'), false, 'must wait while a turn is running');
+
+  runningIds = [];
+  const mainPoll = intervals.find(i => i.ms === 2000 && !i.cleared);
+  mainPoll.fn();
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+  assert.equal(calls.some(c => c.method === 'update.install' && c.version === '2.18.0'), true);
+
+  ctx.__agyPowertools.dispose();
+});
