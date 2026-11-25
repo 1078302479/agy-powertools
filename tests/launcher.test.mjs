@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, utimesSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, utimesSync, symlinkSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -630,8 +630,8 @@ test('scheduleRelaunchWithDebugPort reads saved proxy settings across platforms 
     assert.ok(psBody.includes("$env:HTTPS_PROXY = 'socks5h://127.0.0.1:7897'"));
     assert.ok(psBody.includes("$env:NO_PROXY = 'localhost,127.0.0.1,::1,192.168.0.0/16'"));
     assert.ok(psBody.includes("$env:GODEBUG = 'http2client=0'"));
-    assert.ok(psBody.includes("'--proxy-server=socks5://127.0.0.1:7897'"));
-    assert.ok(psBody.includes("'--proxy-bypass-list=localhost;127.0.0.1;[::1];192.168.0.0/16'"));
+    assert.ok(psBody.includes('"--proxy-server=socks5://127.0.0.1:7897"'));
+    assert.ok(psBody.includes('"--proxy-bypass-list=localhost;127.0.0.1;[::1];192.168.0.0/16"'));
 
     // macOS: injects env + --env flags + Chromium proxy args and clears helper vars
     const macApp = join(root, 'Antigravity.app');
@@ -924,6 +924,138 @@ test('maybeAutoRelaunchProxy automatically relaunches once on cold start when no
     });
     assert.equal(rReset.relaunched, true);
     assert.equal(relaunchedCount, 3);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('relaunch scripts escalate lingering POSIX processes to SIGKILL, resolve Linux symlinks, and preserve user system proxy env when plugin proxy is off', () => {
+  const root = mkdtempSync(join(tmpdir(), 'agy-relaunch-harden-'));
+  try {
+    const dataDir = join(root, 'data');
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(join(dataDir, 'settings.json'), JSON.stringify({ proxyEnabled: false }));
+
+    // 1. Linux: symlink target resolves realpath, targets main Electron PID before helpers, escalates to SIGKILL, and guards proxy unset
+    const realExe = join(root, 'opt-antigravity');
+    const symExe = join(root, 'bin-antigravity');
+    writeFileSync(realExe, '');
+    if (process.platform !== 'win32') symlinkSync(realExe, symExe);
+    const linSpawned = [];
+    const linRes = scheduleRelaunchWithDebugPort({
+      dataDir,
+      home: root,
+      platform: 'linux',
+      env: { APPIMAGE: process.platform !== 'win32' ? symExe : realExe },
+      spawnProcess(cmd, args, opts) { linSpawned.push({ cmd, args, opts }); return { unref() {} }; }
+    });
+    assert.equal(linRes.scheduled, true);
+    assert.equal(linSpawned[0].opts.env.AGY_RELAUNCH_REAL, realpathSync(realExe));
+    const linScript = linSpawned[0].args[1];
+    assert.ok(linScript.includes('index($0, " --type=") == 0 && index($0, " --import=") == 0'));
+    assert.ok(linScript.includes('kill -KILL $rem_pids'));
+    assert.ok(linScript.includes('if [ -n "$AGY_POWERTOOLS_PROXY_SPEC" ]; then unset HTTP_PROXY'));
+    assert.ok(linScript.includes('unset AGY_RELAUNCH_TARGET AGY_RELAUNCH_REAL'));
+    if (process.platform !== 'win32') {
+      assert.equal(spawnSync('sh', ['-n', '-c', linScript], { encoding: 'utf8' }).status, 0);
+    }
+
+    // 2. macOS: escalates lingering processes to SIGKILL and guards proxy unset behind AGY_POWERTOOLS_PROXY_SPEC
+    const macApp = join(root, 'Antigravity.app');
+    mkdirSync(join(macApp, 'Contents', 'Resources', 'bin'), { recursive: true });
+    const macLs = join(macApp, 'Contents', 'Resources', 'bin', 'language_server');
+    writeFileSync(macLs, '');
+    const macSpawned = [];
+    scheduleRelaunchWithDebugPort({
+      dataDir,
+      home: root,
+      platform: 'darwin',
+      env: { ANTIGRAVITY_AGENTAPI_EXE: macLs },
+      spawnProcess(cmd, args, opts) { macSpawned.push({ cmd, args, opts }); return { unref() {} }; }
+    });
+    const macScript = macSpawned[0].args[1];
+    assert.ok(macScript.includes('kill -KILL $pids'));
+    assert.ok(macScript.includes('if [ -n "$AGY_POWERTOOLS_PROXY_SPEC" ]; then unset HTTP_PROXY'));
+    if (process.platform !== 'win32') {
+      assert.equal(spawnSync('sh', ['-n', '-c', macScript], { encoding: 'utf8' }).status, 0);
+    }
+
+    // 3. Windows: guards Remove-Item Env:HTTP_PROXY behind $env:AGY_POWERTOOLS_PROXY_SPEC
+    const winExe = join(root, 'AppData', 'Local', 'Programs', 'antigravity', 'Antigravity.exe');
+    mkdirSync(join(root, 'AppData', 'Local', 'Programs', 'antigravity'), { recursive: true });
+    writeFileSync(winExe, '');
+    const winSpawned = [];
+    scheduleRelaunchWithDebugPort({
+      dataDir,
+      home: root,
+      platform: 'win32',
+      env: { LOCALAPPDATA: join(root, 'AppData', 'Local') },
+      spawnProcess(cmd, args, opts) { winSpawned.push({ cmd, args, opts }); return { unref() {} }; }
+    });
+    const psBody = readFileSync(winSpawned[0].opts.env.AGY_RELAUNCH_SCRIPT, 'utf8');
+    assert.ok(psBody.includes('if ($env:AGY_POWERTOOLS_PROXY_SPEC) {'));
+    assert.ok(psBody.includes('Remove-Item Env:HTTP_PROXY'));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('Windows relaunch script verifies startup via ack file, scrubs Electron env, passes WorkingDirectory, falls back across launch tiers, and parses cleanly in PowerShell 5.1 (Issue #53)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'agy-win-relaunch-53-'));
+  try {
+    const dataDir = join(root, 'data');
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(join(dataDir, 'settings.json'), JSON.stringify({
+      proxyEnabled: true,
+      proxyUrl: 'http://127.0.0.1:7897',
+      proxyBypass: '192.168.0.0/16',
+      proxyForceHttp1: false
+    }));
+    const winExe = join(root, 'AppData', 'Local', 'Programs', 'antigravity', 'Antigravity.exe');
+    mkdirSync(join(root, 'AppData', 'Local', 'Programs', 'antigravity'), { recursive: true });
+    writeFileSync(winExe, '');
+    const spawned = [];
+    const res = scheduleRelaunchWithDebugPort({
+      dataDir,
+      home: root,
+      platform: 'win32',
+      env: { LOCALAPPDATA: join(root, 'AppData', 'Local') },
+      spawnProcess(cmd, args, opts) { spawned.push({ cmd, args, opts }); return { unref() {} }; }
+    });
+    assert.equal(res.scheduled, true);
+    assert.equal(res.proxyActive, true);
+    assert.ok(res.scriptPath);
+    const psBody = readFileSync(spawned[0].opts.env.AGY_RELAUNCH_SCRIPT, 'utf8');
+    assert.ok(psBody.includes("Set-Content -LiteralPath $ackPath -Value ('STARTED ' + $PID)"));
+    assert.ok(psBody.includes('Remove-Item Env:ELECTRON_RUN_AS_NODE,Env:NODE_OPTIONS,Env:ANTIGRAVITY_LS_ADDRESS'));
+    assert.ok(psBody.includes('-ArgumentList $argLine -WorkingDirectory $targetDir'));
+    assert.ok(psBody.includes("Start-Process -FilePath 'cmd.exe'"));
+    assert.ok(psBody.includes('$d.Document.Application.ShellExecute($target, $argLine, $targetDir'));
+    assert.ok(spawned[0].opts.env.AGY_RELAUNCH_ACK);
+    assert.ok(spawned[0].opts.env.AGY_RELAUNCH_VBS);
+
+    const encIdx = spawned[0].args.indexOf('-EncodedCommand');
+    assert.ok(encIdx >= 0);
+    const launcherBody = Buffer.from(spawned[0].args[encIdx + 1], 'base64').toString('utf16le');
+    assert.ok(launcherBody.includes('function Wait-AgyAck'));
+    assert.ok(launcherBody.includes('if (Wait-AgyAck 1600) { $launched = $true }'));
+    assert.ok(launcherBody.includes("Set-Content -LiteralPath $vbs -Value"));
+    assert.ok(launcherBody.includes('-Encoding Unicode'));
+    assert.ok(launcherBody.includes('[uint32]0x09000000'));
+    assert.equal(launcherBody.includes('0x01000000u'), false);
+
+    if (process.platform === 'win32') {
+      const checkParse = scriptText => {
+        const probe = "$e = $null; [void][System.Management.Automation.Language.Parser]::ParseInput($env:AGY_PS_CHECK, [ref]$null, [ref]$e); if ($e -and $e.Count -gt 0) { $e | ForEach-Object { Write-Error $_.Message }; exit 1 }";
+        const out = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', probe], {
+          encoding: 'utf8',
+          env: { ...process.env, AGY_PS_CHECK: scriptText }
+        });
+        assert.equal(out.status, 0, `PowerShell 5.1 parse error: ${out.stderr}`);
+      };
+      checkParse(psBody.replace(/^\uFEFF/, ''));
+      checkParse(launcherBody);
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

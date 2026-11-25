@@ -168,3 +168,46 @@ test('Swarm UI strings translate cleanly in zh-CN and zh-TW without middle dots 
   const i18nSrc = readFileSync('lib/native-i18n.js', 'utf8');
   assert.ok(i18nSrc.includes('.post-body') && i18nSrc.includes('#ov-frame'));
 });
+
+test('localizer skips English text inside code editors, diff viewers, and monospace code surfaces (Issue #55)', () => {
+  const makeNode = (value, matchedSelectors = []) => ({
+    nodeValue: value,
+    parentElement: {
+      closest: sel => matchedSelectors.some(m => sel.includes(m)) ? {} : null
+    }
+  });
+  const nodes = [
+    makeNode('Settings', ['.monaco-editor']),
+    makeNode('Delete', ['.monaco-diff-editor']),
+    makeNode('Copy', ['[data-testid*="diff"]']),
+    makeNode('Review', ['.code-block']),
+    makeNode('Open File', ['.view-lines']),
+    makeNode('Settings', [])
+  ];
+  let idx = 0;
+  const document = {
+    nodeType: 9,
+    body: { nodeType: 1, getAttribute: () => null, closest: () => null, querySelectorAll: () => [] },
+    createTreeWalker: () => {
+      let i = 0;
+      return { nextNode: () => nodes[i++] || null };
+    },
+    querySelectorAll: () => []
+  };
+  const context = vm.createContext({
+    document,
+    NodeFilter: { SHOW_TEXT: 4 },
+    MutationObserver: class { observe() {} disconnect() {} },
+    __agyToZhTw: toZhTw
+  });
+  vm.runInContext(readFileSync('lib/native-i18n.js', 'utf8'), context);
+  const loc = context.__agyI18n.localizer();
+  loc.apply('zh-CN', true);
+  assert.equal(nodes[0].nodeValue, 'Settings');
+  assert.equal(nodes[1].nodeValue, 'Delete');
+  assert.equal(nodes[2].nodeValue, 'Copy');
+  assert.equal(nodes[3].nodeValue, 'Review');
+  assert.equal(nodes[4].nodeValue, 'Open File');
+  assert.equal(nodes[5].nodeValue, '设置');
+  loc.dispose();
+});
