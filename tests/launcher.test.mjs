@@ -1111,7 +1111,7 @@ test('Windows relaunch uses zero-AMSI Explorer .lnk (no -EncodedCommand/DCOM/VBS
         dataDir: join(root, 'real-lnk'),
         home: root,
         platform: 'win32',
-        env: { LOCALAPPDATA: join(root, 'AppData', 'Local'), SystemRoot: process.env.SystemRoot },
+        env: { ...process.env, LOCALAPPDATA: join(root, 'AppData', 'Local') },
         spawnProcess(cmd, args, opts) { realSpawned.push({ cmd, args, opts }); return { unref() {} }; }
       });
       assert.equal(realRes.launchMethod, 'explorer-lnk');
