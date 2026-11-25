@@ -6,7 +6,8 @@ import { startNativeIntegration } from '../../lib/native-host.mjs';
 import { serveRuntime } from '../../lib/runtime-control.mjs';
 import { installationPaths } from '../../lib/lifecycle.mjs';
 import { createSettingsStore } from '../../lib/settings.mjs';
-import { configureLaunchers, isRemoteSshEnvironment, manualLaunchCommand, maybeAutoRelaunchMac, maybePromptPostUpdateRelaunch, recordDebugPortReady, scheduleRelaunchWithDebugPort } from '../../lib/launcher.mjs';
+import { configureLaunchers, isRemoteSshEnvironment, manualLaunchCommand, maybeAutoRelaunchMac, maybeAutoRelaunchProxy, maybePromptPostUpdateRelaunch, recordDebugPortReady, recordProxyReady, scheduleRelaunchWithDebugPort } from '../../lib/launcher.mjs';
+import { checkProxyPortOpen, inspectProxyRuntime } from '../../lib/proxy.mjs';
 import { startSidecarWebUi } from '../../lib/sidecar-ui.mjs';
 import { checkForUpdates } from '../../lib/updates.mjs';
 import { startUpdate, updateStatus } from '../../lib/update-manager.mjs';
@@ -28,6 +29,24 @@ if (isDirectRun) {
   const settings = createSettingsStore();
   const remoteSsh = isRemoteSshEnvironment();
   let missingPortPolls = 0, shortcutsHealed = false, everConnectedDebugPort = false;
+  // Cold-start proxy auto-relaunch (non-TUN mode): runs locally before renderer/network mount
+  if (!remoteSsh) {
+    const bootSettings = settings.get();
+    const bootProxy = inspectProxyRuntime(bootSettings, process.env);
+    if (bootProxy.reason === 'active') {
+      try { recordProxyReady({ dataDir: paths.data }); } catch {}
+    } else if (bootSettings.enabled !== false && bootProxy.configured && bootProxy.reason === 'not-applied') {
+      void maybeAutoRelaunchProxy({
+        dataDir: paths.data,
+        home: paths.home,
+        enabled: bootSettings.enabled !== false,
+        proxyEnabled: bootSettings.proxyEnabled,
+        proxyUrl: bootSettings.proxyUrl,
+        runtimeProxyReason: bootProxy.reason,
+        checkPort: checkProxyPortOpen
+      }).catch(() => {});
+    }
+  }
   const stop = startNativeIntegration({
     parseSessionData,
     onDebugPortReady() {
@@ -81,6 +100,7 @@ if (isDirectRun) {
         macAutoRelaunch: current.macAutoRelaunch !== false,
         mode: remoteSsh ? 'ssh-remote' : 'local',
         manualCommand: remoteSsh ? '' : manualLaunchCommand({ home: paths.home }),
+        proxy: remoteSsh ? null : inspectProxyRuntime(current, process.env),
         update: updateStatus(undefined, version)
       };
     },

@@ -1541,3 +1541,186 @@ test('chat image right-click opens MediaContextMenu with attach, copy, and save 
 
   ctx.__agyPowertools.dispose();
 });
+
+
+test('response toolbar Copy button overrides clipboard with only the final response while preserving native check animation (Issue #50)', async () => {
+  const listeners = new Map();
+  const copiedValues = [];
+  const makeEl = () => ({ dataset: {}, style: {}, className: '', isConnected: true, children: [], append() {}, appendChild() {}, remove() {}, setAttribute() {}, getAttribute: () => null, removeAttribute() {}, querySelector: () => null, querySelectorAll: () => [] });
+  const doc = {
+    readyState: 'complete',
+    head: makeEl(),
+    body: makeEl(),
+    documentElement: { toggleAttribute() {}, removeAttribute() {}, setAttribute() {}, style: { setProperty() {}, removeProperty() {} } },
+    createElement: () => makeEl(),
+    addEventListener(type, fn) { if (!listeners.has(type)) listeners.set(type, []); listeners.get(type).push(fn); },
+    querySelector: () => null,
+    querySelectorAll: () => []
+  };
+  const clipProto = { writeText: async text => { copiedValues.push(text); } };
+  const clipboard = Object.create(clipProto);
+  const ctx = vm.createContext({
+    document: doc,
+    window: { addEventListener() {}, removeEventListener() {} },
+    navigator: { clipboard },
+    location: { pathname: '/c/conv-copy' },
+    AbortController,
+    React: { createElement: () => null },
+    ReactDOM: { createRoot: () => ({ render() {}, unmount() {} }) },
+    HC: () => null,
+    __agyNativeAdapter: {
+      wrap: el => el,
+      finalResponseText: () => ({ finalText: 'Final clean answer only.', hasIntermediate: true }),
+      executionState: () => null,
+      capabilities: () => ({}),
+      setEnabled() {}, setStageUpdates() {}, setEfficientIO() {}, setContextLimit() {}, setSidebarProjectLimit() {},
+      dispose() {}
+    },
+    __agyInitialSettings: { enabled: true, stageUpdates: true },
+    MutationObserver: class { observe() {} disconnect() {} },
+    setInterval: () => 1, clearInterval() {}, setTimeout: () => 1, clearTimeout() {}
+  });
+  vm.runInContext(source, ctx);
+
+  const copyBtn = { closest: sel => (sel.includes('cascade-system-message-toolbar') ? copyBtn : null) };
+  for (const fn of listeners.get('click') || []) fn({ target: copyBtn });
+  // Simulate native onClick writing full turn (intermediate updates + tool logs + final answer)
+  await clipboard.writeText('Intermediate update...\nRan npm test\nFinal clean answer only.');
+  assert.deepEqual(copiedValues, ['Final clean answer only.']);
+
+  // Normal unrelated clipboard copies are untouched
+  await clipboard.writeText('Normal copy text');
+  assert.deepEqual(copiedValues, ['Final clean answer only.', 'Normal copy text']);
+
+  ctx.__agyPowertools.dispose();
+  assert.equal(Object.prototype.hasOwnProperty.call(clipboard, 'writeText'), false);
+});
+
+
+test('auto-switch waits for background running tabs and interactive banner supports target override, pause/resume, and immediate switch', async () => {
+  let runningIds = ['bg-conv-1'];
+  const switchedCalls = [];
+  const intervals = [];
+  const makeEl = tag => {
+    const el = {
+      tagName: String(tag || 'div').toUpperCase(),
+      dataset: {},
+      style: {},
+      className: '',
+      textContent: '',
+      value: '',
+      children: [],
+      listeners: new Map(),
+      isConnected: true,
+      append(...items) { this.children.push(...items); },
+      appendChild(item) { this.children.push(item); return item; },
+      remove() { this.isConnected = false; },
+      setAttribute() {},
+      getAttribute() { return null; },
+      removeAttribute() {},
+      addEventListener(type, fn) { if (!this.listeners.has(type)) this.listeners.set(type, []); this.listeners.get(type).push(fn); },
+      querySelector: () => null,
+      querySelectorAll: () => []
+    };
+    return el;
+  };
+  const body = makeEl('body');
+  const doc = {
+    readyState: 'complete',
+    head: makeEl('head'),
+    body,
+    documentElement: { toggleAttribute() {}, removeAttribute() {}, setAttribute() {}, style: { setProperty() {}, removeProperty() {} } },
+    createElement: tag => makeEl(tag),
+    addEventListener() {},
+    querySelector: () => null,
+    querySelectorAll: () => []
+  };
+  const candA = { id: 'acct-b', email: 'b@example.com', alias: '备用号B' };
+  const candB = { id: 'acct-c', email: 'c@example.com', alias: '备用号C' };
+  const ctx = vm.createContext({
+    document: doc,
+    window: { addEventListener() {}, removeEventListener() {} },
+    location: { pathname: '/c/active-conv' },
+    AbortController,
+    React: { createElement: () => null, Fragment: 'fragment', useSyncExternalStore: (_, g) => g() },
+    ReactDOM: { createRoot: () => ({ render() {}, unmount() {} }) },
+    HC: () => null,
+    __agyInitialSettings: { enabled: true, multiAccount: true, autoSwitchAccount: true },
+    __agyNativeAdapter: {
+      wrap: el => el,
+      executionState: () => ({ conversationId: 'active-conv', status: 1 }),
+      runningConversationIds: () => runningIds,
+      capabilities: () => ({ email: 'a@example.com', model: 'Claude Opus 5.5', models: [{ modelId: 'Claude Opus 5.5' }] }),
+      service: () => ({
+        retrieveUserQuotaSummary: async () => ({
+          response: { groups: [{ displayName: 'Claude and GPT models', buckets: [{ bucketId: '3p-5h', remainingFraction: 0, resetTimeMs: Date.now() + 3600_000 }] }] }
+        })
+      }),
+      setEnabled() {}, setStageUpdates() {}, setEfficientIO() {}, setContextLimit() {}, setSidebarProjectLimit() {},
+      dispose() {}
+    },
+    __agyPowertoolsHost: raw => {
+      const msg = JSON.parse(raw);
+      if (msg.method === 'settings.get') ctx.__agyPowertoolsReceive(msg.id, { enabled: true, multiAccount: true, autoSwitchAccount: true });
+      else if (msg.method === 'accounts.list' || msg.method === 'accounts.syncActive') {
+        ctx.__agyPowertoolsReceive(msg.id, { activeId: 'acct-a', accounts: [{ id: 'acct-a', email: 'a@example.com' }, candA, candB] });
+      } else if (msg.method === 'accounts.autoSwitchCandidate') {
+        assert.equal(msg.activeModel, 'Claude Opus 5.5');
+        ctx.__agyPowertoolsReceive(msg.id, { candidate: candA, candidates: [candA, candB], cooldownRemainingMs: 0 });
+      } else if (msg.method === 'accounts.switch') {
+        switchedCalls.push(msg);
+        ctx.__agyPowertoolsReceive(msg.id, { ok: true, relaunching: true });
+      } else {
+        ctx.__agyPowertoolsReceive(msg.id, {});
+      }
+    },
+    MutationObserver: class { observe() {} disconnect() {} },
+    setInterval: (fn, ms) => { const item = { fn, ms, cleared: false }; intervals.push(item); return intervals.length; },
+    clearInterval: id => { if (intervals[id - 1]) intervals[id - 1].cleared = true; },
+    setTimeout: () => 1,
+    clearTimeout: () => {}
+  });
+  vm.runInContext(source, ctx);
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+
+  // 1. Background tab 'bg-conv-1' is running -> banner must NOT appear yet
+  assert.equal(body.children.some(c => c.dataset?.testid === 'agy-autoswitch-banner'), false);
+
+  // 2. Once background tab finishes, next poll opens interactive banner with target dropdown & buttons
+  runningIds = [];
+  const mainPoll = intervals.find(i => i.ms === 2000 && !i.cleared);
+  assert.ok(mainPoll);
+  mainPoll.fn();
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+  const banner = body.children.find(c => c.dataset?.testid === 'agy-autoswitch-banner' && c.isConnected);
+  assert.ok(banner, 'expected interactive autoswitch banner');
+
+  const walk = (node, pred) => {
+    if (!node) return null;
+    if (pred(node)) return node;
+    for (const c of node.children || []) { const hit = walk(c, pred); if (hit) return hit; }
+    return null;
+  };
+  const select = walk(banner, n => n.dataset?.testid === 'agy-autoswitch-target-select');
+  const pauseBtn = walk(banner, n => n.dataset?.testid === 'agy-autoswitch-pause');
+  const nowBtn = walk(banner, n => n.dataset?.testid === 'agy-autoswitch-now');
+  assert.ok(select && pauseBtn && nowBtn);
+
+  // Swap target to candB and pause countdown
+  select.value = 'acct-c';
+  for (const fn of select.listeners.get('change') || []) fn();
+  for (const fn of pauseBtn.listeners.get('click') || []) fn();
+  const countdownTick = intervals.find(i => i.ms === 1000 && !i.cleared);
+  for (let i = 0; i < 10; i++) countdownTick.fn();
+  assert.equal(switchedCalls.length, 0, 'paused countdown must not switch');
+
+  // Click Switch Now -> switches immediately to overridden target 'acct-c'
+  for (const fn of nowBtn.listeners.get('click') || []) fn();
+  await new Promise(r => setImmediate(r));
+  assert.equal(switchedCalls.length, 1);
+  assert.equal(switchedCalls[0].accountId, 'acct-c');
+
+  ctx.__agyPowertools.dispose();
+});

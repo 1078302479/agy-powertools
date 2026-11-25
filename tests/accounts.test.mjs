@@ -1602,3 +1602,78 @@ test('Pricing provides standard vs API promo basis switch, clean single-row rate
     assert.equal(enText.includes(forbidden), false);
   }
 });
+
+test('Overview and EventTable do not hide remote SSH or unattributed requests behind an empty activeAccountEmail filter (Issue #49)', () => {
+  const now = Date.now();
+  const remoteDash = {
+    isRemoteSsh: true,
+    activeAccountEmail: 'alice@example.com',
+    accountEmails: [],
+    requests: [
+      { id: 'r1', model: 'Gemini 4 Carbon (High)', status: 'success', timestampMs: now - 30000, inputTokens: 12000, cacheReadTokens: 0, outputTokens: 1500, costUsd: 0.078, accountEmail: '' },
+      { id: 'r2', model: 'Gemini 4 Carbon (High)', status: 'success', timestampMs: now - 10000, inputTokens: 8000, cacheReadTokens: 0, outputTokens: 1000, costUsd: 0.052, accountEmail: '' }
+    ],
+    errors: []
+  };
+  const ui = createPanelHarness(
+    { activeId: 'acct-1', accounts: [{ id: 'acct-1', email: 'alice@example.com', tier: { id: 'g1-pro-tier', name: 'Google AI Pro' }, groups: [] }] },
+    { enabled: true, language: 'zh-CN', multiAccount: true, overviewRange: 'weeklyQuota' }
+  );
+  const ovTree = ui.renderOverview(remoteDash);
+  // Filter hidden on SSH remote dashboard and both requests are counted instead of showing 0
+  assert.equal(ui.find(ovTree, 'agy-overview-account-filter'), null);
+  const ovText = ui.collectText(ovTree);
+  assert.ok(ovText.includes('2 成功'));
+  assert.ok(ovText.includes('$0.13'));
+
+  // Local multi-account with only unattributed history (hasActiveRows=false) also falls back to 'all' instead of empty 0s
+  const localUnattributed = { ...remoteDash, isRemoteSsh: false };
+  const localOv = ui.renderOverview(localUnattributed);
+  assert.ok(ui.find(localOv, 'agy-overview-account-filter'));
+  assert.ok(ui.collectText(localOv).includes('2 成功'));
+});
+
+
+test('accountSupportsModel blocks incompatible Free/model accounts and rankAutoSwitchCandidates prefers active weekly timers over untouched 100% accounts', async () => {
+  const { accountSupportsModel, rankAutoSwitchCandidates } = await import('../lib/account-helpers.mjs');
+  const now = 1_700_000_000_000;
+  const freeAcct = {
+    id: 'free-1', email: 'free@example.com', disabled: false, hasCredential: true,
+    tier: { id: 'g1-free-tier', name: 'Free' },
+    groups: [{ displayName: 'Gemini Models', buckets: [{ window: '5h', remainingFraction: 1, resetTimeMs: null }, { window: 'weekly', remainingFraction: 1, resetTimeMs: null }] }]
+  };
+  const proUntouched = {
+    id: 'pro-fresh', email: 'fresh@example.com', disabled: false, hasCredential: true,
+    tier: { id: 'g1-pro-tier', name: 'Google AI Pro' },
+    availableModels: ['Gemini 4 Carbon (High)', 'Claude Opus 5.5'],
+    groups: [
+      { displayName: 'Gemini Models', buckets: [{ window: '5h', remainingFraction: 1, resetTimeMs: null }, { window: 'weekly', remainingFraction: 1, resetTimeMs: null }] },
+      { displayName: 'Claude and GPT models', buckets: [{ window: '5h', remainingFraction: 1, resetTimeMs: null }, { window: 'weekly', remainingFraction: 1, resetTimeMs: null }] }
+    ]
+  };
+  const proTicking = {
+    id: 'pro-ticking', email: 'ticking@example.com', disabled: false, hasCredential: true,
+    tier: { id: 'g1-pro-tier', name: 'Google AI Pro' },
+    availableModels: ['Gemini 4 Carbon (High)', 'Claude Opus 5.5'],
+    groups: [
+      { displayName: 'Gemini Models', buckets: [{ window: '5h', remainingFraction: 0.7, resetTimeMs: now + 3600_000 }, { window: 'weekly', remainingFraction: 0.6, resetTimeMs: now + 3 * 86400_000 }] },
+      { displayName: 'Claude and GPT models', buckets: [{ window: '5h', remainingFraction: 0.7, resetTimeMs: now + 3600_000 }, { window: 'weekly', remainingFraction: 0.6, resetTimeMs: now + 3 * 86400_000 }] }
+    ]
+  };
+  const noClaude = {
+    id: 'gemini-only', email: 'gonly@example.com', disabled: false, hasCredential: true,
+    tier: { id: 'g1-pro-tier', name: 'Google AI Pro' },
+    availableModels: ['Gemini 4 Carbon (High)'],
+    groups: [{ displayName: 'Gemini Models', buckets: [{ window: '5h', remainingFraction: 1, resetTimeMs: null }] }]
+  };
+
+  assert.equal(accountSupportsModel(freeAcct, 'Claude Opus 5.5', 'claude'), false);
+  assert.equal(accountSupportsModel(freeAcct, 'Orchestrator (Claude Opus 5.5)', 'claude'), false);
+  assert.equal(accountSupportsModel(freeAcct, 'Gemini 4 Carbon (High)', 'gemini'), false);
+  assert.equal(accountSupportsModel(noClaude, 'Claude Opus 5.5', 'claude'), false);
+  assert.equal(accountSupportsModel(proTicking, 'Orchestrator (Claude Opus 5.5)', 'claude'), true);
+
+  // Ranking prefers pro-ticking (active weekly timer, 60% remaining) over pro-fresh (untouched 100%) and excludes freeAcct/noClaude
+  const ranked = rankAutoSwitchCandidates([freeAcct, noClaude, proUntouched, proTicking], 'active', 'claude', now, 0.05, { activeModel: 'Claude Opus 5.5' });
+  assert.deepEqual(ranked.map(r => r.acct.id), ['pro-ticking', 'pro-fresh']);
+});
