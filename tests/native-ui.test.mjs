@@ -1151,7 +1151,19 @@ test('composerWorkingBeam cross-fades with ComposerQuotaHalo when active and sta
   assert.match(exactResetText, /\d{2}:\d{2}/);
   assert.ok(findById(quotaPopover, 'agy-quota-popover-refresh'));
   assert.ok(findById(quotaPopover, 'agy-quota-popover-window-5h'));
+  assert.ok(findById(quotaPopover, 'agy-quota-popover-style-rings'));
+  assert.ok(findById(quotaPopover, 'agy-quota-popover-style-energy'));
+  assert.ok(findById(quotaPopover, 'agy-quota-popover-style-swiss'));
+  assert.equal(findById(quotaPopover, 'agy-quota-popover-style-rings').props['data-active'], 'true');
   assert.equal(JSON.stringify(quotaPopover).includes('·'), false);
+
+  await capturedPanelsEnv.change({ composerQuotaHaloPopoverStyle: 'energy' });
+  const energyPop = findById(renderNode(renderedTrees.at(-1)), 'agy-composer-quota-popover');
+  assert.equal(findById(energyPop, 'agy-quota-popover-style-energy').props['data-active'], 'true');
+  await capturedPanelsEnv.change({ composerQuotaHaloPopoverStyle: 'swiss' });
+  const swissPop = findById(renderNode(renderedTrees.at(-1)), 'agy-composer-quota-popover');
+  assert.equal(findById(swissPop, 'agy-quota-popover-style-swiss').props['data-active'], 'true');
+  await capturedPanelsEnv.change({ composerQuotaHaloPopoverStyle: 'rings' });
   assert.ok(idleBeam);
   assert.equal(idleBeam.props['data-active'], 'false');
   assert.equal(idleBeam.props['data-palette'], 'aurora');

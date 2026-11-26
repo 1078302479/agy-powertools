@@ -30,20 +30,23 @@ test('settings persist, merge safely, and reject unknown options without changin
     assert.equal(store.get().composerQuotaHalo, false);
     assert.equal(store.get().composerQuotaHaloWindow, 'auto');
     assert.equal(store.get().composerQuotaHaloValue, 'notch');
+    assert.equal(store.get().composerQuotaHaloPopoverStyle, 'rings');
     assert.equal(store.get().composerWorkingBeam, false);
     assert.equal(store.get().composerWorkingBeamPalette, 'gemini');
-    store.set({ overviewQuota: true, composerQuotaHalo: true, composerQuotaHaloWindow: 'weekly', composerQuotaHaloValue: 'tip', composerWorkingBeam: true, composerWorkingBeamPalette: 'aurora' });
+    store.set({ overviewQuota: true, composerQuotaHalo: true, composerQuotaHaloWindow: 'weekly', composerQuotaHaloValue: 'tip', composerQuotaHaloPopoverStyle: 'energy', composerWorkingBeam: true, composerWorkingBeamPalette: 'aurora' });
     assert.equal(store.get().overviewQuota, true);
     assert.equal(store.get().composerQuotaHalo, true);
     assert.equal(store.get().composerQuotaHaloWindow, 'weekly');
     assert.equal(store.get().composerQuotaHaloValue, 'tip');
+    assert.equal(store.get().composerQuotaHaloPopoverStyle, 'energy');
     assert.equal(store.get().composerWorkingBeam, true);
     assert.equal(store.get().composerWorkingBeamPalette, 'aurora');
-    store.set({ composerQuotaHaloWindow: '5h', composerQuotaHaloValue: 'inline', composerWorkingBeamPalette: 'quota' });
+    store.set({ composerQuotaHaloWindow: '5h', composerQuotaHaloValue: 'inline', composerQuotaHaloPopoverStyle: 'swiss', composerWorkingBeamPalette: 'quota' });
     assert.equal(store.get().composerQuotaHaloWindow, '5h');
     assert.equal(store.get().composerQuotaHaloValue, 'inline');
+    assert.equal(store.get().composerQuotaHaloPopoverStyle, 'swiss');
     assert.equal(store.get().composerWorkingBeamPalette, 'quota');
-    store.set({ overviewQuota: false, composerQuotaHalo: false, composerQuotaHaloWindow: 'auto', composerQuotaHaloValue: 'notch', composerWorkingBeam: false, composerWorkingBeamPalette: 'gemini' });
+    store.set({ overviewQuota: false, composerQuotaHalo: false, composerQuotaHaloWindow: 'auto', composerQuotaHaloValue: 'notch', composerQuotaHaloPopoverStyle: 'rings', composerWorkingBeam: false, composerWorkingBeamPalette: 'gemini' });
     assert.equal(store.get().messageEdit, true);
     assert.equal(store.get().fileContextMenu, true);
     assert.equal(store.get().macAutoRelaunch, true);
@@ -102,7 +105,7 @@ test('settings persist, merge safely, and reject unknown options without changin
     store.set({contextLimit:256000});assert.equal(store.get().contextLimit,256000);
     store.set({contextLimit:0});assert.equal(store.get().contextLimit,0);
     const before = readFileSync(join(directory, 'settings.json'), 'utf8');
-    for (const value of [{ compact: 'false' }, { userBubbleTint: 'yes' }, { userBubblePreset: 'neon' }, { userBubbleColor: 'red' }, { userBubbleColor: '#123;color:red' }, { userBubbleStrength: 5 }, { userBubbleStrength: 105 }, { userBubbleStrength: 20.5 }, { sessionSearch: 'yes' }, { composerQuotaHaloWindow: '1d' }, { composerQuotaHaloValue: 'invalid' }, { unknown: true }, { toString: false }, {language:'invalid'}, {overviewRange:'custom'}, {overviewRange:'invalid'}, {pricingMode:'batch'}, {pricingMode:true}, {accountViewMode:'grid'}, {accountQuotaWindow:'1h'}, {proxyUrl:'ftp://127.0.0.1:21'}, {proxyUrl:'http://127.0.0.1:7897;calc'}, {proxyBypass:'localhost"bad'}, {contextLimit:999999}, []]) assert.throws(() => store.set(value), /设置/);
+    for (const value of [{ compact: 'false' }, { userBubbleTint: 'yes' }, { userBubblePreset: 'neon' }, { userBubbleColor: 'red' }, { userBubbleColor: '#123;color:red' }, { userBubbleStrength: 5 }, { userBubbleStrength: 105 }, { userBubbleStrength: 20.5 }, { sessionSearch: 'yes' }, { composerQuotaHaloWindow: '1d' }, { composerQuotaHaloValue: 'invalid' }, { composerQuotaHaloPopoverStyle: 'classic' }, { unknown: true }, { toString: false }, {language:'invalid'}, {overviewRange:'custom'}, {overviewRange:'invalid'}, {pricingMode:'batch'}, {pricingMode:true}, {accountViewMode:'grid'}, {accountQuotaWindow:'1h'}, {proxyUrl:'ftp://127.0.0.1:21'}, {proxyUrl:'http://127.0.0.1:7897;calc'}, {proxyBypass:'localhost"bad'}, {contextLimit:999999}, []]) assert.throws(() => store.set(value), /设置/);
     assert.equal(readFileSync(join(directory, 'settings.json'), 'utf8'), before);
     store.set(DEFAULT_SETTINGS); assert.deepEqual(store.get(), DEFAULT_SETTINGS);
   } finally { rmSync(directory, { recursive: true, force: true }); }
