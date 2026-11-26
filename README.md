@@ -13,10 +13,7 @@
     <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20WSL2-475569" height="20" alt="Platform" />
   </p>
   <!-- plugin-badges:end -->
-  <p>
-    <strong>简体中文</strong> |
-    <a href="README_EN.md">English</a>
-  </p>
+  <p><strong>简体中文</strong> | <a href="docs/README_ZH_TW.md">繁體中文</a> | <a href="README_EN.md">English</a> | <a href="docs/README_FR.md">Français</a> | <a href="docs/README_JA.md">日本語</a> | <a href="docs/README_KO.md">한국어</a> | <a href="docs/README_DE.md">Deutsch</a> | <a href="docs/README_ES.md">Español</a> | <a href="docs/README_RU.md">Русский</a></p>
   <p>
     <a href="#界面预览">界面预览</a> |
     <a href="#主要功能">主要功能</a> |
@@ -86,7 +83,7 @@
   <tr>
     <td>
       <img src="docs/images/card-settings.png" alt="多语言与显示设置" width="100%" />
-      <p>支持简体中文、繁體中文和 English 切换，包含紧凑排版、用户消息底色和额度边框周期等选项。</p>
+      <p>支持九种界面语言切换，包含紧凑排版、用户消息底色和额度边框周期等选项。</p>
     </td>
     <td>
       <img src="docs/images/card-proxy.png" alt="免 TUN 独立代理设置" width="100%" />
@@ -99,7 +96,7 @@
 
 ## 主要功能
 
-- **多语言汉化（简 / 繁 / 英）**：翻译 Antigravity 常用侧栏、菜单、权限弹窗、模型说明、设置页和 Swarm 面板，不改动聊天正文与代码块。
+- **九种界面语言**：翻译 Antigravity 常用侧栏、菜单、权限弹窗、模型说明、设置页和 Swarm 面板，不改动聊天正文与代码块。
 - **上下文与速度统计**：在输入框旁查看上下文窗口占用（含缓存复用、压缩次数和 Orchestrator 规划/执行分模型进度）以及生成速度（`tok/s`、首字延迟、模型/工具耗时和本会话参考费用），支持子智能体统计。
 - **本地用量与请求看板**：左侧栏新增 `Powertools` 页面，合并统计桌面端与 `agy` CLI 用量，包含用量概览（热力图、模型分布、参考费用）、请求记录、短间隔缓存异常标红、报错一键复制、配额估算和官方参考单价拉取。
 - **紧凑排版与阶段汇报**：保留客户端字号，收紧正文行高和段落间距；Agent 连续调用工具时先简要汇报进度，整轮完成后自动折进顶部用时栏。
@@ -168,7 +165,7 @@ sh ./install.sh
 | 配置项 | 默认值 | 说明 |
 | --- | --- | --- |
 | 启用 Powertools | 开启 | 插件总开关；关闭后暂停所有界面增强，保留已保存设置 |
-| 语言 | `简体中文` | 可选 `简体中文`、`繁體中文` 或 `English` |
+| 语言 | `简体中文` | 可选九种界面语言 |
 | 本地字体与字重 | 跟随客户端 | 按中文名或字体族名搜索，选择后立即生效。字重可独立设置，恢复默认会同时清除两项设置。内置终端沿用客户端字体 |
 | 紧凑排版 | 开启 | 收紧行高至 `1.4`、段落间距与工具行高，字号跟随客户端设置 |
 | 用户消息气泡着色 | 关闭 | 为用户发出的消息添加底色和细边框，支持强调色、5 套预设、自定义颜色与 10%-100% 混合强度滑条 |
@@ -226,6 +223,13 @@ sh ./install.sh
 ---
 
 ## 更新日志
+
+### v2.16.7
+- **新增六语种原生国际化支持（共九种界面语言，吸收法语 PR #80，感谢 `@oxibys`）**：
+  - 在原有简体中文、繁體中文、English 基础上，新增法语（`Français`）、日语（`日本語`）、韩语（`한국어`）、德语（`Deutsch`）、西班牙语（`Español`）与俄语（`Русский`），完整覆盖插件面板、Antigravity 原生界面、Swarm 面板、伴生辅助页、日期选择器与系统提示。
+  - 采用按需加载的模块化语言包架构（`lib/locales/`）：窗口启动仅注入当前激活语种，设置页切换语言时经由 `i18n.pack` RPC 实时拉取，并同步支持系统语系自动初始化与分语种 `custom-i18n.json` 覆盖；同步补全九种语言的项目 README 文档。
+- **补全侧边栏排序与筛选菜单翻译（#79）**：补充 Antigravity 侧栏显示选项菜单中的 `Sort Conversations`、`Sort Projects`、`Auto Pin`、`Archived Only`、`Subtitles`、`Decorations` 及菜单作用域内的 `Project` 词条，保持普通项目名与代码块不受影响。
+- **彻底修复 Windows 11 重启后 Windows Terminal 残留及关闭窗口连带退出客户端（#61 后续，感谢 `@poneisme` 与社区反馈）**：`relaunch-antigravity.ps1` 改为通过无窗口 CUI 自身子进程（`-LaunchOnly` + `CreateNoWindow = $true`）再经 `Start-Process`（`ShellExecuteEx`，`bInheritHandles = FALSE`）拉起 `Antigravity.exe`（回退路径附加 `<NUL >NUL 2>&1`），彻底切断 Windows Terminal ConPTY 句柄继承与 `AttachConsole` 附着，且全程保持零 `-EncodedCommand` / DCOM / VBS / `conhost --headless` 杀软兼容。
 
 ### v2.16.6
 - **修复侧栏运行中会话开启流光后无法点击的问题**：移除覆盖原生侧栏行子元素 `position` 的样式规则，恢复整行 `<a href>` 链接及悬停操作按钮的正常点击。

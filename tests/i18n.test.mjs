@@ -34,6 +34,11 @@ test('Traditional Chinese (zh-TW) uses Taiwan IT terminology, converts UI string
   vm.runInContext(readFileSync('lib/native-i18n.js','utf8'),context);
   const t=context.__agyI18n.t;
   assert.equal(t('Settings','zh-TW'),'設定');
+  assert.equal(t('概览','zh-TW'),'概覽');
+  assert.equal(t('请求事件','zh-TW'),'請求事件');
+  assert.equal(t('错误事件','zh-TW'),'錯誤事件');
+  assert.equal(t('价格','zh-TW'),'價格');
+  assert.equal(t('设置','zh-TW'),'設定');
   assert.equal(t('Context window','zh-TW'),'上下文視窗');
   assert.equal(t('Cache hit','zh-TW'),'快取命中');
   assert.equal(t('Open File','zh-TW'),'開啟檔案');
@@ -299,4 +304,103 @@ test('Settings translations and editable placeholders follow language changes an
     assert.equal(field.getAttribute('placeholder'), 'Search shortcuts...');
     assert.equal(field.hasAttribute('data-agy-original-placeholder'), false);
   }
+});
+
+import { getLocalePack, SUPPORTED_LANGUAGES } from '../lib/locales/index.mjs';
+import { nativeSource, swarmI18nSource } from '../lib/native-host.mjs';
+
+const packLanguages = SUPPORTED_LANGUAGES.filter(language => getLocalePack(language));
+const menuLabels = ['Sort Conversations','Sort Projects','Auto Pin','Archived Only','Subtitles','Decorations','Project'];
+
+test('every pack covers the native catalog, static UI calls, and sidebar menus', () => {
+  const source = readFileSync('lib/native-i18n.js','utf8');
+  const native = vm.runInNewContext(source.slice(source.indexOf('const pairs'),source.indexOf('const zh=new Map'))+'pairs');
+  const keys = new Set([...native.map(([key])=>key),...menuLabels]);
+  for (const file of ['native-panels.js','native-ui.js','native-sidebar-monitor.js','native-sidebar-drop.mjs','native-ssh-paste.mjs','launcher.mjs']) {
+    const script = readFileSync('lib/'+file,'utf8');
+    for (const match of script.matchAll(/(?:uiText|text)\(\s*(?:'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")\s*,\s*('(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")\s*\)/g)) keys.add(vm.runInNewContext(match[1]));
+  }
+  const WORKED_RE = /^(?:Worked for\b|用时(?:\s|$)|用時(?:\s|$)|Durée\s*:|作業時間(?:\s|$)|작업 시간(?:\s|$)|Bearbeitungszeit(?:\s|$)|Tiempo de trabajo(?:\s|$)|Время работы(?:\s|$))/;
+  const UPDATES_RE = /(?:[\u00b7\u2022\-]\s*)?(\d+)\s+(?:updates?\b|条进度|條進度|étapes?\b|件の更新|개 업데이트|Aktualisierung(?:en)?\b|actualizaci[oó]n(?:es)?\b|обновлени\S*)/i;
+  for (const lang of packLanguages) {
+    const pack = getLocalePack(lang);
+    for (const key of keys) if (key && !/[\u3400-\u9fff]/u.test(key)) assert.ok((pack.entries[key] || pack.uiEntries[key])?.trim(), `${lang}: ${key}`);
+    for (const [pattern] of pack.patterns) assert.doesNotThrow(()=>new RegExp(pattern));
+    assert.deepEqual(JSON.parse(JSON.stringify(pack)),pack);
+    if (lang !== 'ja') assert.doesNotMatch(readFileSync(`lib/locales/${lang}.mjs`,'utf8'), /[\u4e00-\u9fff]/, `${lang}.mjs should not contain literal CJK`);
+    const doc = { nodeType: 9, createTreeWalker: () => ({ nextNode: () => null }), querySelectorAll: () => [] };
+    const ctx = vm.createContext({ document: doc, NodeFilter: { SHOW_TEXT: 4 }, MutationObserver: class { observe(){} disconnect(){} }, __agyLocalePack: pack });
+    vm.runInContext(source, ctx);
+    const t = ctx.__agyI18n.t;
+    for (const sample of ['Subagent running', 'Waiting for approval', 'Retrying', 'Thinking', 'Waiting for model', 'Context just compacted; exact provider tokens will update on your next message.', 'Just compacted; exact usage updates on next message', `Coordinator \u00b7 3 of 5 done`, 'read #12']) {
+      assert.doesNotMatch(t(sample, lang), /(?::\s*$|\(\s*\)|#\s*\)|\$[0-9])/, `${lang} dangling template on ${sample}`);
+    }
+    for (const worked of [`Worked for 8m 28s \u00b7 1 update`, `Worked for 8m 28s \u00b7 4 updates`]) {
+      const rendered = t(worked, lang);
+      assert.match(rendered, WORKED_RE, `${lang}: ${rendered}`);
+      assert.match(rendered, UPDATES_RE, `${lang}: ${rendered}`);
+    }
+    assert.match(t('Worked for 5m', lang), WORKED_RE);
+  }
+});
+
+test('only the selected language payload appears in desktop and Swarm boot sources', () => {
+  for (const language of SUPPORTED_LANGUAGES) {
+    const settingsObj = {enabled:true,language};
+    for (const source of [nativeSource('https://localhost',[],{settingsObj}),swarmI18nSource(settingsObj)]) {
+      for (const lang of packLanguages) assert.equal(source.includes(JSON.stringify(getLocalePack(lang))), lang === language);
+    }
+  }
+});
+
+test('switching all languages restores text and leaves project names and code unchanged', () => {
+  const node = (text, area) => ({nodeValue:text,isConnected:true,parentElement:{closest:s=>area && s.includes(area)}});
+  const nodes=[node('Sort Projects',''),node('Project','[role="menu"]'),node('Project',''),node('Sort Projects','code')];
+  const document={nodeType:9,createTreeWalker(){let i=0;return {nextNode:()=>nodes[i++]};},querySelectorAll:()=>[]};
+  const context=vm.createContext({document,NodeFilter:{SHOW_TEXT:4},MutationObserver:class{observe(){}disconnect(){}},__agyToZhTw:toZhTw});
+  vm.runInContext(readFileSync('lib/native-i18n.js','utf8'),context);
+  for (const lang of [...SUPPORTED_LANGUAGES,'en']) {
+    context.__agyLocalePack=getLocalePack(lang);
+    context.__agyLocalization.apply(lang,false);
+    const t=context.__agyI18n.t;
+    assert.deepEqual(nodes.map(n=>n.nodeValue),[t('Sort Projects',lang),t('Project',lang),'Project','Sort Projects']);
+    if (context.__agyLocalePack) assert.match(t('Your Plan: Gemini',lang),/Gemini/);
+  }
+  context.__agyLocalization.dispose();
+  assert.equal(nodes[0].nodeValue,'Sort Projects');
+});
+
+test('locale data and the nine guides exclude forbidden separators', () => {
+  const files=['README.md','README_EN.md',...['ZH_TW','FR','JA','KO','DE','ES','RU'].map(x=>`docs/README_${x}.md`),...['index',...packLanguages].map(x=>`lib/locales/${x}.mjs`)];
+  for (const file of files) assert.doesNotMatch(readFileSync(file,'utf8'),/[\u00b7\u2022\u2027\u30fb]/u,file);
+});
+
+import {startNativeIntegration} from '../lib/native-host.mjs';
+
+test('disabled integration serves the selected pack and scoped overrides through the host binding',async()=>{
+  const dataDir=mkdtempSync(join(tmpdir(),'agy-pack-rpc-'));
+  const portFile=join(dataDir,'port'), origin='https://127.0.0.1:5000';
+  const fetchBefore=globalThis.fetch;
+  let stop, receiveEvent, reply;
+  try {
+    writeFileSync(portFile,'12345\n');
+    writeFileSync(join(dataDir,'settings.json'),JSON.stringify({enabled:false,language:'fr'}));
+    writeFileSync(join(dataDir,'custom-i18n.json'),JSON.stringify({fr:{Example:'Exemple'},ja:{Example:'例'}}));
+    globalThis.fetch=async()=>({json:async()=>[{id:'window',type:'page',title:'Antigravity',url:origin+'/c/a',webSocketDebuggerUrl:'ws://127.0.0.1:12345/devtools/page/a'}]});
+    stop=startNativeIntegration({portFile,dataDir,parseSessionData:()=>({}),onStatus:()=>{},discover:async()=>[],connect:async()=>({
+      socket:{addEventListener(){},close(){}},onEvent(callback){receiveEvent=callback;},async send(method,params){
+        if(method==='Page.getFrameTree')return {frameTree:{frame:{id:'frame'}}};
+        if(method==='Page.addScriptToEvaluateOnNewDocument')return {identifier:'script'};
+        if(params?.expression?.startsWith('globalThis.__agyPowertoolsReceive?.('))vm.runInNewContext(params.expression,{__agyPowertoolsReceive:(id,data)=>{reply=JSON.parse(JSON.stringify(data));}});
+        return {result:{value:false}};
+      }
+    })});
+    await stop.ready;
+    await receiveEvent({method:'Runtime.executionContextCreated',params:{context:{id:42,origin,auxData:{isDefault:true,frameId:'frame'}}}});
+    for(const [language,expected] of [['fr','Exemple'],['ja','例']]){
+      await receiveEvent({method:'Runtime.bindingCalled',params:{name:'__agyPowertoolsHost',executionContextId:42,payload:JSON.stringify({id:1,method:'i18n.pack',language})}});
+      assert.equal(reply.pack.lang,language);
+      assert.deepEqual(reply.custom,[['Example',expected]]);
+    }
+  } finally {await stop?.();globalThis.fetch=fetchBefore;rmSync(dataDir,{recursive:true,force:true});}
 });

@@ -221,3 +221,9 @@ test('package excludes docs/images screenshots, bootstrap copies all worker impo
     s.clean();
   }
 });
+
+test('release includes locale modules and omits localized repository guides', () => {
+  const names = new Set(original.files.map(file=>file.path));
+  for (const lang of ['index','fr','ja','ko','de','es','ru']) assert.ok(names.has(`lib/locales/${lang}.mjs`));
+  assert.ok(![...names].some(name=>/^docs\/README_/.test(name)));
+});

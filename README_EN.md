@@ -13,10 +13,7 @@
     <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20WSL2-475569" height="20" alt="Platform" />
   </p>
   <!-- plugin-badges:end -->
-  <p>
-    <a href="README.md">简体中文</a> |
-    <strong>English</strong>
-  </p>
+  <p><a href="README.md">简体中文</a> | <a href="docs/README_ZH_TW.md">繁體中文</a> | <strong>English</strong> | <a href="docs/README_FR.md">Français</a> | <a href="docs/README_JA.md">日本語</a> | <a href="docs/README_KO.md">한국어</a> | <a href="docs/README_DE.md">Deutsch</a> | <a href="docs/README_ES.md">Español</a> | <a href="docs/README_RU.md">Русский</a></p>
   <p>
     <a href="#screenshots">Screenshots</a> |
     <a href="#features">Features</a> |
@@ -86,7 +83,7 @@
   <tr>
     <td>
       <img src="docs/images/card-settings.png" alt="Language and display settings" width="100%" />
-      <p>Switch between Simplified Chinese, Traditional Chinese, and English, and toggle compact layout, user bubble tint, and quota halo window.</p>
+      <p>Choose from nine interface languages, and toggle compact layout, user bubble tint, and quota halo window.</p>
     </td>
     <td>
       <img src="docs/images/card-proxy.png" alt="No-TUN application proxy settings" width="100%" />
@@ -99,7 +96,7 @@
 
 ## Features
 
-- **Multilingual UI (`English` / `简体中文` / `繁體中文`)**: Localizes Powertools panels, common Antigravity menus, permission dialogs, settings, and Swarm iframes while leaving chat text and code blocks untouched.
+- **Multilingual UI**: Localizes Powertools panels, common Antigravity menus, permission dialogs, settings, and Swarm iframes while leaving chat text and code blocks untouched.
 - **Context and speed telemetry**: Adds a context usage ring (with cache reuse, compaction count, and Orchestrator planner/executor bars) and a speed dial (`tok/s`, TTFT, model vs. tool duration, and estimated session cost) next to the composer, including subagent stats.
 - **Local usage and request dashboard**: Adds a `Powertools` sidebar page combining Desktop and `agy` CLI usage, with usage overview (53-week heatmap, token/cost donuts, model table), per-request log, short-interval cache anomaly flags, one-click error copy, quota estimates, and official API pricing refresh.
 - **Compact layout and live stage updates**: Keeps your client font size while tightening line height and block spacing; reports short progress updates during multi-step tool runs and folds them into the top duration header once finished.
@@ -168,7 +165,7 @@ Every setting applies live in **Powertools -> Settings** and saves automatically
 | Setting | Default | Description |
 | --- | --- | --- |
 | Enable Powertools | On | Master switch; pauses all UI enhancements while keeping saved settings |
-| Language | `简体中文` | Choose `简体中文`, `繁體中文`, or `English` |
+| Language | `简体中文` | Choose one of nine interface languages |
 | Local font and weight | Client defaults | Search by localized or family name and select to apply. Weight can be set independently. Reset restores both defaults. The built-in terminal uses its client font |
 | Compact layout | On | Tightens line height (`1.4`), block spacing, and tool rows while keeping client font size |
 | Tint user message bubbles | Off | Adds a tint and border to user messages (Accent, 5 presets, custom color, and 10%-100% blend slider) |
@@ -226,6 +223,13 @@ Every setting applies live in **Powertools -> Settings** and saves automatically
 ---
 
 ## Changelog
+
+### v2.16.7
+- **Nine-language native localization (incorporating French PR #80, thanks `@oxibys`)**:
+  - Adds French (`Français`), Japanese (`日本語`), Korean (`한국어`), German (`Deutsch`), Spanish (`Español`), and Russian (`Русский`) alongside Simplified Chinese, Traditional Chinese, and English across Powertools panels, Antigravity native UI, Swarm iframes, sidecar aux pane, date-range calendar, and launcher prompts.
+  - Uses modular on-demand locale packs (`lib/locales/`): only the active language pack is injected at boot and language changes fetch via `i18n.pack` RPC on demand, with OS locale auto-detection, per-language `custom-i18n.json` overrides, and full localized READMEs across all nine languages.
+- **Complete sidebar Display Options menu localization (#79)**: Translates `Sort Conversations`, `Sort Projects`, `Auto Pin`, `Archived Only`, `Subtitles`, `Decorations`, and menu-scoped `Project` without altering actual project names or code blocks.
+- **Fix lingering Windows Terminal window and linked client exit after Windows 11 relaunch (#61 follow-up, thanks `@poneisme`)**: Launches `Antigravity.exe` through a windowless CUI `-LaunchOnly` self-hop (`CreateNoWindow = $true`) invoking `Start-Process` (`ShellExecuteEx`, `bInheritHandles = FALSE`, with `<NUL >NUL 2>&1` cmd fallback), completely severing Windows Terminal ConPTY handle inheritance and `AttachConsole` attachment while remaining free of `-EncodedCommand`, DCOM, VBS, and `conhost --headless`.
 
 ### v2.16.6
 - **Fix unclickable sidebar conversation rows when running beam is enabled**: Removed the child `position: relative` override that collapsed Antigravity's `position: absolute; inset: 0` row link, restoring full row and hover-button clickability.
