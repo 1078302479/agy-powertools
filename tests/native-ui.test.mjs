@@ -1050,9 +1050,24 @@ test('composerWorkingBeam cross-fades with ComposerQuotaHalo when active and sta
   let execStatus = 1;
   p.context.__agyNativeAdapter.composerCascadeId = () => 'conv-beam-1';
   p.context.__agyNativeAdapter.executionState = cid => cid === 'conv-beam-1' ? { conversationId: cid, status: execStatus, notFullyIdle: false } : null;
+  p.context.HC = ({ children }) => ({ type: 'HC', props: {}, children });
+  p.context.IC = ({ children }) => ({ type: 'IC', props: {}, children });
+  p.context.JC = ({ children, ...props }) => ({ type: 'JC', props, children });
+  const reset5hMs = Date.now() + 2 * 3600 * 1000 + 15 * 60 * 1000;
+  const resetWkMs = Date.now() + 3 * 86400 * 1000;
   p.context.__agyNativeAdapter.service = () => ({
     retrieveUserQuotaSummary: async () => ({
-      response: { groups: [{ displayName: 'Gemini Models', buckets: [{ bucketId: 'g-5h', window: '5h', remainingFraction: 0.72 }] }] }
+      response: {
+        groups: [
+          {
+            displayName: 'Gemini Models',
+            buckets: [
+              { bucketId: 'g-5h', window: '5h', remainingFraction: 0.72, resetTimeMs: reset5hMs },
+              { bucketId: 'g-weekly', window: 'weekly', remainingFraction: 0.93, resetTimeMs: resetWkMs }
+            ]
+          }
+        ]
+      }
     })
   });
   let currentSettings = { enabled: true, composerQuotaHalo: true, composerWorkingBeam: true, composerWorkingBeamPalette: 'aurora' };
@@ -1122,7 +1137,17 @@ test('composerWorkingBeam cross-fades with ComposerQuotaHalo when active and sta
   assert.equal(idleQuota.props['data-dimmed'], undefined);
   const idleNotch = findById(idleTree, 'agy-composer-quota-value');
   assert.ok(idleNotch);
+  assert.equal(idleNotch.type, 'button');
   assert.equal(idleNotch.props['data-style'], 'notch');
+  const quotaPopover = findById(idleTree, 'agy-composer-quota-popover');
+  assert.ok(quotaPopover);
+  const exactResetNode = findById(quotaPopover, 'agy-quota-reset-exact');
+  assert.ok(exactResetNode);
+  const exactResetText = (Array.isArray(exactResetNode.children) ? exactResetNode.children : [exactResetNode.children]).join('');
+  assert.match(exactResetText, /\d{2}:\d{2}/);
+  assert.ok(findById(quotaPopover, 'agy-quota-popover-refresh'));
+  assert.ok(findById(quotaPopover, 'agy-quota-popover-window-5h'));
+  assert.equal(JSON.stringify(quotaPopover).includes('·'), false);
   assert.ok(idleBeam);
   assert.equal(idleBeam.props['data-active'], 'false');
   assert.equal(idleBeam.props['data-palette'], 'aurora');
