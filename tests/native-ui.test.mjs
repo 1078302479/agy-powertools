@@ -2165,3 +2165,507 @@ test('auto-check update banner shows one-click update/dismiss and optional autoI
 
   ctx.__agyPowertools.dispose();
 });
+
+test('native-ui retries applyOptions after transient boot failure and re-applies adapter options on remote settingsChanged (Issue #66)', async () => {
+  const source = readFileSync(new URL('../lib/native-ui.js', import.meta.url), 'utf8');
+  const intervals = [];
+  let failSetEnabledCount = 3; // Fail initial boot applyOptions + mount() refresh + queued startup refresh
+  const applied = { enabled: null, stageUpdates: null, efficientIO: null, contextLimit: null, sidebarProjectLimit: null };
+  let remoteSettings = { enabled: true, stageUpdates: true, efficientIO: false, contextLimit: 500000, sidebarProjectLimit: 5 };
+  let settingsGetCount = 0;
+
+  const ctx = vm.createContext({
+    document: {
+      readyState: 'complete',
+      visibilityState: 'visible',
+      title: 'Antigravity (SSH: remote-box)',
+      head: { append() {}, appendChild() {}, querySelector: () => null },
+      body: { append() {}, appendChild() {}, querySelector: () => null, querySelectorAll: () => [] },
+      documentElement: { toggleAttribute() {}, removeAttribute() {}, setAttribute() {}, style: { setProperty() {}, removeProperty() {} } },
+      createElement: () => ({ dataset: {}, style: {}, remove() {} }),
+      addEventListener() {},
+      querySelector: () => null,
+      querySelectorAll: () => []
+    },
+    window: { addEventListener() {}, removeEventListener() {} },
+    navigator: { userAgent: 'Antigravity/2.35.2' },
+    location: { pathname: '/c/conv-ssh-66' },
+    AbortController,
+    React: { createElement: () => null, Fragment: 'fragment', useSyncExternalStore: (_, g) => g() },
+    ReactDOM: { createRoot: () => ({ render() {}, unmount() {} }) },
+    HC: () => null,
+    __agyInitialSettings: { ...remoteSettings },
+    __agyNativeAdapter: {
+      wrap: el => el,
+      installPage: () => true,
+      executionState: () => ({ conversationId: 'conv-ssh-66', status: 2 }),
+      runningConversationIds: () => ['conv-ssh-66'],
+      capabilities: () => ({}),
+      setEnabled(v) {
+        if (failSetEnabledCount > 0) { failSetEnabledCount--; throw new Error('Antigravity conversation service is unavailable'); }
+        applied.enabled = v;
+      },
+      setStageUpdates(v) { applied.stageUpdates = v; },
+      setEfficientIO(v) { applied.efficientIO = v; },
+      setContextLimit(v) { applied.contextLimit = v; },
+      setSidebarProjectLimit(v) { applied.sidebarProjectLimit = v; },
+      dispose() {}
+    },
+    __agyPowertoolsHost: raw => {
+      const msg = JSON.parse(raw);
+      if (msg.method === 'settings.get') {
+        settingsGetCount++;
+        ctx.__agyPowertoolsReceive(msg.id, { ...remoteSettings });
+      } else if (msg.method === 'state') {
+        ctx.__agyPowertoolsReceive(msg.id, {
+          conversationId: 'conv-ssh-66',
+          turns: [],
+          requests: [],
+          errors: [],
+          contextWindow: {},
+          telemetry: {},
+          progress: {},
+          settings: { ...remoteSettings }
+        });
+      } else {
+        ctx.__agyPowertoolsReceive(msg.id, {});
+      }
+    },
+    MutationObserver: class { observe() {} disconnect() {} },
+    setInterval: (fn, ms) => { const item = { fn, ms, cleared: false }; intervals.push(item); return intervals.length; },
+    clearInterval: id => { if (intervals[id - 1]) intervals[id - 1].cleared = true; },
+    setTimeout: () => 1,
+    clearTimeout() {}
+  });
+
+  vm.runInContext(source, ctx);
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+
+  // Initial sync applyOptions and startup refresh attempts all threw -> settingsLoaded must remain false so next poll retries.
+  assert.ok(settingsGetCount >= 1);
+  assert.equal(applied.stageUpdates, null);
+
+  const beforeRetryCount = settingsGetCount;
+  const mainPoll = intervals.find(i => i.ms === 2000 && !i.cleared);
+  assert.ok(mainPoll);
+  mainPoll.fn();
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+
+  assert.equal(settingsGetCount, beforeRetryCount + 1);
+  assert.equal(applied.enabled, true);
+  assert.equal(applied.stageUpdates, true);
+  assert.equal(applied.efficientIO, false);
+  assert.equal(applied.contextLimit, 500000);
+  assert.equal(applied.sidebarProjectLimit, 5);
+
+  // Simulate another window updating settings; state poll returns updated settings and must re-apply adapter options.
+  remoteSettings = { enabled: true, stageUpdates: false, efficientIO: true, contextLimit: 1000000, sidebarProjectLimit: 3 };
+  mainPoll.fn();
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+
+  assert.equal(applied.stageUpdates, false);
+  assert.equal(applied.efficientIO, true);
+  assert.equal(applied.contextLimit, 1000000);
+  assert.equal(applied.sidebarProjectLimit, 3);
+
+  ctx.__agyPowertools.dispose();
+});
+
+test('management Page keeps header and tabs sticky on scroll, toggles scrolled border, and resets scroll on tab switch', () => {
+  const panelsCode = readFileSync(new URL('../lib/native-panels.js', import.meta.url), 'utf8');
+  const styles = [];
+  const states = [];
+  const refs = [];
+  const effects = [];
+  const resizeObservers = [];
+  let stateIdx = 0;
+  let refIdx = 0;
+  const React = {
+    createElement: (type, props, ...children) => ({ type, props: props || {}, children }),
+    Fragment: 'fragment',
+    useId: () => 'id-1',
+    useState: init => {
+      const i = stateIdx++;
+      if (!(i in states)) states[i] = typeof init === 'function' ? init() : init;
+      return [states[i], val => { states[i] = typeof val === 'function' ? val(states[i]) : val; }];
+    },
+    useRef: init => {
+      const i = refIdx++;
+      if (!(i in refs)) refs[i] = { current: init };
+      return refs[i];
+    },
+    useEffect: (fn, deps) => { effects.push({ fn, deps }); },
+    useSyncExternalStore: (_, getSnap) => getSnap()
+  };
+  const wrapTag = name => ({ children, ...p }) => React.createElement(name, p, ...(Array.isArray(children) ? children : [children]));
+  let wrapHeight = 66.4;
+  const ctx = vm.createContext({
+    React,
+    Intl,
+    URL,
+    ResizeObserver: class MockResizeObserver {
+      constructor(cb) {
+        this.cb = cb;
+        this.observed = [];
+        this.disconnected = false;
+        resizeObservers.push(this);
+      }
+      observe(el) { this.observed.push(el); }
+      disconnect() { this.disconnected = true; }
+      trigger() { this.cb([{ target: this.observed[0] }], this); }
+    },
+    document: {
+      createElement: tag => ({ tagName: tag, dataset: {}, textContent: '', remove() {} }),
+      head: { append: node => styles.push(node) }
+    },
+    localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+    __agyDashboard: {
+      dateRange: () => ({ preset: 'weeklyQuota', start: 0, end: 1, activePools: [], status: 'unstarted' }),
+      summarizeRequests: () => ({ requests: [], success: 0, errors: 0, tokens: 0, inputTokens: 0, cacheReadTokens: 0, outputTokens: 0, cost: 0, priced: 0, points: [], models: [] }),
+      distributionModels: () => [],
+      subscriptionIdentity: () => ({ family: 'pro', style: 'pro', label: 'Pro' }),
+      annotateCacheAnomalies: () => new Map()
+    },
+    setInterval: () => 1,
+    clearInterval: () => {},
+    Uy: 'button',
+    Sy: 'tooltip',
+    dq: ({ name }) => ({ type: 'icon', props: { name }, children: [] }),
+    kT: wrapTag('kT'),
+    lT: wrapTag('lT'),
+    mT: wrapTag('mT'),
+    nT: wrapTag('nT'),
+    HC: wrapTag('HC'),
+    IC: wrapTag('IC'),
+    JC: wrapTag('JC'),
+    VP: wrapTag('VP'),
+    TP: wrapTag('TP'),
+    UP: wrapTag('UP'),
+    XP: wrapTag('XP')
+  });
+  vm.runInContext(panelsCode, ctx);
+  let mockDashboard = null;
+  const panels = ctx.__agyPanels({
+    t: v => v,
+    options: () => ({ enabled: true, titlebarQuickPanel: true, language: 'zh-CN', multiAccount: false }),
+    dashboard: () => mockDashboard,
+    loadDashboard: () => Promise.resolve(null),
+    subscribe: () => () => {},
+    revision: () => 0,
+    consumeRequestedTab: () => '',
+    state: () => null,
+    capabilities: () => ({ models: [] })
+  });
+
+  assert.equal(styles.length, 1);
+  const css = styles[0].textContent;
+  assert.match(css, /\.pt-header-wrap\{[^}]*position:sticky;top:0;z-index:20;/);
+  assert.match(css, /\.pt-header-wrap\[data-scrolled\]\{border-bottom-color:var\(--border\)\}/);
+  assert.match(css, /\.pt-page\[data-sticky-filter=true\] \.pt-header-wrap\[data-scrolled\]\{border-bottom-color:transparent\}/);
+  assert.match(css, /\.pt-page \.pt-filter-bar\{[^}]*position:sticky;top:calc\(var\(--pt-header-h,66px\) - 1px\);z-index:19;[^}]*backdrop-filter:blur\(8px\);/);
+  assert.match(css, /\.pt-page\[data-sticky-filter=true\]\[data-scrolled\] \.pt-filter-bar\{border-bottom-color:var\(--border\)\}/);
+  assert.doesNotMatch(css, /\[data-scrolled=true\]/);
+  assert.match(css, /\.pt-page\{[^}]*scroll-padding-top:76px;/);
+  assert.match(css, /\.pt-page\[data-sticky-filter=true\]\{scroll-padding-top:calc\(var\(--pt-header-h,66px\) \+ 64px\)\}/);
+  assert.doesNotMatch(css, /\.pt-qp[^{]*\.pt-filter-bar/);
+
+  stateIdx = 0;
+  refIdx = 0;
+  effects.length = 0;
+  const tree = panels.Page();
+  assert.equal(tree.props['data-testid'], 'agy-management-page');
+  assert.equal(tree.props.className, 'pt-page');
+  assert.equal(tree.props['data-sticky-filter'], 'true');
+  const [headerWrap, content] = tree.children;
+  assert.equal(headerWrap.props['data-testid'], 'agy-management-header');
+  assert.equal(headerWrap.props.className, 'pt-header-wrap');
+  assert.equal(content.props.className, 'pt-content');
+
+  const pageListeners = new Map();
+  const pageAttrs = new Map();
+  const cssVars = new Map();
+  const pageEl = {
+    scrollTop: 0,
+    style: {
+      setProperty: (k, v) => cssVars.set(k, v),
+      getPropertyValue: k => cssVars.get(k) || ''
+    },
+    toggleAttribute: (name, force) => {
+      if (force === undefined ? !pageAttrs.has(name) : force) pageAttrs.set(name, '');
+      else pageAttrs.delete(name);
+    },
+    hasAttribute: name => pageAttrs.has(name),
+    getAttribute: name => pageAttrs.has(name) ? pageAttrs.get(name) : null,
+    addEventListener: (type, fn) => {
+      if (!pageListeners.has(type)) pageListeners.set(type, []);
+      pageListeners.get(type).push(fn);
+    },
+    removeEventListener: (type, fn) => {
+      const list = pageListeners.get(type) || [];
+      const idx = list.indexOf(fn);
+      if (idx >= 0) list.splice(idx, 1);
+    }
+  };
+  const wrapAttrs = new Map();
+  const headerWrapEl = {
+    getBoundingClientRect: () => ({ height: wrapHeight }),
+    toggleAttribute: (name, force) => {
+      if (force === undefined ? !wrapAttrs.has(name) : force) wrapAttrs.set(name, '');
+      else wrapAttrs.delete(name);
+    },
+    hasAttribute: name => wrapAttrs.has(name),
+    getAttribute: name => wrapAttrs.has(name) ? wrapAttrs.get(name) : null
+  };
+  tree.props.ref.current = pageEl;
+  headerWrap.props.ref.current = headerWrapEl;
+
+  const cleanups = effects.map(e => e.fn()).filter(fn => typeof fn === 'function');
+  assert.equal(pageListeners.get('scroll')?.length, 1);
+  assert.equal(resizeObservers.length, 1);
+  assert.deepEqual(resizeObservers[0].observed, [headerWrapEl]);
+  assert.equal(cssVars.get('--pt-header-h'), '66px');
+  assert.equal(pageEl.hasAttribute('data-scrolled'), false);
+  assert.equal(headerWrapEl.hasAttribute('data-scrolled'), false);
+
+  // ResizeObserver updates --pt-header-h when header wraps at narrow widths
+  wrapHeight = 104.2;
+  resizeObservers[0].trigger();
+  assert.equal(cssVars.get('--pt-header-h'), '104px');
+
+  pageEl.scrollTop = 48;
+  for (const fn of pageListeners.get('scroll')) fn();
+  assert.equal(pageEl.hasAttribute('data-scrolled'), true);
+  assert.equal(pageEl.getAttribute('data-scrolled'), '');
+  assert.equal(headerWrapEl.hasAttribute('data-scrolled'), true);
+  assert.equal(headerWrapEl.getAttribute('data-scrolled'), '');
+
+  pageEl.scrollTop = 2;
+  for (const fn of pageListeners.get('scroll')) fn();
+  assert.equal(pageEl.hasAttribute('data-scrolled'), false);
+  assert.equal(headerWrapEl.hasAttribute('data-scrolled'), false);
+
+  // Switching tabs resets scrollTop and clears data-scrolled on both page and headerWrap
+  pageEl.scrollTop = 120;
+  for (const fn of pageListeners.get('scroll')) fn();
+  assert.equal(pageEl.hasAttribute('data-scrolled'), true);
+  assert.equal(headerWrapEl.hasAttribute('data-scrolled'), true);
+  const headerNode = headerWrap.children[0];
+  const toolbarNode = headerNode.children[1];
+  const tabsComp = toolbarNode.children[0];
+  const tabsTree = tabsComp.type(tabsComp.props);
+  const requestsBtn = tabsTree.children.find(c => c.props?.['data-testid'] === 'agy-tab-requests');
+  assert.ok(requestsBtn);
+  requestsBtn.props.onClick();
+  assert.equal(states[0], 'requests');
+  assert.equal(pageEl.scrollTop, 0);
+  assert.equal(pageEl.hasAttribute('data-scrolled'), false);
+  assert.equal(headerWrapEl.hasAttribute('data-scrolled'), false);
+
+  // Switching to settings clears data-sticky-filter; overview/requests/errors keep it and render .pt-filter-bar
+  mockDashboard = { requests: [], errors: [], activeAccountEmail: '' };
+  const findByTestId = (node, tid) => {
+    if (!node || typeof node !== 'object') return null;
+    if (node.props?.['data-testid'] === tid) return node;
+    for (const child of Array.isArray(node.children) ? node.children : [node.children]) {
+      const hit = findByTestId(child, tid);
+      if (hit) return hit;
+    }
+    return null;
+  };
+  const renderTab = tabName => {
+    states[0] = tabName;
+    stateIdx = 0;
+    refIdx = 0;
+    return panels.Page();
+  };
+  const reqPage = renderTab('requests');
+  assert.equal(reqPage.props['data-sticky-filter'], 'true');
+  const reqComp = reqPage.children[1].children[1].children[0];
+  stateIdx = 10;
+  const reqTree = reqComp.type(reqComp.props);
+  assert.match(findByTestId(reqTree, 'agy-requests-filter-bar')?.props?.className || '', /\bpt-filter-bar\b/);
+
+  const errPage = renderTab('errors');
+  assert.equal(errPage.props['data-sticky-filter'], 'true');
+  const errComp = errPage.children[1].children[1].children[0];
+  stateIdx = 20;
+  const errTree = errComp.type(errComp.props);
+  assert.match(findByTestId(errTree, 'agy-errors-filter-bar')?.props?.className || '', /\bpt-filter-bar\b/);
+
+  const ovPage = renderTab('overview');
+  assert.equal(ovPage.props['data-sticky-filter'], 'true');
+  const ovComp = ovPage.children[1].children[1].children[0];
+  stateIdx = 30;
+  const ovTree = ovComp.type(ovComp.props);
+  assert.match(findByTestId(ovTree, 'agy-overview-filter-bar')?.props?.className || '', /\bpt-filter-bar\b/);
+
+  const settingsPage = renderTab('settings');
+  assert.equal(settingsPage.props['data-sticky-filter'], undefined);
+
+  // QuickPopover uses .pt-qp / .pt-qp-scroll rather than .pt-page, keeping sticky filter bars scoped to .pt-page only
+  stateIdx = 50;
+  refIdx = 50;
+  let qpTree = panels.QuickPopover();
+  qpTree.children[0].props.onOpenChange(true);
+  stateIdx = 50;
+  refIdx = 50;
+  qpTree = panels.QuickPopover();
+  const qpCard = qpTree.children[0].children[1].children[0];
+  assert.equal(qpCard.props.className, 'pt-qp');
+  assert.equal(qpCard.props['data-sticky-filter'], undefined);
+  assert.equal(qpCard.children[1].props['data-testid'], 'agy-quick-body');
+  assert.equal(qpCard.children[1].props.className, 'pt-qp-scroll');
+  assert.equal(findByTestId(qpTree, 'agy-management-page'), null);
+
+  for (const cleanup of cleanups) cleanup();
+  assert.equal(pageListeners.get('scroll')?.length, 0);
+  assert.equal(resizeObservers[0].disconnected, true);
+  panels.dispose();
+});
+
+test('state polling passes knownRev and short-circuits unchanged replies, conversation switch avoids .pt-outline flash, and running turn cancels stranded inline edit (Issues #62, #74, #70)', async () => {
+  const p = page(true);
+  p.context.location.pathname = '/c/conv-a';
+  const intervals = [];
+  const timeouts = [];
+  let fakeNow = 1_795_900_000_000;
+  p.context.Date = class extends Date { static now() { return fakeNow; } };
+  p.context.setInterval = (fn, ms) => { const entry = { fn, ms, cleared: false }; intervals.push(entry); return intervals.length; };
+  p.context.clearInterval = id => { if (intervals[id - 1]) intervals[id - 1].cleared = true; };
+  p.context.setTimeout = (fn, ms) => { const entry = { fn, ms, cleared: false }; timeouts.push(entry); return timeouts.length; };
+  p.context.clearTimeout = id => { if (timeouts[id - 1]) timeouts[id - 1].cleared = true; };
+
+  let outlineRenders = 0;
+  let hasNativeNav = false;
+  const overviewEl = { isConnected: true, children: [], insertBefore(n) { n.isConnected = true; this.children.push(n); } };
+  const viewEl = {
+    isConnected: true,
+    children: [],
+    insertBefore(n) { n.isConnected = true; this.children.push(n); },
+    querySelector: sel => (sel === '[data-testid="conversation-navigator"]' && hasNativeNav ? { isConnected: true } : null)
+  };
+  p.document.querySelector = sel => {
+    if (sel === '[data-testid="overview-panel"]') return overviewEl;
+    if (sel === '[data-testid="conversation-view"]') return viewEl;
+    return null;
+  };
+  p.context.ReactDOM = {
+    createRoot(mount) {
+      return {
+        render() { if (mount.dataset?.agyPowertoolsRoot === 'outline') outlineRenders++; },
+        unmount() {}
+      };
+    }
+  };
+  let capturedEnv = null;
+  p.context.__agyPanels = env => {
+    capturedEnv = env;
+    return { Page: () => null, Sidebar: () => null, Outline: () => null, Progress: () => null, dispose() {} };
+  };
+  p.context.__agyNativeAdapter.installPage = () => true;
+
+  let execState = { conversationId: 'conv-a', status: 1 };
+  const cancelEditOpts = [];
+  let pendingEditObj = { cascadeId: 'conv-a', submitting: false };
+  Object.defineProperty(p.context.__agyNativeAdapter, 'pendingEdit', { get: () => pendingEditObj, configurable: true });
+  p.context.__agyNativeAdapter.cancelEdit = opts => { cancelEditOpts.push(opts); pendingEditObj = null; };
+  p.context.__agyNativeAdapter.executionState = () => execState;
+
+  const stateReqs = [];
+  const resetReqs = [];
+  let revA = 11;
+  let serverSettings = { enabled: true, keepTurnOutline: true, language: 'zh-CN' };
+  p.context.__agyPowertoolsHost = raw => {
+    const req = JSON.parse(raw);
+    queueMicrotask(() => {
+      if (req.method === 'settings.get') p.context.__agyPowertoolsReceive(req.id, serverSettings);
+      else if (req.method === 'settings.reset') {
+        resetReqs.push(req);
+        serverSettings = { enabled: true, keepTurnOutline: true, language: 'en' };
+        p.context.__agyPowertoolsReceive(req.id, serverSettings);
+      }
+      else if (req.method === 'state') {
+        stateReqs.push(req);
+        if (req.conversationId === 'conv-a' && req.knownRev === revA) {
+          p.context.__agyPowertoolsReceive(req.id, { unchanged: true, conversationId: 'conv-a', stateRev: revA });
+        } else {
+          p.context.__agyPowertoolsReceive(req.id, {
+            conversationId: req.conversationId,
+            stateRev: req.conversationId === 'conv-a' ? revA : 22,
+            settings: serverSettings,
+            turns: [{ turnNumber: 1, status: 'complete' }, { turnNumber: 2, status: 'complete' }],
+            contextWindow: {},
+            telemetry: {},
+            requests: []
+          });
+        }
+      } else {
+        p.context.__agyPowertoolsReceive(req.id, {});
+      }
+    });
+  };
+  p.context.__agyDefaultSettings = { language: 'en' };
+  p.context.__agyInitialSettings = { enabled: true, keepTurnOutline: true, language: 'zh-CN' };
+  vm.runInContext(source, p.context);
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+
+  // 1. Issue #62: second poll sends knownRev: 11 and cleanly handles { unchanged: true }
+  const mainPoll = intervals.find(i => i.ms === 2000 && !i.cleared);
+  fakeNow += 7000;
+  mainPoll.fn();
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+  assert.equal(stateReqs.at(-1).knownRev, 11);
+
+  // 1b. Settings-only revision bump (same stateValueSig!) MUST still advance state.stateRev so next poll sends knownRev: 12
+  revA = 12;
+  serverSettings = { ...serverSettings, compact: false };
+  fakeNow += 7000;
+  mainPoll.fn();
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+  fakeNow += 7000;
+  mainPoll.fn();
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+  assert.equal(stateReqs.at(-1).knownRev, 12, 'settings-only state reply must still advance state.stateRev');
+
+  // 1c. Restore defaults calls backend settings.reset and keeps backend OS default language ('en') instead of hardcoded 'zh-CN'
+  assert.equal(capturedEnv.defaults.language, 'en');
+  await capturedEnv.resetSettings();
+  assert.equal(resetReqs.length, 1);
+  assert.equal(capturedEnv.options().language, 'en');
+
+  // 2. Issue #70: when conv-a enters running state while an unsubmitted pendingEdit is open,
+  // cancelEdit restores composer home AND preserves pre-edit draft/attachments (restoreDraft: true)
+  execState = { conversationId: 'conv-a', status: 2 };
+  fakeNow += 7000;
+  mainPoll.fn();
+  await new Promise(r => setImmediate(r));
+  assert.equal(cancelEditOpts.length, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(cancelEditOpts[0])), { restoreDraft: true });
+
+  // 3. Issue #74: switching from conv-a -> conv-b suppresses fallback .pt-outline during the 220ms grace window;
+  // when native conversation-navigator mounts within that window, fallback outline is never mounted!
+  const rendersBeforeSwitch = outlineRenders;
+  execState = { conversationId: 'conv-b', status: 1 };
+  p.context.location.pathname = '/c/conv-b';
+  fakeNow += 1000;
+  mainPoll.fn();
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+  assert.equal(outlineRenders, rendersBeforeSwitch, 'must not flash fallback .pt-outline immediately on conversation switch');
+  hasNativeNav = true;
+  fakeNow += 300;
+  const graceTimer = timeouts.find(t => t.ms === 230 && !t.cleared);
+  if (graceTimer) graceTimer.fn();
+  const mountDebounce = timeouts.at(-1);
+  if (mountDebounce && !mountDebounce.cleared) mountDebounce.fn();
+  assert.equal(outlineRenders, rendersBeforeSwitch, 'native conversation-navigator appeared so fallback outline must stay unmounted');
+
+  p.context.__agyPowertools.dispose();
+});

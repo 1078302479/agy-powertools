@@ -101,7 +101,7 @@
 
 - **Multilingual UI (`English` / `简体中文` / `繁體中文`)**: Localizes Powertools panels, common Antigravity menus, permission dialogs, settings, and Swarm iframes while leaving chat text and code blocks untouched.
 - **Context and speed telemetry**: Adds a context usage ring (with cache reuse, compaction count, and Orchestrator planner/executor bars) and a speed dial (`tok/s`, TTFT, model vs. tool duration, and estimated session cost) next to the composer, including subagent stats.
-- **Local usage and request dashboard**: Adds a `Powertools` sidebar page with usage overview (53-week heatmap, token/cost donuts, model table), per-request log, short-interval cache anomaly flags, one-click error copy, quota estimates, and official API pricing refresh.
+- **Local usage and request dashboard**: Adds a `Powertools` sidebar page combining Desktop and `agy` CLI usage, with usage overview (53-week heatmap, token/cost donuts, model table), per-request log, short-interval cache anomaly flags, one-click error copy, quota estimates, and official API pricing refresh.
 - **Compact layout and live stage updates**: Keeps your client font size while tightening line height and block spacing; reports short progress updates during multi-step tool runs and folds them into the top duration header once finished.
 - **Session branching and inline editing**: Fork a new chat from any reply or conversation menu with full history preserved (including chats that used subagents), or edit a sent message in place using Antigravity's native composer.
 - **Multi-account switching (off by default)**: Uses Windows Credential Manager, macOS Keychain, or Linux Secret Service to keep multiple Google accounts isolated without plaintext tokens; check 5-hour/weekly quotas and switch from the sidebar, with optional auto-switch on depletion.
@@ -210,6 +210,7 @@ Every setting applies live in **Powertools -> Settings** and saves automatically
 | Name / Path | Description |
 | --- | --- |
 | `ANTIGRAVITY_USER_DATA_DIR` | Custom Antigravity user-data directory for isolated profiles |
+| `ANTIGRAVITY_CLI_DATA_DIR` | Custom `agy` CLI data directory (defaults to `~/.gemini/antigravity-cli`) |
 | `ANTIGRAVITY_CDP_PORT_FILE` | Explicit path to `DevToolsActivePort` (also honors `AGY_BROWSER_ACTIVE_PORT_FILE`) |
 | `~/.gemini/config/plugins/agy-powertools/` | Installed plugin files and runtime scripts |
 | `~/.gemini/antigravity/plugin_data/agy-powertools/` | Saved settings, account metadata, quota samples, and pricing cache |
@@ -219,6 +220,19 @@ Every setting applies live in **Powertools -> Settings** and saves automatically
 ---
 
 ## Changelog
+
+### v2.16.4
+- **Fix Windows relaunch console session inheritance (#61)**: Launches `Antigravity.exe` via `ProcessStartInfo` (`UseShellExecute = $false`, `CreateNoWindow = $true`) inside the relaunch script so the new instance does not inherit the PowerShell console session.
+- **Fix oversized macOS OAuth credential writes without leaking secrets into argv (#75)**: When `/usr/bin/security -i` hex commands approach the 4096-byte line buffer limit, writes through `/usr/bin/osascript -l JavaScript` over `stdin` using `Security.framework` (`SecItemUpdate` / `SecItemAdd` with `/usr/bin/security` ACL), keeping credentials out of `argv` for all payload sizes.
+- **Reduce long-conversation polling parse and transfer overhead (#62)**: Caches parsed session snapshots in the sidecar by file stamps (including `task.md`), full execution state, pricing rates, and settings; returns `{ unchanged: true, stateRev }` when `knownRev` matches, while advancing running phase timers locally in the renderer from `phaseStartedAtMs`.
+- **Fix macOS cold-start auto-relaunch cooldown and concurrent race (#64)**: Clears relaunch cooldown timestamps once debug port or proxy is ready, adds startup proxy retries, and coordinates cold-start proxy probing with missing-debug-port checks so concurrent paths schedule at most one relaunch.
+- **Fix inline edit shortcuts and draft recovery (#70)**: Respects host `sendWithModEnter` preference (allowing plain Enter newlines when mod-enter send is active while supporting `Cmd/Ctrl+Enter` submit), clarifies the edit banner, and restores the pre-edit draft and attachments if another window starts the conversation.
+- **Prevent fallback outline flash on conversation switch (#74)**: Adds a 220 ms grace window for native `conversation-navigator` to mount before rendering `.pt-outline`.
+- **Add custom localization overrides, 2.35 slash-command translations, and OS locale defaults (#68, #69)**: Loads additive overrides from `plugin_data/agy-powertools/custom-i18n.json`, translates 10 new 2.35 slash commands, initializes default language from the OS locale (BCP-47 and POSIX underscore locales), and resets settings via backend `settings.reset`.
+- **Community PRs**:
+  - **SSH remote early-boot recovery (PR #67, closes #66, thanks `@qimengdunjia`)**: Tolerates unavailable `service()` during early SSH boot and re-applies options when settings update.
+  - **Antigravity CLI telemetry merge and Argon quota pool (PR #71, thanks `@zhangyu-ch`)**: Merges `~/.gemini/antigravity-cli/conversations/*.db` into usage analytics, self-heals pre-upgrade quota checkpoints, and separates the `argon` quota pool.
+  - **Sticky management page header and filter bar (PR #72, thanks `@niuanhua-ydy`)**: Adds sticky positioning and scroll dividers for the Powertools management header and filter bars.
 
 ### v2.16.3
 - **Fix Windows non-TUN proxy relaunch antivirus blocks (#53)**: Removed `-EncodedCommand`, `ShellWindows` DCOM, `CreateProcessW`, and `.vbs`; creates a temporary `.lnk` inside plugin data via a plain `-File` script and launches it via `explorer.exe` (cleaning up `.lnk`, `.ack`, and `.ps1` afterward), avoiding Windows Defender AMSI and Huorong blocks; verifies `--proxy-server=` on the relaunched process when proxy mode is enabled.

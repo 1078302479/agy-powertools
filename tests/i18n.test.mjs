@@ -1,8 +1,9 @@
-import test from 'node:test';import assert from 'node:assert/strict';import{readFileSync,mkdtempSync,rmSync}from'node:fs';import{tmpdir}from'node:os';import{join}from'node:path';import vm from'node:vm';
+import test from 'node:test';import assert from 'node:assert/strict';import{readFileSync,writeFileSync,mkdtempSync,rmSync}from'node:fs';import{tmpdir}from'node:os';import{join}from'node:path';import vm from'node:vm';
 import{toZhTw}from'../lib/zh-tw.mjs';
 import{renderAuxPaneHtml}from'../lib/sidecar-ui.mjs';
 import{formatRelativeTime,formatResetCountdown}from'../lib/account-helpers.mjs';
 import{createSettingsStore}from'../lib/settings.mjs';
+import{loadCustomI18n}from'../lib/native-host.mjs';
 test('native settings translations preserve product names and English input terminology',()=>{
  const document={nodeType:9,createTreeWalker:()=>({nextNode:()=>null}),querySelectorAll:()=>[]};
  const context=vm.createContext({document,NodeFilter:{SHOW_TEXT:4},MutationObserver:class{observe(){} disconnect(){}}});
@@ -225,4 +226,45 @@ test('Skills and Customizations UI strings translate accurately in zh-CN and zh-
   assert.equal(t('No skills or rules yet.', 'zh-TW'), '暫無技能或規則。');
   assert.equal(t('Delete Skill', 'zh-CN'), '删除技能');
   assert.equal(t('Copy Config File Path', 'zh-TW'), '複製設定檔路徑');
+});
+
+test('custom-i18n.json loads additive user translations safely and slash command descriptions translate cleanly (Issue #68)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agy-custom-i18n-'));
+  try {
+    assert.deepEqual(loadCustomI18n(dir), []);
+    writeFileSync(join(dir, 'custom-i18n.json'), '{bad json');
+    assert.deepEqual(loadCustomI18n(dir), []);
+
+    writeFileSync(join(dir, 'custom-i18n.json'), JSON.stringify({
+      'Settings': '不应覆盖官方词条',
+      'My Custom Skill Description': '我的自定义技能说明'
+    }));
+    const pairs = loadCustomI18n(dir);
+    assert.equal(pairs.length, 2);
+
+    const document = { nodeType: 9, createTreeWalker: () => ({ nextNode: () => null }), querySelectorAll: () => [] };
+    const context = vm.createContext({
+      document,
+      NodeFilter: { SHOW_TEXT: 4 },
+      MutationObserver: class { observe() {} disconnect() {} },
+      __agyToZhTw: toZhTw,
+      __agyCustomI18n: pairs
+    });
+    vm.runInContext(readFileSync('lib/native-i18n.js', 'utf8'), context);
+    const t = context.__agyI18n.t;
+    // Built-in translation wins over custom override; custom entry fills missing strings and auto-converts to zh-TW
+    assert.equal(t('Settings', 'zh-CN'), '设置');
+    assert.equal(t('My Custom Skill Description', 'zh-CN'), '我的自定义技能说明');
+    assert.equal(t('My Custom Skill Description', 'zh-TW'), '我的自訂技能說明');
+    // Built-in slash command descriptions from Issue #68
+    assert.equal(t('Ask a quick question without interrupting the main conversation.', 'zh-CN'), '发起侧边对话，不打断主对话。');
+    assert.equal(t('Run until the specified goal is completely finished.', 'zh-CN'), '持续执行，直到指定目标完全达成。');
+    assert.equal(t('Invoke the Boost multi-agent orchestrator for complex tasks.', 'zh-TW'), '呼叫 Boost 多智能體編排器處理複雜任務。'.replace('呼叫', '調用'));
+
+    // Array-of-pairs format is also supported
+    writeFileSync(join(dir, 'custom-i18n.json'), JSON.stringify([['Array Custom Text', '数组词条']]));
+    assert.deepEqual(loadCustomI18n(dir), [['Array Custom Text', '数组词条']]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

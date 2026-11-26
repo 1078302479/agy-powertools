@@ -852,4 +852,164 @@ test('inline edit capture-phase Enter and Send click revert and resend directly 
     ['revert', 'conv-initial-58', 1, { conversationOnly: true }],
     ['sendMessage', 'conv-initial-58', 'second click edit', 'edit']
   ]);
+
+  // Verify Issue #70: Cmd+Enter (macOS) and Ctrl+Enter also submit inline edit cleanly
+  events.length = 0;
+  editorText = 'cmd enter edit';
+  await adapter.beginEdit(element);
+  const onCmdKeyDown = hostListeners.get('keydown:true');
+  onCmdKeyDown({
+    key: 'Enter',
+    metaKey: true,
+    target: { closest: sel => sel === '[contenteditable="true"]' ? {} : null },
+    preventDefault() {},
+    stopPropagation() {},
+    stopImmediatePropagation() {}
+  });
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+  assert.equal(adapter.pendingEdit, null);
+  assert.deepEqual(JSON.parse(JSON.stringify(events)), [
+    ['cancel', 'conv-initial-58'],
+    ['revert', 'conv-initial-58', 1, { conversationOnly: true }],
+    ['sendMessage', 'conv-initial-58', 'cmd enter edit', 'edit']
+  ]);
+
+  // Verify Issue #70: when host configures sendWithModEnter: true, plain Enter is NOT intercepted (allows newline),
+  // while Ctrl+Enter / Cmd+Enter submits; and cancelEdit({ restoreDraft: true }) restores original draft & media.
+  events.length = 0;
+  editorText = 'unsent original draft';
+  let currentMedia = [{ name: 'orig.png' }];
+  box.getMediaAttachments = () => currentMedia;
+  box.setMediaAttachments = next => { currentMedia = [...next]; };
+  const originalSnap = { toJSON: () => ({ root: { type: 'root', children: [{ text: 'unsent original draft' }] } }) };
+  let restoredEditorState = null;
+  editor.getEditorState = () => ({ toJSON: () => ({ root: { type: 'root', children: [{ text: editorText }] } }) });
+  editor.setEditorState = next => { restoredEditorState = next; };
+  await adapter.beginEdit(element);
+  assert.ok(adapter.pendingEdit);
+  const modKeyDown = hostListeners.get('keydown:true');
+  const modEditorTarget = {
+    '__reactFiber$ed': { memoizedProps: { sendWithModEnter: true }, return: null },
+    closest: sel => sel === '[contenteditable="true"]' ? {} : null
+  };
+  let plainPrevented = false;
+  modKeyDown({
+    key: 'Enter',
+    target: modEditorTarget,
+    preventDefault() { plainPrevented = true; },
+    stopPropagation() { plainPrevented = true; },
+    stopImmediatePropagation() { plainPrevented = true; }
+  });
+  assert.equal(plainPrevented, false, 'plain Enter must pass through for newline when sendWithModEnter is true');
+  assert.ok(adapter.pendingEdit, 'inline edit must stay active after plain Enter in mod-enter mode');
+
+  // External run auto-cancel restores original draft & attachments
+  currentMedia = [{ name: 'edited-msg.png' }];
+  adapter.cancelEdit({ restoreDraft: true });
+  assert.equal(adapter.pendingEdit, null);
+  assert.equal(inputBox.parentNode, bottomDock);
+  assert.deepEqual(currentMedia, [{ name: 'orig.png' }]);
+  assert.ok(restoredEditorState, 'cancelEdit({ restoreDraft: true }) must restore pre-edit editor state');
+
+  // Re-open in mod-enter mode and confirm Ctrl+Enter submits
+  editorText = 'ctrl enter in mod mode';
+  await adapter.beginEdit(element);
+  const modKeyDown2 = hostListeners.get('keydown:true');
+  let ctrlPrevented = false;
+  modKeyDown2({
+    key: 'Enter',
+    ctrlKey: true,
+    target: modEditorTarget,
+    preventDefault() { ctrlPrevented = true; },
+    stopPropagation() {},
+    stopImmediatePropagation() {}
+  });
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+  assert.equal(ctrlPrevented, true);
+  assert.equal(adapter.pendingEdit, null);
+  assert.deepEqual(JSON.parse(JSON.stringify(events)), [
+    ['cancel', 'conv-initial-58'],
+    ['revert', 'conv-initial-58', 1, { conversationOnly: true }],
+    ['sendMessage', 'conv-initial-58', 'ctrl enter in mod mode', 'edit']
+  ]);
+  void originalSnap;
+});
+
+test('runtime option setters survive early boot before conversation service mounts and hook send once available (Issue #66)', async () => {
+  let mountedElement = null;
+  const sentPayloads = [];
+  const service = {
+    forkConversation() {},
+    async sendUserCascadeMessage(payload) { sentPayloads.push(payload); return payload; }
+  };
+  const serviceElement = {
+    '__reactFiber$boot': { tag: 10, type: {}, memoizedProps: { value: service }, return: null }
+  };
+  const baseConfig = { plannerConfig: { noToolExplanation: true }, checkpointConfig: { enabled: true } };
+  const resolve = () => baseConfig;
+  const modelText = { type: 'step', step: { step: { case: 'plannerResponse', value: { response: 'Checking files.' } } } };
+  const render = arg => ({ leadingSteps: arg.leadingSteps || [], tailSteps: [], body: { type: 'collapsible', isActive: arg.running, content: { groups: arg.groups } } });
+  const nativeFlat = args => {
+    const out = [];
+    for (const g of args.groups) {
+      out.push({ type: 'header', id: `header-${g.id}`, label: g.label });
+      for (const it of g.items) out.push({ type: 'row', id: it.cascadeId, cascadeId: it.cascadeId, isIndented: true, groupId: g.id });
+    }
+    return out;
+  };
+  const context = vm.createContext({
+    document: { querySelector: () => mountedElement },
+    __agyNativeBindings: { names: { resolve: 'sjc', segment: 'Yyc', menu: 'lHc', sidebarItems: 'VWc' } },
+    sjc: resolve,
+    Yyc: render,
+    VWc: nativeFlat,
+    I: { CascadeConfigSchema: {}, CheckpointConfigSchema: {}, CascadePlannerConfigSchema: {}, PromptSectionCustomizationConfigSchema: {}, PromptSectionSchema: {} },
+    tc: (_, value) => structuredClone(value),
+    Wb: (_, value) => value
+  });
+  vm.runInContext(readFileSync(new URL('../lib/native-client.js', import.meta.url), 'utf8'), context);
+  const adapter = context.__agyNativeAdapter;
+
+  // Simulate early SSH window boot: conversation service provider is not mounted yet.
+  adapter.setEnabled(true);
+  adapter.setStageUpdates(true);
+  adapter.setEfficientIO(true);
+  adapter.setContextLimit(500000);
+  adapter.setSidebarProjectLimit(2);
+
+  assert.equal(adapter.stageUpdates, true);
+  const resolved = context.sjc({});
+  assert.equal(resolved.plannerConfig.noToolExplanation, false);
+  assert.equal(resolved.checkpointConfig.maxTokenLimit, 500000);
+  assert.deepEqual(
+    Array.from(resolved.plannerConfig.promptSectionCustomizationConfig.appendPromptSections, p => p.title),
+    ['powertools_stage_updates', 'powertools_efficient_io']
+  );
+  const folded = context.Yyc({ groups: [], leadingSteps: [modelText], running: false });
+  assert.equal(folded.leadingSteps.length, 0);
+  assert.equal(folded.body.content.groups.length, 1);
+
+  const sidebarItems = context.VWc({
+    groups: [{ id: 'p1', label: 'Proj', items: [{ cascadeId: 'c1' }, { cascadeId: 'c2' }, { cascadeId: 'c3' }] }],
+    groupBy: 'project',
+    onlyShowFirstFewConvos: {}
+  });
+  assert.equal(sidebarItems.filter(x => x.type === 'row').length, 2);
+  assert.equal(sidebarItems.at(-1).label, 'See all (3)');
+
+  // Once the conversation service mounts, ensureRequestHook attaches sendUserCascadeMessage with the already-saved options.
+  mountedElement = serviceElement;
+  adapter.ensureRequestHook();
+  await service.sendUserCascadeMessage({ cascadeId: 'conv-ssh', cascadeConfig: {} });
+  assert.equal(sentPayloads.length, 1);
+  assert.equal(sentPayloads[0].cascadeConfig.plannerConfig.noToolExplanation, false);
+  assert.equal(sentPayloads[0].cascadeConfig.checkpointConfig.maxTokenLimit, 500000);
+  assert.deepEqual(
+    Array.from(sentPayloads[0].cascadeConfig.plannerConfig.promptSectionCustomizationConfig.appendPromptSections, p => p.title),
+    ['powertools_stage_updates', 'powertools_efficient_io']
+  );
+
+  adapter.dispose();
 });

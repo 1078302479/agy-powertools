@@ -101,7 +101,7 @@
 
 - **多语言汉化（简 / 繁 / 英）**：翻译 Antigravity 常用侧栏、菜单、权限弹窗、模型说明、设置页和 Swarm 面板，不改动聊天正文与代码块。
 - **上下文与速度统计**：在输入框旁查看上下文窗口占用（含缓存复用、压缩次数和 Orchestrator 规划/执行分模型进度）以及生成速度（`tok/s`、首字延迟、模型/工具耗时和本会话参考费用），支持子智能体统计。
-- **本地用量与请求看板**：左侧栏新增 `Powertools` 页面，包含用量概览（热力图、模型分布、参考费用）、请求记录、短间隔缓存异常标红、报错一键复制、配额估算和官方参考单价拉取。
+- **本地用量与请求看板**：左侧栏新增 `Powertools` 页面，合并统计桌面端与 `agy` CLI 用量，包含用量概览（热力图、模型分布、参考费用）、请求记录、短间隔缓存异常标红、报错一键复制、配额估算和官方参考单价拉取。
 - **紧凑排版与阶段汇报**：保留客户端字号，收紧正文行高和段落间距；Agent 连续调用工具时先简要汇报进度，整轮完成后自动折进顶部用时栏。
 - **会话分支与消息编辑**：可从任意历史回答或会话菜单分支出新会话（完整保留历史，支持含子智能体的会话）；点击已发消息旁的编辑按钮可直接在原位置修改重发。
 - **多账号切换（默认关闭）**：基于 Windows 凭据管理器、macOS 钥匙串或 Linux Secret Service 本地隔离多个 Google 账号，不落明文令牌；侧栏底部可直接看额度、切号，支持耗尽自动切号。
@@ -210,6 +210,7 @@ sh ./install.sh
 | 名称 / 路径 | 说明 |
 | --- | --- |
 | `ANTIGRAVITY_USER_DATA_DIR` | 使用独立客户端配置目录时指定自定义用户数据目录 |
+| `ANTIGRAVITY_CLI_DATA_DIR` | 自定义 `agy` CLI 数据目录路径（默认自动合并 `~/.gemini/antigravity-cli`） |
 | `ANTIGRAVITY_CDP_PORT_FILE` | 显式指定 `DevToolsActivePort` 绝对路径（兼容 `AGY_BROWSER_ACTIVE_PORT_FILE`） |
 | `~/.gemini/config/plugins/agy-powertools/` | 插件程序与运行脚本安装目录 |
 | `~/.gemini/antigravity/plugin_data/agy-powertools/` | 个人设置、账号记录、配额采样和参考单价缓存目录 |
@@ -219,6 +220,19 @@ sh ./install.sh
 ---
 
 ## 更新日志
+
+### v2.16.4
+- **修复 Windows 重启闪黑框与进程会话继承（#61）**：重启脚本改用 `ProcessStartInfo`（`UseShellExecute = $false`、`CreateNoWindow = $true`）拉起 `Antigravity.exe`，避免新实例继承 PowerShell 控制台会话。
+- **修复 macOS 大体积 OAuth 凭据写入超限并避免密文进入命令行（#75）**：当 `/usr/bin/security -i` 的十六进制命令接近 4096 字节行缓冲上限时，改用 `/usr/bin/osascript -l JavaScript` 通过标准输入调用 `Security.framework`（`SecItemUpdate` / `SecItemAdd` 并配置 `/usr/bin/security` 访问控制列表），所有大小的凭据均不出现在 `argv` 中。
+- **降低长会话轮询的解析与传输开销（#62）**：伴生进程按文件指纹（含 `task.md`）、完整执行态、费率与设置缓存解析结果，前端携带 `knownRev` 且状态未变化时直接返回 `{ unchanged: true, stateRev }`，运行中阶段计时改由前端按 `phaseStartedAtMs` 本地推进。
+- **修复 macOS 冷启动自动重启冷却残留与并发竞态（#64）**：调试端口与代理就绪后清空冷却时间戳并增加代理启动重试；统一冷启动代理探测与缺失调试端口两条路径的协调锁，避免同时调度两次重启。
+- **修复原位编辑快捷键与状态恢复问题（#70）**：尊重宿主 `sendWithModEnter` 偏好（开启组合键发送时放行普通 Enter 换行，支持 `Cmd/Ctrl+Enter` 提交），优化编辑横幅样式，外部窗口启动会话时归位输入框并恢复编辑前草稿及附件。
+- **消除切换会话时备用目录浮层闪烁（#74）**：切换会话后为原生 `conversation-navigator` 挂载留出 220 ms 宽限期，原生目录出现后不再闪烁显示 `.pt-outline`。
+- **支持自定义汉化词典、补全 2.35 命令说明并按系统语言初始化（#68、#69）**：支持读取 `plugin_data/agy-powertools/custom-i18n.json` 补充未覆盖词条，补齐 2.35 新增的 10 个斜杠命令说明；首次启动按操作系统语言（兼容 BCP-47 与 POSIX 下划线格式）选择默认界面语言，重置设置通过后端 `settings.reset` 保持系统默认语言。
+- **社区 PR 合并**：
+  - **SSH 远端窗口早期启动恢复（PR #67，关闭 #66，感谢 `@qimengdunjia`）**：容忍早期启动时 `service()` 尚未挂载并在配置变更后重跑 `applyOptions()`。
+  - **合并 Antigravity CLI 统计与 Argon 独立额度池（PR #71，感谢 `@zhangyu-ch`）**：自动合并 `~/.gemini/antigravity-cli/conversations/*.db` 至看板统计，自愈旧配额检查点并分离 `argon` 额度池。
+  - **管理页顶栏与筛选栏滚动吸顶（PR #72，感谢 `@niuanhua-ydy`）**：为 Powertools 管理页顶栏与筛选栏增加滚动吸顶与分隔线。
 
 ### v2.16.3
 - **修复 Windows 免 TUN 代理重启被杀软拦截（#53）**：移除 `-EncodedCommand`、`ShellWindows` DCOM、`CreateProcessW` 与 `.vbs`，改为使用普通 `-File` 脚本在插件数据目录内生成临时 `.lnk` 并通过 `explorer.exe` 拉起（执行后自动删除 `.lnk`、`.ack` 与 `.ps1`），避免 Windows Defender AMSI 与火绒拦截；启用代理时校验新进程命令行包含 `--proxy-server=`。

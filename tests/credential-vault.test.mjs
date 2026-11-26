@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { runInNewContext } from 'node:vm';
 import { spawnSync } from 'node:child_process';
 import {
   ACTIVE_TARGET,
   ACTIVE_USERNAME,
+  buildMacKeychainWriteScript,
   createCredentialVault,
   extractCredentialEmail,
   vaultTargetFor
@@ -223,3 +225,136 @@ test('Windows PowerShell WIN32_SCRIPT compiles Add-Type and extracts id_token_em
   const line = String(res.stdout || '').trim().split(/\r?\n/).filter(Boolean).at(-1) || '';
   assert.equal(line, 'alpha@example.com|real@example.com|beta@example.com|');
 });
+
+test('macOS credential vault keeps secrets out of argv for both small and >4KB OAuth payloads and round-trips cleanly (Issue #75)', () => {
+  const smallSecret = JSON.stringify({
+    id_token_email: 'small@example.com',
+    token: { access_token: 'S'.repeat(64) }
+  });
+  const bigSecret = JSON.stringify({
+    id_token_email: 'big@example.com',
+    token: { access_token: 'A'.repeat(2400), refresh_token: 'R'.repeat(2200) }
+  });
+  assert.ok(Buffer.byteLength(bigSecret, 'utf8') > 4096, 'test payload must exceed 4 KB raw');
+
+  const store = new Map();
+  const calls = [];
+  const vault = createCredentialVault({
+    platform: 'darwin',
+    runSpawn(cmd, args, opts) {
+      calls.push({ cmd, args, input: opts?.input, env: opts?.env });
+      if (cmd === '/usr/bin/security' && args[0] === 'find-generic-password') {
+        const svc = args[args.indexOf('-s') + 1];
+        const acct = args[args.indexOf('-a') + 1];
+        const val = store.get(`${svc}\0${acct}`);
+        if (val == null) return { status: 44, stdout: '', stderr: 'not found' };
+        return { status: 0, stdout: Buffer.from(val + '\n', 'utf8') };
+      }
+      if (cmd === '/usr/bin/security' && args[0] === '-i') {
+        const m = String(opts?.input || '').match(/^add-generic-password -U -s ("[^"]+") -a ("[^"]+") -X ([0-9a-f]+)\n$/i);
+        assert.ok(m, 'security -i input must be well-formed');
+        store.set(`${JSON.parse(m[1])}\0${JSON.parse(m[2])}`, Buffer.from(m[3], 'hex').toString('utf8'));
+        return { status: 0, stdout: '' };
+      }
+      if (cmd === '/usr/bin/osascript' && args[0] === '-l' && args[1] === 'JavaScript') {
+        const script = String(opts?.input || '');
+        const svcM = script.match(/const service = \$\(([^\n]+)\);/);
+        const acctM = script.match(/const account = \$\(([^\n]+)\);/);
+        const b64M = script.match(/initWithBase64EncodedStringOptions\(\$\(([^\n]+)\), 0\)/);
+        assert.ok(svcM && acctM && b64M, 'osascript stdin must carry service, account, and base64 payload');
+        store.set(`${JSON.parse(svcM[1])}\0${JSON.parse(acctM[1])}`, Buffer.from(JSON.parse(b64M[1]), 'base64').toString('utf8'));
+        return { status: 0, stdout: '' };
+      }
+      return { status: 1, stdout: '', stderr: `unexpected command: ${cmd}` };
+    }
+  });
+
+  // 1. Small payload uses `/usr/bin/security -i` via stdin, never passing secret in argv
+  store.set('gemini\0antigravity', smallSecret);
+  assert.equal(vault.saveActiveTo('acct-small', { expectedEmail: 'small@example.com' }).ok, true);
+  const smallWrite = calls.at(-1);
+  assert.equal(smallWrite.cmd, '/usr/bin/security');
+  assert.deepEqual(smallWrite.args, ['-i']);
+
+  // 2. Oversized (> 4 KB) payload uses `/usr/bin/osascript -l JavaScript` via stdin, never leaking secret/hex/base64 into argv
+  store.set('gemini\0antigravity', bigSecret);
+  const saved = vault.saveActiveTo('acct-big', { expectedEmail: 'big@example.com' });
+  assert.equal(saved.ok, true);
+  assert.equal(saved.bytes, Buffer.byteLength(bigSecret, 'utf8'));
+  const bigWrite = calls.at(-1);
+  assert.equal(bigWrite.cmd, '/usr/bin/osascript');
+  assert.deepEqual(bigWrite.args, ['-l', 'JavaScript']);
+  const joinedArgs = bigWrite.args.join(' ');
+  assert.equal(joinedArgs.includes('big@example.com'), false);
+  assert.equal(joinedArgs.includes('AAAA'), false);
+  assert.equal(joinedArgs.includes(Buffer.from(bigSecret, 'utf8').toString('hex')), false);
+  assert.equal(joinedArgs.includes(Buffer.from(bigSecret, 'utf8').toString('base64')), false);
+
+  // 3. Round-trip restore back to active slot recovers the exact > 4 KB OAuth payload
+  store.set('gemini\0antigravity', smallSecret);
+  const restored = vault.restoreToActive('acct-big', { expectedEmail: 'big@example.com' });
+  assert.equal(restored.ok, true);
+  assert.equal(store.get('gemini\0antigravity'), bigSecret);
+});
+
+test('large Keychain writes fail closed when the reader, ACL or protected add fails', () => {
+  const script = buildMacKeychainWriteScript({ service: 'test', account: 'test', dataBase64: 'YQ==' });
+  for (const failure of ['reader', 'acl', 'add']) {
+    const writes = [];
+    const dictionary = { setObjectForKey() {}, get mutableCopy() { return this; } };
+    const bridge = Object.assign(value => value, {
+      NSData: { alloc: { initWithBase64EncodedStringOptions: () => ({ isNil: () => false }) } },
+      NSMutableDictionary: { alloc: { init: dictionary } },
+      NSMutableArray: { alloc: { init: { addObject() {} } } },
+      SecItemUpdate: () => -25300,
+      SecTrustedApplicationCreateFromPath(path, ref) {
+        ref[0] = {};
+        return path && failure === 'reader' ? -1 : 0;
+      },
+      SecAccessCreate(service, list, ref) { ref[0] = {}; return failure === 'acl' ? -1 : 0; },
+      SecItemAdd() { writes.push('add'); return -1; },
+      exit(code) { throw Error(`exit ${code}`); }
+    });
+    assert.throws(() => runInNewContext(script, { $: bridge, Ref: () => [], ObjC: { import() {} }, console: { log() {} } }), /exit 1/);
+    assert.deepEqual(writes, failure === 'add' ? ['add'] : []);
+  }
+});
+
+if (process.platform === 'darwin') {
+  test('live macOS Keychain round-trip writes >4KB payload via JXA Security.framework stdin and reads back via security', async t => {
+    const service = `agy-powertools-ci-test-${process.pid}-${Date.now()}`;
+    const account = 'large-payload';
+    const payload = JSON.stringify({
+      id_token_email: 'ci-large@example.com',
+      token: { access_token: 'A'.repeat(2400), refresh_token: 'R'.repeat(2200) }
+    });
+    assert.ok(Buffer.byteLength(payload, 'utf8') > 4096);
+    try {
+      for (const currentPayload of [payload, payload.replace('ci-large@example.com', 'updated@example.com')]) {
+        const script = buildMacKeychainWriteScript({
+          service,
+          account,
+          dataBase64: Buffer.from(currentPayload, 'utf8').toString('base64')
+        });
+        const writeRes = spawnSync('/usr/bin/osascript', ['-l', 'JavaScript'], {
+          input: script,
+          stdio: ['pipe', 'ignore', 'pipe'],
+          timeout: 10000
+        });
+        if (writeRes.status !== 0 && /-25308|-25293/.test(String(writeRes.stderr || ''))) {
+          t.skip('macOS runner login keychain is locked in headless environment');
+          return;
+        }
+        assert.equal(writeRes.status, 0, String(writeRes.stderr || 'osascript failed'));
+        const readRes = spawnSync('/usr/bin/security', ['find-generic-password', '-s', service, '-a', account, '-w'], {
+          encoding: 'utf8',
+          timeout: 10000
+        });
+        assert.equal(readRes.status, 0, String(readRes.stderr || 'security read failed'));
+        assert.equal(String(readRes.stdout || '').replace(/[\r\n]+$/, ''), currentPayload);
+      }
+    } finally {
+      spawnSync('/usr/bin/security', ['delete-generic-password', '-s', service, '-a', account], { stdio: 'ignore', timeout: 5000 });
+    }
+  });
+}
