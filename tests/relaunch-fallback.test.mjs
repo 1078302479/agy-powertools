@@ -696,7 +696,7 @@ test('native-host proxy.relaunch returns fail-closed manualRestartRequired with 
       parseSessionData: () => ({}),
       onStatus: () => {},
       discover: async () => [],
-      scheduleRelaunch: () => ({ scheduled: true, ackFile: join(dataDir, 'relaunch-ack.json') }),
+      scheduleRelaunch: () => ({ scheduled: true, target: join(dataDir, 'Antigravity.exe'), ackFile: join(dataDir, 'relaunch-ack.json') }),
       verifyRelaunch: async scheduled => {
         verifyCalls++;
         return { ...scheduled, scheduled: false, confirmed: false, manualRestartRequired: true, reason: 'relaunch-blocked' };
