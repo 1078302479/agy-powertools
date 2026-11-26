@@ -1139,8 +1139,12 @@ test('composerWorkingBeam cross-fades with ComposerQuotaHalo when active and sta
   assert.ok(idleNotch);
   assert.equal(idleNotch.type, 'button');
   assert.equal(idleNotch.props['data-style'], 'notch');
+  assert.equal(typeof idleNotch.props.onMouseEnter, 'function');
+  assert.equal(typeof idleNotch.props.onMouseLeave, 'function');
   const quotaPopover = findById(idleTree, 'agy-composer-quota-popover');
   assert.ok(quotaPopover);
+  assert.equal(typeof quotaPopover.props.onMouseEnter, 'function');
+  assert.equal(typeof quotaPopover.props.onMouseLeave, 'function');
   const exactResetNode = findById(quotaPopover, 'agy-quota-reset-exact');
   assert.ok(exactResetNode);
   const exactResetText = (Array.isArray(exactResetNode.children) ? exactResetNode.children : [exactResetNode.children]).join('');
