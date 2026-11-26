@@ -1,0 +1,98 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    # 每天北京时间 10:00（UTC 02:00）自动检查并同步原版更新
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: custom
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Fetch upstream and check for updates
+        id: check
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/WhiteBr1ck/agy-powertools.git
+          git fetch upstream main
+          git fetch origin main
+
+          UPSTREAM_SHA=$(git rev-parse upstream/main)
+          MAIN_SHA=$(git rev-parse origin/main)
+          echo "upstream_sha=$UPSTREAM_SHA" >> "$GITHUB_OUTPUT"
+
+          if [ "$UPSTREAM_SHA" = "$MAIN_SHA" ] && git merge-base --is-ancestor "$UPSTREAM_SHA" HEAD; then
+            echo "has_updates=false" >> "$GITHUB_OUTPUT"
+            echo "Already up to date with upstream/main ($UPSTREAM_SHA)."
+            exit 0
+          fi
+
+          echo "has_updates=true" >> "$GITHUB_OUTPUT"
+          echo "New upstream commits:"
+          git log --oneline HEAD..upstream/main
+
+      - name: Fast-forward origin/main
+        if: steps.check.outputs.has_updates == 'true'
+        run: |
+          git push origin upstream/main:refs/heads/main
+
+      - name: Merge upstream into custom and test
+        if: steps.check.outputs.has_updates == 'true'
+        id: merge
+        run: |
+          if ! git merge --no-edit upstream/main; then
+            echo "status=conflict" >> "$GITHUB_OUTPUT"
+            git merge --abort || true
+            exit 0
+          fi
+
+          if ! node --test tests/settings.test.mjs tests/native-ui.test.mjs; then
+            echo "status=test_failed" >> "$GITHUB_OUTPUT"
+            git reset --hard origin/custom
+            exit 0
+          fi
+
+          git push origin custom
+          echo "status=merged" >> "$GITHUB_OUTPUT"
+
+      - name: Notify via Issue on conflict or test failure
+        if: steps.check.outputs.has_updates == 'true' && (steps.merge.outputs.status == 'conflict' || steps.merge.outputs.status == 'test_failed')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_SHA: ${{ steps.check.outputs.upstream_sha }}
+          MERGE_STATUS: ${{ steps.merge.outputs.status }}
+        run: |
+          SHORT_SHA="${UPSTREAM_SHA:0:7}"
+          TITLE="上游同步需要手动处理 (${SHORT_SHA})"
+          EXISTING=$(gh issue list --state open --search "$TITLE in:title" --json number --jq 'length')
+          if [ "$EXISTING" != "0" ]; then
+            echo "Issue already open for $SHORT_SHA, skipping."
+            exit 0
+          fi
+
+          COMMITS=$(git log --oneline HEAD..upstream/main | head -n 30)
+          REASON="合并 upstream/main 时发生代码冲突"
+          if [ "$MERGE_STATUS" = "test_failed" ]; then
+            REASON="合并 upstream/main 后定制测试未通过"
+          fi
+
+          gh issue create \
+            --title "$TITLE" \
+            --body "$(printf '自动同步原版 `WhiteBr1ck/agy-powertools` (`%s`) 时未能自动完成：**%s**。\n\n`main` 分支已更新到最新原版，但 `custom` 分支保持原样未受影响。\n\n### 上游新增提交\n```\n%s\n```\n\n### 处理方式\n在本地打开项目并让 Antigravity 执行「拉取原版更新」即可自动解决冲突并重新部署。' "$SHORT_SHA" "$REASON" "$COMMITS")"

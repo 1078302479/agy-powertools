@@ -7,6 +7,18 @@
 - **`main` 分支**：保持与 `upstream/main` 一致的原版干净基线
 - **`custom` 分支**：所有二次开发改动均提交在此分支，并追踪 `origin/custom`
 
+## 云端自动同步（GitHub Actions）
+
+- 已在 `custom` 分支配置 `.github/workflows/sync-upstream.yml`（仓库默认分支为 `custom`）：
+  - 每天北京时间 10:00 自动拉取 `upstream/main` 更新并支持在 GitHub Actions 手动触发。
+  - 自动快进 `origin/main` 并合并到 `origin/custom`，通过定制测试后自动推送；若遇冲突或测试失败则安全中止并自动创建 GitHub Issue 提醒。
+- 当云端已自动同步完成，本机只需执行：
+  ```sh
+  git pull origin custom
+  sh ./install.sh
+  ```
+  即可让最新代码在本机生效。
+
 ## 拉取并同步原版更新流程
 
 当用户要求「拉取上游更新 / 同步原版更新」时，按以下步骤执行：
