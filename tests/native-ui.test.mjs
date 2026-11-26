@@ -61,6 +61,172 @@ test('already-loaded injection initializes without waiting and disposes cleanly'
   assert.ok(p.nodes.every(n => !n.isConnected));
 });
 
+function fontPage(initial = {}) {
+  const p = page(true), properties = new Map(), writes = [];
+  let env, stored = { enabled: true, customFont: '', ...initial };
+  p.document.documentElement.style = { setProperty: (k, v) => properties.set(k, v), removeProperty: k => properties.delete(k) };
+  const create = p.document.createElement;
+  p.document.createElement = tag => {
+    if (tag !== 'canvas') return create(tag);
+    return { getContext: () => ({
+      font: '',
+      measureText() {
+        // 首个等宽基准恰好同宽，第二个基准仍能识别已安装字体。
+        return { width: this.font.includes('"Maple Mono NF CN"') ? 100 : this.font.includes('serif') ? 80 : 100 };
+      }
+    }) };
+  };
+  vm.runInContext(readFileSync(new URL('../lib/native-fonts.js', import.meta.url),'utf8'), p.context);
+  p.context.__agyPanels = value => { env = value; return { dispose() {} }; };
+  p.context.__agyNativeAdapter.installPage = () => true;
+  p.context.__agyInitialSettings = stored;
+  p.context.__agyPowertoolsHost = raw => {
+    const req = JSON.parse(raw);
+    if (req.method === 'settings.set') { writes.push(req.settings); stored = { ...stored, ...req.settings }; }
+    queueMicrotask(() => p.context.__agyPowertoolsReceive(req.id, req.method.startsWith('settings.') ? stored : {}));
+  };
+  vm.runInContext(source, p.context);
+  return { ...p, properties, writes, env, setStored: patch => { stored = { ...stored, ...patch }; } };
+}
+
+test('本地字体保存后立即应用，清空、总开关和卸载均恢复客户端样式', async () => {
+  const p = fontPage();
+  await new Promise(resolve => setImmediate(resolve));
+  await p.env.change({ customFontWeight: 500 });
+  assert.equal(p.properties.get('--agy-custom-weight'), '500');
+  assert.equal(p.properties.has('--agy-custom-font'), false);
+  await p.env.change({ customFont: 'Maple Mono NF CN' });
+  assert.equal(p.env.settingsError(), '');
+  assert.equal(p.context.__agyPowertools.settings.customFont, 'Maple Mono NF CN');
+  assert.equal(p.properties.get('--agy-custom-font'), '"Maple Mono NF CN"');
+  assert.equal(p.document.documentElement.hasAttribute('data-agy-custom-font'), true);
+  await p.env.change({ enabled: false });
+  assert.equal(p.properties.has('--agy-custom-font'), false);
+  assert.equal(p.document.documentElement.hasAttribute('data-agy-custom-font'), false);
+  await p.env.change({ enabled: true });
+  assert.equal(p.properties.get('--agy-custom-font'), '"Maple Mono NF CN"');
+  await p.env.change({ customFont: '' });
+  assert.equal(p.properties.has('--agy-custom-font'), false);
+  await p.env.change({ customFont: 'Maple Mono NF CN' });
+  p.context.__agyPowertools.dispose();
+  assert.equal(p.properties.has('--agy-custom-font'), false);
+  assert.equal(p.document.documentElement.hasAttribute('data-agy-custom-font'), false);
+});
+
+test('不存在或格式错误的字体明确报错，不保存、不覆盖已生效字体', async () => {
+  const p = fontPage({ customFont: 'Maple Mono NF CN' });
+  await new Promise(resolve => setImmediate(resolve));
+  for (const customFont of ['Missing Font', 'Maple\nMono', 'Inter;serif', 'Bad\\Font', 123]) {
+    await p.env.change({ customFont });
+    assert.match(p.env.customFontError(), /字体/);
+    assert.equal(p.writes.length, 0);
+    assert.equal(p.properties.get('--agy-custom-font'), '"Maple Mono NF CN"');
+  }
+  await p.env.change({ customFont: '' });
+  assert.equal(p.env.settingsError(), '');
+  p.context.__agyPowertools.dispose();
+});
+
+test('旧设置中的字体在本机不可用时显示错误，清空后可以恢复', async () => {
+  const p = fontPage({ customFont: 'Missing Font' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(p.env.customFontError(), /未检测到本地字体/);
+  assert.equal(p.document.documentElement.hasAttribute('data-agy-custom-font'), false);
+  await p.env.change({ customFont: '' });
+  assert.equal(p.env.settingsError(), '');
+  p.context.__agyPowertools.dispose();
+});
+
+test('字体检测错误不污染代理保存，语言切换及安装后同名重试可恢复', async () => {
+  const p = fontPage({ customFont: 'Missing Font' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(p.env.customFontError(), /未检测到/);
+  await p.env.change({ proxyUrl: 'http://127.0.0.1:7890', proxyEnabled: true });
+  assert.equal(p.env.settingsError(), '');
+  assert.equal(p.env.options().proxyUrl, 'http://127.0.0.1:7890');
+  await p.env.change({ language: 'en' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(p.env.customFontError(), /Local font/);
+  p.context.queryLocalFonts = async () => [{ family: 'Missing Font' }];
+  p.context.navigator = { permissions: { query: async () => ({ state: 'granted' }) } };
+  await p.env.change({ customFont: 'Missing Font' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(p.env.customFontError(), '');
+  assert.equal(p.document.documentElement.hasAttribute('data-agy-custom-font'), true);
+  p.context.__agyPowertools.dispose();
+});
+
+test('系统字体清单规范化去重，接受 Canvas 同宽的已安装字体，并保留读取错误', async () => {
+  const p = fontPage();
+  await new Promise(resolve => setImmediate(resolve));
+  p.context.queryLocalFonts = async () => [
+    { family: ' Inter ' }, { family: 'Inter' }, { family: 'System' },
+    { family: '' }, { family: 'bad\nfont' }, { family: 'x'.repeat(129) }, { family: null }
+  ];
+  const families = await p.env.loadLocalFonts();
+  assert.deepEqual(Array.from(families), ['Inter', 'System']);
+  await p.env.change({ customFont: 'inter' });
+  assert.equal(p.env.customFontError(), '');
+  assert.equal(p.env.options().customFont, 'inter');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(p.properties.get('--agy-custom-font'), '"inter"');
+  p.context.queryLocalFonts = async () => [];
+  await assert.rejects(p.env.loadLocalFonts, /未读取到/);
+  p.context.queryLocalFonts = async () => { throw new Error('权限被拒绝'); };
+  await assert.rejects(p.env.loadLocalFonts, /权限被拒绝/);
+  delete p.context.queryLocalFonts;
+  await assert.rejects(p.env.loadLocalFonts, /不支持读取/);
+  p.context.__agyPowertools.dispose();
+});
+
+test('权限接口异常或缺少用户手势时继续核验字形，并保留失败原因', async () => {
+  for (const mode of ['unsupported-name', 'missing-method', 'security-error']) {
+    const p = fontPage();
+    await new Promise(resolve => setImmediate(resolve));
+    p.context.queryLocalFonts = async () => { throw new Error('SecurityError: requires user activation'); };
+    p.context.navigator = { permissions: mode === 'missing-method' ? {} : {
+      query: async () => { if (mode === 'unsupported-name') throw new TypeError('Unsupported permission local-fonts'); return { state: 'granted' }; }
+    } };
+    await p.env.change({ customFont: 'Maple Mono NF CN' });
+    assert.equal(p.env.customFontError(), '');
+    assert.equal(p.properties.get('--agy-custom-font'), '"Maple Mono NF CN"');
+    if (mode !== 'missing-method') assert.match(p.env.customFontNotice(), /Unsupported permission|SecurityError/);
+    await p.env.change({ customFont: 'Missing Font' });
+    assert.match(p.env.customFontError(), /未检测到/);
+    if (mode !== 'missing-method') assert.match(p.env.customFontError(), /Unsupported permission|SecurityError/);
+    assert.equal(p.env.options().customFont, 'Maple Mono NF CN');
+    p.context.__agyPowertools.dispose();
+  }
+});
+
+test('await 字体保存返回后已清除旧运行时错误并完成样式同步', async () => {
+  const p = fontPage({ customFont: 'Missing Font' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(p.env.customFontError(), /未检测到/);
+  await p.env.change({ customFont: 'Maple Mono NF CN' });
+  assert.equal(p.env.customFontError(), '');
+  assert.equal(p.properties.get('--agy-custom-font'), '"Maple Mono NF CN"');
+  p.context.__agyPowertools.dispose();
+});
+
+test('异步字体检测完成后不覆盖已关闭的插件，也不会在卸载后重新加样式', async () => {
+  const p = fontPage();
+  await new Promise(resolve => setImmediate(resolve));
+  let resolveFonts;
+  p.context.queryLocalFonts = () => new Promise(resolve => { resolveFonts = resolve; });
+  p.context.navigator = { permissions: { query: async () => ({ state: 'granted' }) } };
+  // 通过外部同步设置触发检测，而非阻塞保存中的验证。
+  p.setStored({ customFont: 'Inter' });
+  await p.env.change({ language: 'en' });
+  await new Promise(resolve => setImmediate(resolve));
+  await p.env.change({ enabled: false });
+  resolveFonts([{ family: 'Inter' }]);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(p.properties.has('--agy-custom-font'), false);
+  p.context.__agyPowertools.dispose();
+  assert.equal(p.document.documentElement.hasAttribute('data-agy-custom-font'), false);
+});
+
 test('multi-pane conversations with multiple composers stay healthy without triggering reload loops', () => {
   const p = page(true);
   p.context.location.pathname = '/c/conv-1';
@@ -1169,6 +1335,82 @@ test('SSH command paste observes setting changes without reinstalling its listen
   p.context.__agyPowertools.dispose();
 });
 
+test('sidebar folder drop observes setting changes, checks local Electron support, excludes SSH windows, and initializes global toast via sidebar', async () => {
+  const p = page(true);
+  const settings = { enabled: true };
+  p.context.__agyInitialSettings = settings;
+  let change, dropOpts, installs = 0;
+  const createProjectCalls = [];
+  p.context.electronNative = { getPathForFile: f => f?.mockPath || '' };
+  p.context.__agyNativeAdapter.installPage = () => true;
+  p.context.__agyNativeAdapter.createProjectsFromDroppedEntries = (entries, opts) => {
+    createProjectCalls.push({ entries, opts });
+    return { created: entries, existing: [], skippedFiles: 0, pinned: Boolean(opts?.pin) };
+  };
+  p.context.__agyPanels = env => { change = env.change; return { Page: () => null, Sidebar: () => null, dispose() {} }; };
+  p.context.installSidebarFolderDrop = (_document, opts) => { dropOpts = opts; installs++; };
+  p.context.__agyPowertoolsHost = raw => {
+    const { id, method, settings: patch } = JSON.parse(raw);
+    if (method === 'settings.set') Object.assign(settings, patch);
+    queueMicrotask(() => p.context.__agyPowertoolsReceive?.(id, { ...settings }));
+  };
+  vm.runInContext(source, p.context);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(installs, 1);
+  assert.equal(dropOpts.enabled(), true);
+  assert.equal(dropOpts.pinProject(), false);
+  assert.equal(dropOpts.isSupported(), true);
+  assert.equal(dropOpts.getPathForFile({ mockPath: '/fixtures/team/app' }), '/fixtures/team/app');
+  await change({ sidebarFolderDropPin: true });
+  assert.equal(dropOpts.pinProject(), true);
+  dropOpts.createProjects([{ path: '/fixtures/team/app' }], { pin: true });
+  assert.deepEqual(createProjectCalls.at(-1)?.opts, { pin: true });
+  const styleNode = p.nodes.find(n => 'agyDensityStyle' in (n.dataset || {}));
+  assert.match(styleNode?.textContent || '', /@keyframes agy-project-drop-highlight/);
+  assert.match(styleNode?.textContent || '', /\[data-agy-project-highlight="true"\]/);
+  await change({ sidebarFolderDrop: false });
+  assert.equal(dropOpts.enabled(), false);
+  await change({ sidebarFolderDrop: true });
+  assert.equal(dropOpts.enabled(), true);
+  p.context.sshRemote = { kind: 'ssh' };
+  assert.equal(dropOpts.isSupported(), false);
+  p.context.sshRemote = { kind: 'local' };
+  assert.equal(dropOpts.isSupported(), true);
+  delete p.context.electronNative;
+  assert.equal(dropOpts.isSupported(), false);
+  p.context.__agyPowertools.dispose();
+
+  // Verify SidebarEntry initializes global toast even without a mounted conversation composer
+  const pToast = page(true);
+  const toasts = [];
+  const custLink = { isConnected: true, nextSibling: null, parentElement: { insertBefore(n) { n.isConnected = true; } } };
+  pToast.document.querySelector = sel => sel === 'a[href="/customizations"]' ? custLink : null;
+  pToast.context.electronNative = { getPathForFile: f => f?.mockPath || '' };
+  pToast.context.React = {
+    createElement: (type, props, ...children) => ({ type, props, children }),
+    useEffect: fn => { fn(); }
+  };
+  pToast.context.ReactDOM = {
+    createRoot: () => ({
+      render(tree) {
+        if (typeof tree?.type === 'function') tree.type(tree.props || {});
+      },
+      unmount() {}
+    })
+  };
+  pToast.context.um = () => payload => toasts.push(payload);
+  let sidebarDropOpts;
+  pToast.context.installSidebarFolderDrop = (_document, opts) => { sidebarDropOpts = opts; };
+  pToast.context.__agyNativeAdapter.wrap = el => el;
+  pToast.context.__agyNativeAdapter.installPage = () => true;
+  pToast.context.__agyPanels = () => ({ Page: () => null, Sidebar: () => null, dispose() {} });
+  pToast.context.__agyInitialSettings = { enabled: true };
+  vm.runInContext(source, pToast.context);
+  sidebarDropOpts.notify({ title: 'Project created', message: 'demo' });
+  assert.deepEqual(toasts, [{ title: 'Project created', message: 'demo' }]);
+  pToast.context.__agyPowertools.dispose();
+});
+
 test('long-conversation mount skips redundant document style writes, skips unchanged root renders, and defers during IME/touch', async () => {
   const p = page(true);
   let styleWrites = 0;
@@ -1409,7 +1651,6 @@ test('native-panels and native-ui replace raw HTML/SVG title tooltips with theme
   assert.equal(panelsSrc.includes("h('title'"), false);
   assert.match(panelsSrc, /pt-trail-node'[^\n]*'data-pt-tip':call\.detail\|\|call\.label,'data-pt-tip-mono':call\.detail\?'true':undefined,'data-pt-tip-place':'left'/);
   assert.match(panelsSrc, /pt-donut-segment[^\n]*'data-pt-tip':segTip,'aria-label':segTip/);
-  assert.match(uiSrc, /'data-testid': 'agy-context-ring-trigger',\s*'data-pt-tip':/);
   assert.match(uiSrc, /'data-testid': 'agy-subagent-badge',\s*'data-subagent-id': subId,\s*'data-pt-tip':/);
 });
 
@@ -1887,6 +2128,8 @@ test('long-conversation polling skips ring re-renders, completed response fiber 
   p.context.setInterval = (fn, ms) => { const entry = { fn, ms }; intervals.push(entry); return intervals.length; };
   p.context.clearInterval = () => {};
 
+  const footers = [];
+  let footerEnabled = true, thinkingTokens = 1, turnStatus = 'complete';
   let ringRenders = 0;
   let fiberWalks = 0;
   const card = { isConnected: true, children: [], insertBefore(n) { n.isConnected = true; this.children.push(n); } };
@@ -1921,7 +2164,9 @@ test('long-conversation polling skips ring re-renders, completed response fiber 
   p.context.ReactDOM = {
     createRoot(mount) {
       return {
-        render() { if (mount.dataset?.agyPowertoolsRoot === 'ring') ringRenders++; },
+        render(tree) {
+          if (mount.dataset?.agyPowertoolsRoot === 'turn-meta') footers.push(tree.type(tree.props).props['data-pt-tip']);
+          if (mount.dataset?.agyPowertoolsRoot === 'ring') ringRenders++; },
         unmount() {}
       };
     }
@@ -1933,7 +2178,7 @@ test('long-conversation polling skips ring re-renders, completed response fiber 
     return { memoizedProps: { container: { steps: [{ step: { case: 'userInput' }, metadata: { index: 0 } }] } }, return: null };
   };
 
-  let stateVersion = 1;
+  let stateVersion = 1, turnCost = null;
   let stateRequests = 0;
   const makeStateReply = () => ({
     conversationId: 'conv-long-51',
@@ -1942,10 +2187,10 @@ test('long-conversation polling skips ring re-renders, completed response fiber 
     contextWindow: { usedTokens: 42000 * stateVersion, maxTokens: 1000000, usedPercent: 4.2 * stateVersion, inputTokens: 1000, cacheReadTokens: 41000, categories: [] },
     telemetry: { turnCount: 1, stepCount: 5, totalTokens: 45000 * stateVersion, requestCount: 2, errorCount: 0, toolCount: 1, tps: 88, latestTps: 88, cacheHitPercent: 97.6 },
     progress: { status: 'complete', phase: 'done', phaseDetail: '', toolCount: 1, recentActivity: [], tasks: [] },
-    turns: [{ turnNumber: 1, stepIndexStart: 0, stepIndexEnd: 4, status: 'complete', completedAtIso: '2026-11-25T00:00:00Z', durationMs: 4200, toolCalls: [] }],
+    turns: [{ turnNumber: 1, stepIndexStart: 0, stepIndexEnd: 4, status: turnStatus, costUsd: turnCost, thinkingTokens, shortModel: 'Fixture', completedAtIso: '2026-11-25T00:00:00Z', durationMs: 4200, toolCalls: [] }],
     requests: [{ id: 'req-1', timestampMs: 1_795_699_995_000 }],
     errors: [],
-    settings: { enabled: true, contextRing: true, speedStats: true, timing: true, responseBranch: true, language: 'zh-CN' }
+    settings: { turnMeta: footerEnabled, enabled: true, contextRing: true, speedStats: true, timing: true, responseBranch: true, language: 'zh-CN' }
   });
   p.context.__agyPowertoolsHost = raw => {
     const req = JSON.parse(raw);
@@ -1990,6 +2235,27 @@ test('long-conversation polling skips ring re-renders, completed response fiber 
   assert.equal(ringRenders, initialRingRenders + 1);
   assert.equal(fiberWalks, initialFiberWalks);
 
+  const poll = async () => {
+    fakeNow += 7000;
+    mainPoll.fn();
+    await new Promise(r => setTimeout(r, 20));
+  };
+  const footerMount = () => actionRow.children.filter(n => n.isConnected && n.dataset.agyPowertoolsRoot === 'turn-meta');
+  turnCost = 0.0035;
+  await poll();
+  assert.match(footers.at(-1), /费用: \$0\.0035/);
+  thinkingTokens = 17;
+  await poll();
+  assert.match(footers.at(-1), /17/);
+  footerEnabled = false;
+  await poll();
+  assert.equal(footerMount().length, 0);
+  turnStatus = 'running'; footerEnabled = true;
+  await poll();
+  assert.equal(footerMount().length, 0);
+  turnStatus = 'complete';
+  await poll();
+  assert.equal(footerMount().length, 1);
   p.context.__agyPowertools.dispose();
 });
 
@@ -2668,4 +2934,14 @@ test('state polling passes knownRev and short-circuits unchanged replies, conver
   assert.equal(outlineRenders, rendersBeforeSwitch, 'native conversation-navigator appeared so fallback outline must stay unmounted');
 
   p.context.__agyPowertools.dispose();
+});
+
+test('composer popover buttons retain accessible names without hover tips', () => {
+  for (const id of ['agy-context-ring-trigger', 'agy-subagent-context-ring-trigger', 'agy-speed-stats-trigger']) {
+    const index = source.indexOf(`'data-testid': '${id}'`);
+    assert.notEqual(index, -1);
+    const props = source.slice(source.lastIndexOf('h(Uy, {', index), source.indexOf('}, h(', index));
+    assert.match(props, /'aria-label': t\('[^']+'\)/);
+    assert.doesNotMatch(props, /data-pt-tip/);
+  }
 });

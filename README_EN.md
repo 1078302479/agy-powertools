@@ -169,11 +169,16 @@ Every setting applies live in **Powertools -> Settings** and saves automatically
 | --- | --- | --- |
 | Enable Powertools | On | Master switch; pauses all UI enhancements while keeping saved settings |
 | Language | `简体中文` | Choose `简体中文`, `繁體中文`, or `English` |
+| Local font and weight | Client defaults | Search by localized or family name and select to apply. Weight can be set independently. Reset restores both defaults. The built-in terminal uses its client font |
 | Compact layout | On | Tightens line height (`1.4`), block spacing, and tool rows while keeping client font size |
 | Tint user message bubbles | Off | Adds a tint and border to user messages (Accent, 5 presets, custom color, and 10%-100% blend slider) |
 | Always show conversation outline | On | Keeps the turn navigation rail visible in multi-turn chats |
 | Keep Overview open when switching chats | On | Preserves the right Overview panel open state across conversations |
 | Conversations per project | `Default (6)` | Controls visible chats per project in the sidebar (`Default (6)`, `1-10`, or `Show all`) |
+| Drop folders onto the sidebar | On | Create or open projects by dropping local folders onto the sidebar in a local window |
+| Pin dropped projects | Off | Pin projects created or opened by dropping folders |
+| Sidebar running border beam | Off | Draws an SVG comet that follows the rounded perimeter of running sidebar chats (follows composer palette by default or picks its own, optional hide native four-dot spinner and Live preview; amber alert on waiting) |
+| Sidebar running conversations group | Off | Pins a collapsible Running section at the top of the sidebar showing all active chats, projects, active subagents, and waiting-for-confirmation alerts; hides when idle |
 | Taskbar unread badge | On | Shows `(N)` unread count in the window and taskbar title when background chats finish |
 
 ### Telemetry & progress
@@ -191,6 +196,7 @@ Every setting applies live in **Powertools -> Settings** and saves automatically
 | Working composer border beam | Off | Animates a smooth border beam around the composer while working (zero idle cost), transitions cleanly with the quota halo, with 6 palettes and Live preview |
 | Subagent context & telemetry | On | Shows per-subagent model, context usage, tokens, cache hit rate, speed, and cost |
 | Turn duration / Expand tools | On | Shows total duration on finished turns and expands tool details on click |
+| Turn footer telemetry | Off | Displays per-turn model, cache hit rate, input/output tokens and estimated cost in finished reply footers with full breakdown on hover |
 
 ### Enhancements, Accounts, Proxy & Experimental Context
 
@@ -220,6 +226,21 @@ Every setting applies live in **Powertools -> Settings** and saves automatically
 ---
 
 ## Changelog
+
+### v2.16.5
+- **Fix weekly quota and usage statistics accuracy (#63)**:
+  - `lib/quota.mjs`: Prevents zeroed or regressed scans from overwriting valid checkpoints and preserves measured progress across local history regressions.
+  - `lib/dashboard.mjs`: Matches each request against its own quota pool's weekly window bounds (Gemini / Claude / Argon) instead of sharing one earliest start timestamp across pools.
+  - `lib/analytics.mjs`: Persists an atomic per-profile usage archive (90-day retention, up to 20,000 requests) so weekly totals do not drop when old `.db` files are pruned.
+- **UI cleanup and Settings translations**:
+  - Removed redundant hover tooltips on the composer context ring, subagent ring, and speed stats triggers (preserving `aria-label`) so tooltips do not overlap open popovers.
+  - Streamlined the Overview Cost card and Model statistics Cost header: removed verbose hover tooltips, the pricing-basis subtitle, and the dotted header underline, keeping only total cost and average cost per request.
+  - Added 5 missing Antigravity 2.35.2 Settings translations (`Search shortcuts...`, `Settings for conversations outside of projects`, `Hide breakdown`, `Notification settings`, `Automatic check for updates`) with Traditional Chinese support and placeholder restoration.
+- **Community PRs & refinements**:
+  - **Local font family and weight selector (PR #78, thanks `@awei84`)**: Single-row native selectors for font family and weight, extracting localized Chinese font names via OpenType `name` tables and built-in aliases with bilingual search; displays only weights available for the selected family (disabled when unavailable), excluding icon fonts and xterm terminals.
+  - **Sidebar running bottom beam and pinned Running group (PR #76, thanks `@whitzard0421`)**: Both opt-in (off by default); pure CSS bottom-edge left-to-right soft glow and 1px illuminated edge (zero WebGL, honors `prefers-reduced-motion`) with native sidebar typography for the Running group.
+  - **Drag folders onto sidebar to create projects (PR #73, thanks `@niuanhua-ydy`)**: Drops local folders onto the sidebar to create projects with directory/symlink validation and SSH remote window isolation.
+  - **Per-turn footer telemetry (PR #65, thanks `@wwwsideexiecom-boop`)**: Opt-in (off by default); displays model, cache hit rate, input/output tokens, and estimated per-turn cost inline and in hover details.
 
 ### v2.16.4
 - **Fix Windows relaunch console session inheritance (#61)**: Launches `Antigravity.exe` via `ProcessStartInfo` (`UseShellExecute = $false`, `CreateNoWindow = $true`) inside the relaunch script so the new instance does not inherit the PowerShell console session.

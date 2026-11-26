@@ -695,6 +695,197 @@ test('stable sendUserCascadeMessage wrapper preserves edit revert even when comp
   ]);
 });
 
+test('createProjectsFromDroppedEntries creates git and plain folder projects, deduplicates/unarchives existing, skips files, and navigates', async () => {
+  const sidebarDropCode = readFileSync(new URL('../lib/native-sidebar-drop.mjs', import.meta.url), 'utf8')
+    .replaceAll('export function', 'function');
+  const clientCode = readFileSync(new URL('../lib/native-client.js', import.meta.url), 'utf8');
+
+  const existingProjects = [
+    {
+      project: {
+        id: 'existing-active',
+        name: 'app',
+        archived: false,
+        backendType: 1,
+        projectResources: { resources: [{ type: { case: 'folderUri', value: 'file:///fixtures/team/existing-app' } }] }
+      }
+    },
+    {
+      project: {
+        id: 'existing-archived',
+        name: 'old-app',
+        archived: true,
+        backendType: 1,
+        projectResources: { resources: [{ type: { case: 'gitFolder', value: { folderUri: 'file:///fixtures/team/old-app/' } } }] }
+      }
+    }
+  ];
+  const createdCalls = [];
+  const updatedCalls = [];
+  const placeholderCalls = [];
+  const storedItems = [];
+  const navigations = [];
+
+  const pms = {
+    projectsStateProvider: { getState: () => existingProjects },
+    resolveFolder: async uri => uri.includes('git-repo') ? { type: 1, uri } : { type: 0, uri },
+    getRepoInfos: async () => [{ branches: [{ name: 'dev' }, { name: 'main' }] }],
+    createProject: async project => { createdCalls.push(project); },
+    updateProject: async project => { updatedCalls.push(project); },
+    addPlaceholderProject: project => { placeholderCalls.push(project); }
+  };
+  const service = {
+    forkConversation() {},
+    statUri: async ({ uri }) => ({ fileType: uri.endsWith('/plain-file.txt') ? 1 : 2 })
+  };
+  const router = {
+    navigate: async opts => {
+      navigations.push({ to: opts.to, search: opts.search({ cascadeId: 'c1', tab: 'overview', q: 'x' }) });
+    },
+    buildRouteTree() {}
+  };
+  let pinnedStoreValue = '["already-pinned"]';
+  const mockStorageService = {
+    get: k => (k === 'pinnedProjectIds' ? pinnedStoreValue : undefined),
+    store: (k, v) => {
+      storedItems.push([k, v]);
+      if (k === 'pinnedProjectIds') pinnedStoreValue = v;
+    }
+  };
+  const anchor = {
+    '__reactFiber$drop': {
+      tag: 10,
+      type: {},
+      memoizedProps: { value: { core: { projectManagementService: pms, storageService: mockStorageService } } },
+      return: {
+        tag: 10,
+        type: {},
+        memoizedProps: { value: service },
+        return: { tag: 10, type: {}, memoizedProps: { value: router }, return: null }
+      }
+    }
+  };
+  const ctx = vm.createContext({
+    URL,
+    document: { querySelector: () => anchor },
+    crypto: { randomUUID: (() => { let n = 0; return () => `uuid-${++n}`; })() },
+    createProjectMsg: (name, id, resources, isWorkspaceOnly) => ({ id, name, projectResources: { resources }, isWorkspaceOnly, bound: true })
+  });
+  vm.runInContext(`${sidebarDropCode}\n${clientCode}`, ctx);
+
+  const res = await ctx.__agyNativeAdapter.createProjectsFromDroppedEntries([
+    { path: '/fixtures/team/plain-file.txt', name: 'plain-file.txt', entryIsDir: false, entryIsFile: true },
+    { path: '/fixtures/team/also-file', name: 'also-file', entryIsDir: null, entryIsFile: null },
+    { path: '/fixtures/team/work/git-repo', name: 'git-repo', entryIsDir: true, entryIsFile: false },
+    { path: '/fixtures/team/work/app', name: 'app', entryIsDir: true, entryIsFile: false },
+    { path: '/fixtures/team/old-app', name: 'old-app', entryIsDir: true, entryIsFile: false }
+  ]);
+
+  assert.equal(res.skippedFiles, 1);
+  assert.equal(res.created.length, 3);
+  assert.equal(res.pinned, false);
+  assert.equal(res.target?.id, 'uuid-3');
+  assert.equal(createdCalls[0].name, 'also-file');
+  assert.equal(createdCalls[0].bound, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(createdCalls[0].projectResources.resources[0])), {
+    type: { case: 'folderUri', value: 'file:///fixtures/team/also-file' }
+  });
+  assert.equal(createdCalls[1].name, 'git-repo');
+  assert.deepEqual(JSON.parse(JSON.stringify(createdCalls[1].projectResources.resources[0])), {
+    type: { case: 'gitFolder', value: { folderUri: 'file:///fixtures/team/work/git-repo', defaultBranch: 'main' } }
+  });
+  // 'app' collides with existing project named 'app' -> disambiguated to 'work/app'
+  assert.equal(createdCalls[2].name, 'work/app');
+  assert.equal(placeholderCalls.length, 3);
+  assert.equal(storedItems.length, 3);
+  assert.equal(storedItems.some(([k]) => k === 'pinnedProjectIds'), false);
+
+  // Archived existing match was unarchived via updateProject
+  assert.equal(res.existing.length, 1);
+  assert.equal(res.existing[0].id, 'existing-archived');
+  assert.equal(updatedCalls.length, 1);
+  assert.equal(updatedCalls[0].archived, false);
+
+  // Navigated to last newly created project ('uuid-3') clearing cascadeId/tab/q
+  assert.deepEqual(JSON.parse(JSON.stringify(navigations)), [
+    { to: '/', search: { project: 'uuid-3' } }
+  ]);
+
+  // Dropping with { pin: true } prepends newly created/unpinned project IDs to pinnedProjectIds without duplicating
+  createdCalls.length = 0;
+  storedItems.length = 0;
+  navigations.length = 0;
+  const pinnedRes = await ctx.__agyNativeAdapter.createProjectsFromDroppedEntries([
+    { path: '/fixtures/team/pinned-new', name: 'pinned-new', entryIsDir: true, entryIsFile: false },
+    { path: '/fixtures/team/existing-app', name: 'existing-app', entryIsDir: true, entryIsFile: false }
+  ], { pin: true });
+  assert.equal(pinnedRes.pinned, true);
+  assert.equal(pinnedRes.target?.id, 'uuid-4');
+  assert.deepEqual(
+    JSON.parse(pinnedStoreValue),
+    ['uuid-4', 'existing-active', 'already-pinned']
+  );
+
+  // Re-dropping with { pin: true } for an already-pinned project preserves order and avoids redundant store write
+  const pinStoreCountBefore = storedItems.filter(([k]) => k === 'pinnedProjectIds').length;
+  existingProjects.push({
+    project: {
+      id: 'already-pinned',
+      name: 'already-pinned',
+      archived: false,
+      backendType: 1,
+      projectResources: { resources: [{ type: { case: 'folderUri', value: 'file:///fixtures/team/already-pinned' } }] }
+    }
+  });
+  const alreadyPinnedRes = await ctx.__agyNativeAdapter.createProjectsFromDroppedEntries([
+    { path: '/fixtures/team/already-pinned', name: 'already-pinned', entryIsDir: true, entryIsFile: false }
+  ], { pin: true });
+  assert.equal(alreadyPinnedRes.pinned, true);
+  assert.equal(storedItems.filter(([k]) => k === 'pinnedProjectIds').length, pinStoreCountBefore);
+
+  // Dropping only an existing project with pin disabled opens it directly without calling createProject
+  createdCalls.length = 0;
+  navigations.length = 0;
+  const existingOnlyRes = await ctx.__agyNativeAdapter.createProjectsFromDroppedEntries([
+    { path: '/fixtures/team/existing-app', name: 'existing-app', entryIsDir: true, entryIsFile: false }
+  ]);
+  assert.equal(createdCalls.length, 0);
+  assert.equal(existingOnlyRes.created.length, 0);
+  assert.equal(existingOnlyRes.existing.length, 1);
+  assert.equal(existingOnlyRes.existing[0].id, 'existing-active');
+  assert.deepEqual(JSON.parse(JSON.stringify(navigations)), [
+    { to: '/', search: { project: 'existing-active' } }
+  ]);
+
+  // Also verify statUri fileType=1 skips non-folder without entryIsFile, and plain-object fallback works when createProjectMsg is absent
+  const ctxFallback = vm.createContext({
+    URL,
+    document: { querySelector: () => anchor },
+    crypto: { randomUUID: () => 'uuid-fallback' }
+  });
+  vm.runInContext(`${sidebarDropCode}\n${clientCode}`, ctxFallback);
+  createdCalls.length = 0;
+  const fallbackRes = await ctxFallback.__agyNativeAdapter.createProjectsFromDroppedEntries([
+    { path: '/fixtures/team/plain-file.txt', name: 'plain-file.txt', entryIsDir: true, entryIsFile: false },
+    { path: '/fixtures/team/new-plain', name: 'new-plain', entryIsDir: null, entryIsFile: null }
+  ]);
+  assert.equal(fallbackRes.skippedFiles, 1);
+  assert.equal(fallbackRes.created.length, 1);
+  assert.equal(createdCalls[0].id, 'uuid-fallback');
+  assert.equal(createdCalls[0].bound, undefined);
+  service.statUri = async () => ({ fileType: 3 });
+  pms.resolveFolderOrThrow = async uri => { if (!uri.endsWith('/linked-dir')) throw Error('Not a directory'); };
+  const linked = await ctxFallback.__agyNativeAdapter.createProjectsFromDroppedEntries([
+    { path: '/fixtures/linked-file', entryIsDir: true }, { path: '/fixtures/linked-dir' }
+  ]);
+  assert.equal(linked.skippedFiles, 1);
+  assert.deepEqual(Array.from(linked.created, item => item.name), ['linked-dir']);
+  createdCalls.length = 0;
+  ctxFallback.sshRemote = { kind: 'ssh' };
+  await assert.rejects(ctxFallback.__agyNativeAdapter.createProjectsFromDroppedEntries([{ path: '/fixtures/local' }]), /local window/);
+  assert.equal(createdCalls.length, 0);
+});
+
 test('inline edit capture-phase Enter and Send click revert and resend directly even when sendUserCascadeMessage was never hooked, and authService exposes loginSession helpers (Issues #58 & #56)', async () => {
   const events = [];
   const hostListeners = new Map();

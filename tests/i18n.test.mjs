@@ -78,7 +78,7 @@ test('Traditional Chinese (zh-TW) uses Taiwan IT terminology, converts UI string
   }finally{rmSync(dir,{recursive:true,force:true});}
   // Ensure no common simplified-only glyphs remain across UI source files after toZhTw
   const simplifiedOnly=/[万与个为义于产仅从仓们价优会传体余侧关内写准减凑凭击划则刚创删务动区协单占却历压参发变号后听启周响唤围图圆场声处备头夹实审对导将尝尽层带帮并广库应开异强归当录径忆态总战执扩扬抢护报担拦择挂换据数断无旧时昵显暂机权条来栏树样档检汇没洁浅测浏滚满点热状独环现电监盘码确碍离积称稳筛签简类紧级线组细织终结给络绝统继续缓编缩网联脑范营补装观规视览触计订认让议记许设访证识诊试话询该详语误说请读调败账费资转轮软载较辅辑输边过运这进远违连迟适选遥邮采钟钥钮链销错键长闭问闲间阅队阶际险随隐静页顶项顺顿预频题额风馈驻验骤麦标彻]/;
-  for(const file of ['lib/native-i18n.js','lib/native-panels.js','lib/native-ui.js','lib/sidecar-ui.mjs']){
+  for(const file of ['lib/native-i18n.js','lib/native-panels.js','lib/native-sidebar-monitor.js','lib/native-sidebar-drop.mjs','lib/native-ui.js','lib/sidecar-ui.mjs']){
     const converted=toZhTw(readFileSync(file,'utf8')).replace(/简体中文|批准/g,'');
     const leftover=converted.match(simplifiedOnly);
     assert.equal(leftover,null,`Unexpected simplified glyph ${leftover?.[0]} in ${file}`);
@@ -266,5 +266,37 @@ test('custom-i18n.json loads additive user translations safely and slash command
     assert.deepEqual(loadCustomI18n(dir), [['Array Custom Text', '数组词条']]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Settings translations and editable placeholders follow language changes and disposal', () => {
+  const fields = ['INPUT', 'TEXTAREA'].map(tagName => {
+    const attrs = new Map([['placeholder', 'Search shortcuts...']]);
+    return { tagName, isConnected: true, getAttribute: key => attrs.get(key) ?? null,
+      setAttribute: (key, value) => attrs.set(key, value), hasAttribute: key => attrs.has(key), removeAttribute: key => attrs.delete(key) };
+  });
+  const document = { nodeType: 9, createTreeWalker: () => ({ nextNode: () => null }),
+    querySelectorAll: selector => selector.includes('[placeholder]') ? fields : [] };
+  const context = vm.createContext({ document, NodeFilter: { SHOW_TEXT: 4 }, MutationObserver: class { observe() {} disconnect() {} }, __agyToZhTw: toZhTw });
+  vm.runInContext(readFileSync('lib/native-i18n.js', 'utf8'), context);
+  for (const [english, simplified, traditional] of [
+    ['Search shortcuts...', '搜索快捷键...', '搜尋快速鍵...'],
+    ['Settings for conversations outside of projects', '未关联项目的会话设置', '未關聯專案的會話設定'],
+    ['Hide breakdown', '隐藏明细', '隱藏明細'],
+    ['Notification settings', '通知设置', '通知設定'],
+    ['Automatic check for updates', '自动检查更新', '自動檢查更新']
+  ]) {
+    assert.equal(context.__agyI18n.t(english, 'zh-CN'), simplified);
+    assert.equal(context.__agyI18n.t(english, 'zh-TW'), traditional);
+  }
+  for (const [language, expected] of [['zh-CN', '搜索快捷键...'], ['zh-TW', '搜尋快速鍵...'], ['en', 'Search shortcuts...']]) {
+    context.__agyLocalization.apply(language, false);
+    for (const field of fields) assert.equal(field.getAttribute('placeholder'), expected);
+  }
+  context.__agyLocalization.apply('zh-TW', false);
+  context.__agyLocalization.dispose();
+  for (const field of fields) {
+    assert.equal(field.getAttribute('placeholder'), 'Search shortcuts...');
+    assert.equal(field.hasAttribute('data-agy-original-placeholder'), false);
   }
 });

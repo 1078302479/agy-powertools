@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -186,7 +186,7 @@ test('usageDashboard merges Desktop and Antigravity CLI SQLite conversations, up
     assert.deepEqual(resolveUsageDataDirs(isolatedDir,{env:{ANTIGRAVITY_CLI_DATA_DIR:cliDir}}),[isolatedDir,cliDir]);
     assert.deepEqual(resolveUsageDataDirs(appDir,{env:{ANTIGRAVITY_CLI_DATA_DIR:''}}),[appDir]);
 
-    const daySec=Math.floor(Date.parse('2026-11-25T10:00:00Z')/1000);
+    const daySec=Math.floor(new Date().setHours(10, 0, 0, 0)/1000);
     seedDb(appDir,'app-conv-1',{requestId:'req-app-1',model:'Gemini 4 Carbon (High)',inTok:1000,cacheTok:4000,outTok:200,sec:daySec});
     seedDb(cliDir,'cli-conv-1',{requestId:'req-cli-1',model:'Gemini 4 Neon (XHigh)',inTok:2000,cacheTok:8000,outTok:500,sec:daySec+60,retryError:'429 transient'});
 
@@ -208,6 +208,27 @@ test('usageDashboard merges Desktop and Antigravity CLI SQLite conversations, up
     assert.equal(updated.totalRequests,3);
     assert.deepEqual(updated.requests.map(r=>r.id),['req-cli-2','req-cli-1','req-app-1']);
     assert.equal(updated.totalErrors,2);
+
+    rmSync(join(cliDir, 'conversations', 'cli-conv-1.db'));
+    rmSync(join(cliDir, 'conversations', 'cli-conv-2.db'));
+    assert.equal(usageDashboard(isolatedDir, { env: {} }).totalRequests, 0);
+    assert.equal(usageDashboard(appDir, { includeCli: false }).totalRequests, 1);
+    const restored = usageDashboard(appDir, { force: true, env: {} });
+    assert.deepEqual(restored.requests, updated.requests);
+    assert.deepEqual(restored.errors, updated.errors);
+    seedDb(cliDir, 'cli-conv-1', { requestId:'replacement', model:'Gemini', inTok:1, cacheTok:0, outTok:1, sec:daySec });
+    const replacementFile = join(cliDir, 'conversations', 'cli-conv-1.db');
+    utimesSync(replacementFile, daySec, daySec);
+    usageDashboard(appDir, { force:true, env:{} });
+    seedDb(cliDir, 'cli-conv-1', { requestId:'replacement', model:'Gemini', inTok:2, cacheTok:0, outTok:1, sec:daySec });
+    utimesSync(replacementFile, daySec, daySec);
+    const replaced = usageDashboard(appDir, { force:true, env:{} });
+    assert.equal(replaced.requests.find(r => r.id === 'replacement').inputTokens, 2);
+    assert.equal(replaced.totalRequests, 3);
+    assert.equal(replaced.requests.some(r => r.id === 'req-cli-1'), false);
+    assert.equal(replaced.totalErrors, 1);
+    rmSync(join(cliDir, 'conversations', 'cli-conv-1.db'));
+    assert.deepEqual(usageDashboard(appDir, { force:true, env:{} }).requests, replaced.requests);
   }finally{rmSync(root,{recursive:true,force:true});}
 });
 
@@ -288,4 +309,49 @@ test('quota tracker self-heals pre-upgrade checkpoints missing CLI requests and 
     assert.equal(argonEst.observedRequests,3);
     assert.ok(Math.abs(argonEst.estimateUsd-60)<1e-9);
   }finally{rmSync(dir,{recursive:true,force:true});}
+});
+
+test('quota estimates retain measured progress through missing requests and token regressions', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agy-quota-regression-'));
+  try {
+    const tracker = createQuotaTracker(dir);
+    const rates = [{ model: 'gemini-4-carbon', input: 2, cache: 0, output: 10 }];
+    const rows = [1, 2, 3].map(timestampMs => ({ timestampMs, model: 'Gemini 4 Carbon', inputTokens: 10000, cacheReadTokens: 0, outputTokens: 0 }));
+    const observe = (fraction, requests, now) => tracker.observe([{ buckets: [{ bucketId: 'gemini-5h', resetTimeMs: 100000, remainingFraction: fraction }] }], requests, rates, now).estimates[0];
+    const baseline = observe(.95, rows, 10);
+    assert.ok(baseline.estimateUsd > 0);
+    const checkpoints = () => JSON.parse(readFileSync(join(dir, 'quota-samples.json')))[0].checkpoints;
+    const original = checkpoints();
+    for (const scan of [[], rows.slice(1), rows.map(r => ({ ...r, inputTokens: 10 }))]) {
+      const estimate = observe(.90, scan, 20);
+      assert.deepEqual(checkpoints(), original);
+      assert.equal(estimate.observedRequests, 3);
+      assert.equal(estimate.estimateUsd, baseline.estimateUsd);
+      assert.equal(estimate.estimateTokens, baseline.estimateTokens);
+    }
+    const recovered = observe(.90, rows.concat({ ...rows[0], timestampMs: 25 }), 30);
+    assert.equal(recovered.observedRequests, 4);
+    assert.equal(checkpoints().length, 2);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('usage archive expires old rows and retains the newest 20000 records per profile', () => {
+  const profile = mkdtempSync(join(tmpdir(), 'agy-archive-limit-'));
+  try {
+    const dir = join(profile, 'plugin_data', 'agy-powertools');
+    mkdirSync(dir, { recursive: true });
+    const now = Date.now();
+    const record = { conversationId: 'deleted', inputTokens: 1, cacheReadTokens: 0, outputTokens: 1, retryErrors: [] };
+    const records = Array.from({ length: 20001 }, (_, i) => ({ ...record, id: `r${i}`, timestampMs: now - i }));
+    records.push({ ...record, id: 'expired', timestampMs: now - 91 * 86400000 });
+    const path = join(dir, 'usage-history-cache.json');
+    writeFileSync(path, JSON.stringify(records));
+    const result = usageDashboard(profile, { includeCli: false, force: true });
+    assert.equal(result.totalRequests, 20000);
+    assert.equal(result.requests.at(-1).id, 'r19999');
+    const saved = JSON.parse(readFileSync(path));
+    assert.equal(saved.length, 20000);
+    writeFileSync(path, JSON.stringify([records[0], records.at(-1)]));
+    assert.deepEqual(usageDashboard(profile, { includeCli: false, force: true }).requests, [records[0]]);
+  } finally { rmSync(profile, { recursive: true, force: true }); }
 });
