@@ -313,9 +313,14 @@ test('sidebar monitor decorates running rows with flowing beam, hides only 4-dot
   const css = context.__agySidebarMonitorHelpers.buildStylesheet();
   assert.match(css, /@media \(prefers-reduced-motion: no-preference\)/);
   assert.match(css, /@keyframes agy-sb-sweep/);
-  assert.match(css, /translate3d\(105%,0,0\)/);
+  assert.match(css, /translate3d\(104%,0,0\)/);
+  assert.match(css, /\.agy-sb-fade\{/);
+  assert.match(css, /mask-image:linear-gradient\(90deg,transparent 0%/);
+  assert.match(css, /\.agy-sb-beam-layer\{[^}]*pointer-events:none;[^}]*z-index:20/);
   assert.match(css, /agy-sb-plume/);
   assert.match(css, /agy-sb-edge/);
+  // Must NEVER override position on native sidebar children (breaks Antigravity's absolute inset-0 row link)
+  assert.doesNotMatch(css, /:not\(\.agy-sb-beam-layer\)\{[^}]*position:relative/);
   assert.doesNotMatch(css, /conic-gradient|offset-path|pt-run-head-dot|pt-run-pause-btn/);
   assert.match(css, /data-agy-sb-palette="aurora"/);
   assert.match(css, /data-agy-sb-palette="quota"/);
@@ -349,10 +354,12 @@ test('sidebar monitor decorates running rows with flowing beam, hides only 4-dot
   assert.equal(rowRun.row.querySelectorAll('[data-agy-sb-native-spinner="true"]').length, 1);
   const beamLayer = rowRun.row.querySelector('[data-agy-powertools-root="sidebar-beam"]');
   assert.deepEqual(beamLayer.children.map(el => el.className), ['agy-sb-beam-glow', 'agy-sb-beam-border']);
-  assert.equal(beamLayer.children[0].children[0].className, 'agy-sb-slide');
-  assert.equal(beamLayer.children[0].children[0].children[0].className, 'agy-sb-plume');
-  assert.equal(beamLayer.children[1].children[0].className, 'agy-sb-slide');
-  assert.equal(beamLayer.children[1].children[0].children[0].className, 'agy-sb-edge');
+  assert.equal(beamLayer.children[0].children[0].className, 'agy-sb-fade');
+  assert.equal(beamLayer.children[0].children[0].children[0].className, 'agy-sb-slide');
+  assert.equal(beamLayer.children[0].children[0].children[0].children[0].className, 'agy-sb-plume');
+  assert.equal(beamLayer.children[1].children[0].className, 'agy-sb-fade');
+  assert.equal(beamLayer.children[1].children[0].children[0].className, 'agy-sb-slide');
+  assert.equal(beamLayer.children[1].children[0].children[0].children[0].className, 'agy-sb-edge');
   // Button "More options" and its inner SVG must NEVER be marked hidden
   assert.equal(rowRun.moreBtn.getAttribute('data-agy-sb-native-spinner'), null);
   assert.equal(rowRun.moreIcon.getAttribute('data-agy-sb-native-spinner'), null);

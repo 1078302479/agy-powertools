@@ -227,6 +227,10 @@ Every setting applies live in **Powertools -> Settings** and saves automatically
 
 ## Changelog
 
+### v2.16.6
+- **Fix unclickable sidebar conversation rows when running beam is enabled**: Removed the child `position: relative` override that collapsed Antigravity's `position: absolute; inset: 0` row link, restoring full row and hover-button clickability.
+- **Polish sidebar bottom beam layering and edge fade**: Raised the `pointer-events: none` beam layer above the hover action bar (`z-index: 20`) to eliminate hard rectangular clipping behind hover icons, and added left/right edge fade masks (`.agy-sb-fade`) for smooth entry and exit.
+
 ### v2.16.5
 - **Fix weekly quota and usage statistics accuracy (#63)**:
   - `lib/quota.mjs`: Prevents zeroed or regressed scans from overwriting valid checkpoints and preserves measured progress across local history regressions.
