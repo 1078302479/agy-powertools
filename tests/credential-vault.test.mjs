@@ -297,10 +297,10 @@ test('macOS credential vault keeps secrets out of argv for both small and >4KB O
   assert.equal(store.get('gemini\0antigravity'), bigSecret);
 });
 
-test('large Keychain writes fail closed when the reader, ACL or protected add fails', () => {
+test('large Keychain writes fail closed when the reader, ACL, partition or protected add fails', () => {
   const script = buildMacKeychainWriteScript({ service: 'test', account: 'test', dataBase64: 'YQ==' });
   const makeRef = value => ({ [Symbol.toStringTag]: 'Ref', value });
-  for (const failure of ['reader', 'acl', 'add']) {
+  for (const failure of ['reader', 'acl', 'partition', 'add']) {
     const writes = [];
     const bound = [];
     const dictionary = {
@@ -317,6 +317,7 @@ test('large Keychain writes fail closed when the reader, ACL or protected add fa
       kSecAttrAccount: makeRef('acct'),
       kSecValueData: makeRef('v_Data'),
       kSecAttrAccess: makeRef('accs'),
+      kSecACLAuthorizationPartitionID: makeRef('ACLAuthorizationPartitionID'),
       NSData: { alloc: { initWithBase64EncodedStringOptions: () => ({ isNil: () => false }) } },
       NSMutableDictionary: { alloc: { init: dictionary } },
       NSMutableArray: {
@@ -344,6 +345,19 @@ test('large Keychain writes fail closed when the reader, ACL or protected add fa
         ref[0] = makeRef('access');
         return failure === 'acl' ? -1 : 0;
       },
+      SecAccessCopyMatchingACLList() { return null; },
+      SecACLCreateWithSimpleContents(access, apps, xml, prompt, ref) {
+        assert.equal(access, 'access');
+        assert.equal(apps, null);
+        assert.match(String(xml), /apple-tool:/);
+        assert.equal(prompt, 0);
+        ref[0] = makeRef('acl');
+        return failure === 'partition' ? -1 : 0;
+      },
+      SecACLUpdateAuthorizations(acl) {
+        assert.equal(acl, 'acl');
+        return 0;
+      },
       SecItemAdd(q) {
         assert.equal(q, dictionary);
         writes.push('add');
@@ -361,6 +375,7 @@ test('large Keychain writes fail closed when the reader, ACL or protected add fa
     assert.deepEqual(writes, failure === 'add' ? ['add'] : []);
     assert.ok(bound.some(([name]) => name === 'SecItemAdd'));
     assert.ok(bound.some(([name]) => name === 'SecAccessCreate'));
+    assert.ok(bound.some(([name]) => name === 'SecACLCreateWithSimpleContents'));
   }
 });
 
