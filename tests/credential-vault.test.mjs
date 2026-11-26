@@ -302,6 +302,7 @@ test('large Keychain writes fail closed when the reader, ACL or protected add fa
   const makeRef = value => ({ [Symbol.toStringTag]: 'Ref', value });
   for (const failure of ['reader', 'acl', 'add']) {
     const writes = [];
+    const bound = [];
     const dictionary = {
       setObjectForKey(v, k) {
         assert.notEqual(Object.prototype.toString.call(v), '[object Ref]', 'dict value must be cast from Ref to ObjC object');
@@ -328,22 +329,23 @@ test('large Keychain writes fail closed when the reader, ACL or protected add fa
         }
       },
       SecItemUpdate: (q, a) => {
-        assert.equal(Object.prototype.toString.call(q), '[object Ref]');
-        assert.equal(Object.prototype.toString.call(a), '[object Ref]');
+        assert.equal(q, dictionary);
+        assert.equal(a, dictionary);
         return -25300;
       },
       SecTrustedApplicationCreateFromPath(path, ref) {
-        ref[0] = makeRef(path || 'self');
-        return path && failure === 'reader' ? -1 : 0;
+        assert.equal(typeof path, 'string');
+        ref[0] = makeRef(path);
+        return path === '/usr/bin/security' && failure === 'reader' ? -1 : 0;
       },
       SecAccessCreate(service, list, ref) {
-        assert.equal(Object.prototype.toString.call(service), '[object Ref]');
-        assert.equal(Object.prototype.toString.call(list), '[object Ref]');
+        assert.equal(service, 'test');
+        assert.ok(list);
         ref[0] = makeRef('access');
         return failure === 'acl' ? -1 : 0;
       },
       SecItemAdd(q) {
-        assert.equal(Object.prototype.toString.call(q), '[object Ref]');
+        assert.equal(q, dictionary);
         writes.push('add');
         return -1;
       },
@@ -351,12 +353,14 @@ test('large Keychain writes fail closed when the reader, ACL or protected add fa
     });
     const ObjC = {
       import() {},
+      bindFunction: (name, sig) => bound.push([name, sig]),
       castRefToObject: r => r.value,
-      castObjectToRef: o => makeRef(o),
       unwrap: o => String(o)
     };
     assert.throws(() => runInNewContext(script, { $: bridge, Ref: () => [], ObjC, console: { log() {} } }), /exit 1/);
     assert.deepEqual(writes, failure === 'add' ? ['add'] : []);
+    assert.ok(bound.some(([name]) => name === 'SecItemAdd'));
+    assert.ok(bound.some(([name]) => name === 'SecAccessCreate'));
   }
 });
 
