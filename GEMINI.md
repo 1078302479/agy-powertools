@@ -12,12 +12,11 @@
 - 已在 `custom` 分支配置 `.github/workflows/sync-upstream.yml`（仓库默认分支为 `custom`）：
   - 每天北京时间 10:00 自动拉取 `upstream/main` 更新并支持在 GitHub Actions 手动触发。
   - 自动快进 `origin/main` 并合并到 `origin/custom`，通过定制测试后自动推送；若遇冲突或测试失败则安全中止并自动创建 GitHub Issue 提醒。
-- 当云端已自动同步完成，本机只需执行：
+- 当云端已自动同步完成，本机只需执行项目根目录的一键更新脚本：
   ```sh
-  git pull origin custom
-  sh ./install.sh
+  sh ./update-local.sh
   ```
-  即可让最新代码在本机生效。
+  该脚本会校验 `custom` 分支与工作区状态，拉取 `origin/custom`，运行定制测试并自动执行 `sh ./install.sh` 使最新代码在本机生效。
 
 ## 拉取并同步原版更新流程
 
