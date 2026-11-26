@@ -1120,9 +1120,32 @@ test('composerWorkingBeam cross-fades with ComposerQuotaHalo when active and sta
   const idleBeam = findById(idleTree, 'agy-composer-working-beam');
   assert.ok(idleQuota);
   assert.equal(idleQuota.props['data-dimmed'], undefined);
+  const idleNotch = findById(idleTree, 'agy-composer-quota-value');
+  assert.ok(idleNotch);
+  assert.equal(idleNotch.props['data-style'], 'notch');
   assert.ok(idleBeam);
   assert.equal(idleBeam.props['data-active'], 'false');
   assert.equal(idleBeam.props['data-palette'], 'aurora');
+
+  // Switch halo value styles: tip, watermark, off
+  await capturedPanelsEnv.change({ composerQuotaHaloValue: 'tip' });
+  const tipTree = renderNode(renderedTrees.at(-1));
+  const tipBadge = findById(tipTree, 'agy-composer-quota-value');
+  assert.ok(tipBadge);
+  assert.equal(tipBadge.props['data-style'], 'tip');
+  assert.equal(tipBadge.props['data-dimmed'], undefined);
+
+  await capturedPanelsEnv.change({ composerQuotaHaloValue: 'watermark' });
+  const wmTree = renderNode(renderedTrees.at(-1));
+  const wmBadge = findById(wmTree, 'agy-composer-quota-value');
+  assert.ok(wmBadge);
+  assert.equal(wmBadge.props['data-style'], 'watermark');
+
+  await capturedPanelsEnv.change({ composerQuotaHaloValue: 'off' });
+  const offTree = renderNode(renderedTrees.at(-1));
+  assert.equal(findById(offTree, 'agy-composer-quota-value'), null);
+
+  await capturedPanelsEnv.change({ composerQuotaHaloValue: 'notch' });
 
   // 2. Preview toggle forces beam active and completely hides quota halo even while idle
   assert.equal(source.includes('.agy-quota-halo-svg[data-dimmed=true]{opacity:0}'), true);
