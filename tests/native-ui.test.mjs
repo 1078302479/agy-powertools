@@ -1094,11 +1094,13 @@ test('composerWorkingBeam cross-fades with ComposerQuotaHalo when active and sta
   vm.runInContext(source, p.context);
   await new Promise(r => setTimeout(r, 30));
 
+  const stateByComponent = new WeakMap();
   const renderNode = node => {
     if (!node || typeof node !== 'object') return node;
     if (Array.isArray(node)) return node.map(renderNode);
     if (typeof node.type === 'function') {
-      const states = [];
+      let states = stateByComponent.get(node.type);
+      if (!states) { states = []; stateByComponent.set(node.type, states); }
       let idx = 0;
       const prevState = p.context.React.useState;
       const prevEffect = p.context.React.useEffect;
@@ -1143,27 +1145,45 @@ test('composerWorkingBeam cross-fades with ComposerQuotaHalo when active and sta
   assert.equal(typeof idleNotch.props.onMouseLeave, 'function');
   const quotaPopover = findById(idleTree, 'agy-composer-quota-popover');
   assert.ok(quotaPopover);
+  assert.equal(typeof quotaPopover.props.onOpenAutoFocus, 'function');
   assert.equal(typeof quotaPopover.props.onMouseEnter, 'function');
   assert.equal(typeof quotaPopover.props.onMouseLeave, 'function');
   const exactResetNode = findById(quotaPopover, 'agy-quota-reset-exact');
   assert.ok(exactResetNode);
-  const exactResetText = (Array.isArray(exactResetNode.children) ? exactResetNode.children : [exactResetNode.children]).join('');
+  const exactResetText = (Array.isArray(exactResetNode.children) ? exactResetNode.children : [exactResetNode.children]).filter(c => typeof c === 'string').join('');
   assert.match(exactResetText, /\d{2}:\d{2}/);
   assert.ok(findById(quotaPopover, 'agy-quota-popover-refresh'));
   assert.ok(findById(quotaPopover, 'agy-quota-popover-window-5h'));
-  assert.ok(findById(quotaPopover, 'agy-quota-popover-style-rings'));
-  assert.ok(findById(quotaPopover, 'agy-quota-popover-style-energy'));
-  assert.ok(findById(quotaPopover, 'agy-quota-popover-style-swiss'));
-  assert.equal(findById(quotaPopover, 'agy-quota-popover-style-rings').props['data-active'], 'true');
+  assert.ok(findById(quotaPopover, 'agy-quota-popover-toggle-value'));
+  assert.equal(findById(quotaPopover, 'agy-quota-popover-value-notch'), null);
+  assert.ok(findById(quotaPopover, 'agy-quota-popover-style-concentric'));
+  assert.ok(findById(quotaPopover, 'agy-quota-popover-style-arcs'));
+  assert.ok(findById(quotaPopover, 'agy-quota-popover-style-dots'));
+  assert.ok(findById(quotaPopover, 'agy-quota-popover-style-bars'));
+  assert.equal(findById(quotaPopover, 'agy-quota-popover-style-concentric').props['data-active'], 'true');
+  assert.equal(JSON.stringify(quotaPopover).includes('data-pt-tip'), false);
   assert.equal(JSON.stringify(quotaPopover).includes('·'), false);
 
-  await capturedPanelsEnv.change({ composerQuotaHaloPopoverStyle: 'energy' });
-  const energyPop = findById(renderNode(renderedTrees.at(-1)), 'agy-composer-quota-popover');
-  assert.equal(findById(energyPop, 'agy-quota-popover-style-energy').props['data-active'], 'true');
-  await capturedPanelsEnv.change({ composerQuotaHaloPopoverStyle: 'swiss' });
-  const swissPop = findById(renderNode(renderedTrees.at(-1)), 'agy-composer-quota-popover');
-  assert.equal(findById(swissPop, 'agy-quota-popover-style-swiss').props['data-active'], 'true');
-  await capturedPanelsEnv.change({ composerQuotaHaloPopoverStyle: 'rings' });
+  for (const styleName of ['arcs', 'dots', 'bars', 'concentric']) {
+    const curPop = findById(renderNode(renderedTrees.at(-1)), 'agy-composer-quota-popover');
+    findById(curPop, `agy-quota-popover-style-${styleName}`).props.onClick();
+    await new Promise(r => setTimeout(r, 10));
+    const styledPop = findById(renderNode(renderedTrees.at(-1)), 'agy-composer-quota-popover');
+    assert.equal(findById(styledPop, `agy-quota-popover-style-${styleName}`).props['data-active'], 'true');
+  }
+  findById(findById(renderNode(renderedTrees.at(-1)), 'agy-composer-quota-popover'), 'agy-quota-popover-window-5h').props.onClick();
+  await new Promise(r => setTimeout(r, 10));
+  assert.equal(findById(findById(renderNode(renderedTrees.at(-1)), 'agy-composer-quota-popover'), 'agy-quota-popover-window-5h').props['data-active'], 'true');
+  findById(findById(renderNode(renderedTrees.at(-1)), 'agy-composer-quota-popover'), 'agy-quota-popover-window-auto').props.onClick();
+  await new Promise(r => setTimeout(r, 10));
+  findById(findById(renderNode(renderedTrees.at(-1)), 'agy-composer-quota-popover'), 'agy-quota-popover-toggle-value').props.onClick();
+  await new Promise(r => setTimeout(r, 10));
+  assert.ok(findById(findById(renderNode(renderedTrees.at(-1)), 'agy-composer-quota-popover'), 'agy-quota-popover-value-notch'));
+  findById(findById(renderNode(renderedTrees.at(-1)), 'agy-composer-quota-popover'), 'agy-quota-popover-value-tip').props.onClick();
+  await new Promise(r => setTimeout(r, 10));
+  assert.equal(findById(renderNode(renderedTrees.at(-1)), 'agy-composer-quota-value').props['data-style'], 'tip');
+  findById(findById(renderNode(renderedTrees.at(-1)), 'agy-composer-quota-popover'), 'agy-quota-popover-value-notch').props.onClick();
+  await new Promise(r => setTimeout(r, 10));
   assert.ok(idleBeam);
   assert.equal(idleBeam.props['data-active'], 'false');
   assert.equal(idleBeam.props['data-palette'], 'aurora');
