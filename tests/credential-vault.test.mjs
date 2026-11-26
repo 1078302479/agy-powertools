@@ -299,23 +299,63 @@ test('macOS credential vault keeps secrets out of argv for both small and >4KB O
 
 test('large Keychain writes fail closed when the reader, ACL or protected add fails', () => {
   const script = buildMacKeychainWriteScript({ service: 'test', account: 'test', dataBase64: 'YQ==' });
+  const makeRef = value => ({ [Symbol.toStringTag]: 'Ref', value });
   for (const failure of ['reader', 'acl', 'add']) {
     const writes = [];
-    const dictionary = { setObjectForKey() {}, get mutableCopy() { return this; } };
+    const dictionary = {
+      setObjectForKey(v, k) {
+        assert.notEqual(Object.prototype.toString.call(v), '[object Ref]', 'dict value must be cast from Ref to ObjC object');
+        assert.notEqual(Object.prototype.toString.call(k), '[object Ref]', 'dict key must be cast from Ref to ObjC object');
+      },
+      get mutableCopy() { return this; }
+    };
     const bridge = Object.assign(value => value, {
+      kSecClass: makeRef('class'),
+      kSecClassGenericPassword: makeRef('genp'),
+      kSecAttrService: makeRef('svce'),
+      kSecAttrAccount: makeRef('acct'),
+      kSecValueData: makeRef('v_Data'),
+      kSecAttrAccess: makeRef('accs'),
       NSData: { alloc: { initWithBase64EncodedStringOptions: () => ({ isNil: () => false }) } },
       NSMutableDictionary: { alloc: { init: dictionary } },
-      NSMutableArray: { alloc: { init: { addObject() {} } } },
-      SecItemUpdate: () => -25300,
+      NSMutableArray: {
+        alloc: {
+          init: {
+            addObject(obj) {
+              assert.notEqual(Object.prototype.toString.call(obj), '[object Ref]', 'array element must be cast from Ref to ObjC object');
+            }
+          }
+        }
+      },
+      SecItemUpdate: (q, a) => {
+        assert.equal(Object.prototype.toString.call(q), '[object Ref]');
+        assert.equal(Object.prototype.toString.call(a), '[object Ref]');
+        return -25300;
+      },
       SecTrustedApplicationCreateFromPath(path, ref) {
-        ref[0] = {};
+        ref[0] = makeRef(path || 'self');
         return path && failure === 'reader' ? -1 : 0;
       },
-      SecAccessCreate(service, list, ref) { ref[0] = {}; return failure === 'acl' ? -1 : 0; },
-      SecItemAdd() { writes.push('add'); return -1; },
+      SecAccessCreate(service, list, ref) {
+        assert.equal(Object.prototype.toString.call(service), '[object Ref]');
+        assert.equal(Object.prototype.toString.call(list), '[object Ref]');
+        ref[0] = makeRef('access');
+        return failure === 'acl' ? -1 : 0;
+      },
+      SecItemAdd(q) {
+        assert.equal(Object.prototype.toString.call(q), '[object Ref]');
+        writes.push('add');
+        return -1;
+      },
       exit(code) { throw Error(`exit ${code}`); }
     });
-    assert.throws(() => runInNewContext(script, { $: bridge, Ref: () => [], ObjC: { import() {} }, console: { log() {} } }), /exit 1/);
+    const ObjC = {
+      import() {},
+      castRefToObject: r => r.value,
+      castObjectToRef: o => makeRef(o),
+      unwrap: o => String(o)
+    };
+    assert.throws(() => runInNewContext(script, { $: bridge, Ref: () => [], ObjC, console: { log() {} } }), /exit 1/);
     assert.deepEqual(writes, failure === 'add' ? ['add'] : []);
   }
 });
