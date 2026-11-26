@@ -224,6 +224,10 @@ Chaque réglage s'applique en temps réel dans **Powertools -> Paramètres** et 
 
 ## Historique des versions
 
+### v2.16.9
+- **Remplacement du relanceur Windows PowerShell/`.lnk` par un worker Node.js statique afin d'éliminer les faux positifs d'antivirus/EDR d'entreprise** : utilise les fichiers statiques vérifiés `scripts/relaunch-worker.mjs` et `scripts/relaunch-antigravity.cmd` sans PowerShell, ni création dynamique de `.lnk`/`.ps1`, ni drapeaux masqués ou auto-suppression, avec pré-filtrage `.lnk` en Node pur, vérification ACK réelle et bascule propre vers le redémarrage manuel en cas de blocage.
+- **Correction des pics de vitesse (`peakTps`) gonflés par les rafales mises en tampon** : reclasse les fins de flux tamponnées extrêmes (`< 1500 ms`, `< 6 %` de la durée, `>= 500` tokens) en débit global (y compris sur les archives existantes) et calcule `robustPeakTps` sur les flux soutenus (`>= 3 s`, `>= 100` tokens) avec filtrage des valeurs aberrantes de Tukey tout en préservant les modèles Flash réellement rapides.
+
 ### v2.16.8
 - **Conversion des fichiers volumineux (> 20 Mo) déposés dans le compositeur en références natives (#46)** : conserve la limite native de 20 Mo pour les fichiers ordinaires et insère les fichiers locaux dépassant 20 Mo sous forme de références natives sans lire leur contenu, tout en préservant les pièces jointes normales lors des dépôts mixtes et en isolant la barre latérale ainsi que les fenêtres SSH distantes.
 - **Restriction des traductions du menu d'affichage de la barre latérale aux contextes de menu (intégrant la PR #82, merci `@statertly-pixel`)** : limite `Project`, `Sort Conversations`, `Sort Projects`, `Auto Pin`, `Archived Only`, `Subtitles` et `Decorations` aux menus dans les neuf langues afin de préserver les titres de conversations ou de projets homonymes.

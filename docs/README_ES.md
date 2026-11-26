@@ -224,6 +224,10 @@ Cada ajuste se aplica al instante en **Powertools -> Configuración** y se guard
 
 ## Registro de cambios
 
+### v2.16.9
+- **Reemplazo del reiniciador PowerShell/`.lnk` en Windows por un worker estático de Node.js para eliminar falsos positivos de antivirus/EDR corporativos**: Usa los archivos estáticos verificados `scripts/relaunch-worker.mjs` y `scripts/relaunch-antigravity.cmd` sin PowerShell, sin creación dinámica de `.ps1`/`.lnk`, sin `WScript.Shell`, sin ejecución oculta ni autoeliminación, con prefiltrado `.lnk` en Node puro, verificación real de ACK y aviso limpio de reinicio manual si es bloqueado.
+- **Corrección de picos irreales de velocidad (`peakTps`) por respuestas almacenadas en búfer**: Reclasifica colas cortas extremas en búfer (`< 1500 ms`, `< 6 %` de duración, `>= 500` tokens) a velocidad de solicitud completa (incluso en el archivo histórico) y calcula `robustPeakTps` sobre flujos sostenidos con filtro de valores atípicos de Tukey conservando modelos Flash genuinamente rápidos.
+
 ### v2.16.8
 - **Conversión automática a referencia nativa al soltar archivos mayores de 20 MB en el editor (#46)**: Conserva el límite nativo de 20 MB para archivos normales e inserta los archivos locales mayores de 20 MB como referencias nativas sin leer sus bytes, preservando adjuntos normales en arrastres mixtos y aislando la barra lateral y las ventanas SSH remotas.
 - **Protección de contexto para las traducciones del menú de la barra lateral en los nueve idiomas (integra PR #82, gracias a `@statertly-pixel`)**: Restringe `Project`, `Sort Conversations`, `Sort Projects`, `Auto Pin`, `Archived Only`, `Subtitles` y `Decorations` a contextos de menú para no alterar títulos de conversaciones o proyectos con el mismo nombre.

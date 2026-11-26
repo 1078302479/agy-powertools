@@ -224,6 +224,10 @@ sh ./install.sh
 
 ## 更新日誌
 
+### v2.16.9
+- **將 Windows 重啟器重構為靜態純 Node.js 腳本，消除企業防毒/EDR 誤報特徵**：改用隨包校驗的靜態 `scripts/relaunch-worker.mjs` 與明面可見的 `scripts/relaunch-antigravity.cmd`，移除重啟鏈路中的 PowerShell、動態 `.ps1`/`.lnk`、`WScript.Shell`、隱藏參數與腳本自刪；補齊純 Node `.lnk` 預檢、真實 ACK 校驗與攔截降級手動重啟提示。
+- **修正峰值速度（`peakTps`）受緩衝尾包影響而虛高的問題**：對極端短尾緩衝回應回退整包速度口徑（無縫修正既有歷史封存），並以持續流與 Tukey 上籬笆計算 `robustPeakTps`，同時保留真實高速 Flash 模型速度。
+
 ### v2.16.8
 - **輸入框拖入超過 20 MB 大檔案自動轉為原生檔案引用（#46）**：保留 Antigravity 原生 20 MB 附件限制；超限本機檔案不讀取位元組，直接透過原生 Mention 管道插入為檔案引用標籤，混合拖曳時正常保留一般附件，並隔離側邊欄與 SSH 遠端視窗。
 - **側邊欄顯示選單翻譯作用域保護（整合 PR #82，感謝 `@statertly-pixel`）**：將 `Project`、`Sort Conversations`、`Sort Projects`、`Auto Pin`、`Archived Only`、`Subtitles`、`Decorations` 限定於選單上下文內生效，避免同名會話或專案標題被誤翻。

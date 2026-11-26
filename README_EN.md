@@ -224,6 +224,15 @@ Every setting applies live in **Powertools -> Settings** and saves automatically
 
 ## Changelog
 
+### v2.16.9
+- **Replace Windows PowerShell/`.lnk` relauncher with static Node.js worker to eliminate corporate AV/EDR false positives**:
+  - Ships SHA-256-verified static `scripts/relaunch-worker.mjs` and visible `scripts/relaunch-antigravity.cmd`, completely removing PowerShell, dynamic `.ps1`/`.lnk` dropping, `WScript.Shell`, `-WindowStyle Hidden`, `-ExecutionPolicy Bypass`, nested PowerShell, WMI, and self-deleting scripts from Windows and WSL2 relaunches, while strictly validating `relaunch-job.json` (target basename, 60s TTL, arg/env allowlists, path containment). Closes existing instances via a single batched `taskkill.exe` call plus built-in `process.kill`, syncs `app_storage.json` atomically in Node, and launches `Antigravity.exe` detached with `NUL` stdio so Windows Terminal never lingers.
+  - Adds a pure-Node `.lnk` byte pre-filter to `configureLaunchers()` / `restoreLaunchers()` so already-patched or unrelated shortcuts spawn zero PowerShell processes, and strips unused `-ExecutionPolicy Bypass` / redundant `-WindowStyle Hidden` flags from `-Command` calls.
+  - Adds verified ready-ACK checks (`verifyRelaunchStarted`) and fail-closed `manualRestartRequired` fallback across sidecar, accounts, and proxy UI, fixing stuck `switchingInProgress` state and Aux Pane poll overwrites when security software blocks automatic relaunch.
+- **Fix inflated peak speed (`peakTps`) caused by buffered tool-call flushes and short-stream bias**:
+  - Reclassifies extreme short-tail buffered flushes (`streamingMs < 1500ms`, stream fraction `< 6%`, `outputTokens >= 500`) to whole-request speed across live telemetry, requests table, and existing 90-day usage archives without wiping history.
+  - Introduces shared `robustPeakTps` for Overview models and per-model-grouped session/subagent stats, preferring sustained streams (`>= 3s`, `>= 100` tokens) with Tukey upper-fence outlier rejection while preserving genuinely fast Flash streams (`wholeTps >= 0.5 * tps`).
+
 ### v2.16.8
 - **Convert oversized (> 20 MB) composer file drops into native file references (#46)**: Keeps Antigravity's native 20 MB attachment limit untouched for normal files; intercepts local files over 20 MB without reading their bytes and inserts each absolute path as a native clickable file reference mention (supporting Windows drives, UNC/NAS, POSIX, spaces, `#`, and Unicode paths). Preserves normal attachments during mixed drops and isolates sidebar drops and SSH remote windows.
 - **Scope sidebar display menu translations to menu contexts across all nine languages (incorporating PR #82, thanks `@statertly-pixel`)**: Restricts `Project`, `Sort Conversations`, `Sort Projects`, `Auto Pin`, `Archived Only`, `Subtitles`, and `Decorations` (for both text nodes and `title`/`placeholder` attributes) to menu/listbox/label contexts so matching conversation or project titles remain untouched.

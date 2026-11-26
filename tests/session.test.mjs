@@ -172,3 +172,82 @@ test('parseSessionData aggregates per-turn model, cache hit rate, tokens, and sp
   }
 });
 
+test('parseSessionData applies buffered-tail guard and computes robust peakTps per model group in mixed Orchestrator sessions', () => {
+  const root = mkdtempSync(join(tmpdir(), 'agy-orch-peak-'));
+  const previous = process.env.ANTIGRAVITY_APP_DATA_DIR;
+  process.env.ANTIGRAVITY_APP_DATA_DIR = root;
+  try {
+    const durationMs = ms => {
+      const sec = Math.floor(ms / 1000);
+      const nanos = (ms % 1000) * 1e6;
+      return concat(...(sec ? [integer(1, sec)] : []), ...(nanos ? [integer(2, nanos)] : []));
+    };
+    const mkGenMs = (stepIndex, modelName, outTok, ttftMs, streamMs) => concat(
+      bytes(1, concat(
+        bytes(4, concat(integer(2, 500), integer(3, outTok), integer(5, 1500))),
+        bytes(11, durationMs(ttftMs)),
+        bytes(12, durationMs(streamMs)),
+        bytes(21, modelName)
+      )),
+      integer(2, stepIndex)
+    );
+
+    const seedSession = (convId, gens) => {
+      const logs = join(root, 'brain', convId, '.system_generated', 'logs');
+      mkdirSync(logs, { recursive: true });
+      mkdirSync(join(root, 'conversations'), { recursive: true });
+      const steps = [];
+      let stepIdx = 0;
+      const db = new DatabaseSync(join(root, 'conversations', `${convId}.db`));
+      db.exec('CREATE TABLE gen_metadata(idx INTEGER PRIMARY KEY,data BLOB); CREATE TABLE steps(idx INTEGER PRIMARY KEY,metadata BLOB);');
+      try {
+        gens.forEach((g, idx) => {
+          const userIdx = stepIdx++;
+          const respIdx = stepIdx++;
+          steps.push(
+            { step_index: userIdx, type: 'USER_INPUT', created_at: `2025-01-01T00:00:${String(idx * 2).padStart(2, '0')}Z`, content: `turn ${idx + 1}` },
+            { step_index: respIdx, type: 'PLANNER_RESPONSE', created_at: `2025-01-01T00:00:${String(idx * 2 + 1).padStart(2, '0')}Z`, content: `reply ${idx + 1}` }
+          );
+          db.prepare('INSERT INTO gen_metadata VALUES (?,?)').run(idx, mkGenMs(respIdx, g.model, g.outTok, g.ttftMs, g.streamMs));
+        });
+      } finally {
+        db.close();
+      }
+      writeFileSync(join(logs, 'transcript.jsonl'), steps.map(s => JSON.stringify(s)).join('\n'));
+    };
+
+    const plannerGens = [
+      ...[120, 128, 135, 142, 150, 160].map(tps => ({ model: 'Orchestrator (Neon)', outTok: tps * 6, ttftMs: 4000, streamMs: 6000 })),
+      // Buffered tool-call tail flush -> falls back to whole-request (92.3 tok/s)
+      { model: 'Orchestrator (Neon)', outTok: 1707, ttftMs: 17627, streamMs: 865 },
+      // Isolated partial-buffer spike (964.0 tok/s, wholeTps = 159.3) -> fenced out by planner group
+      { model: 'Orchestrator (Neon)', outTok: 18316, ttftMs: 96000, streamMs: 19000 }
+    ];
+    const executorGens = [
+      // Faster executor with long TTFT (wholeTps = 83.3) that would be fenced out if merged with slower planner
+      { model: 'Gemini 4 Hydrogen (High)', outTok: 1680, ttftMs: 15000, streamMs: 4000 },
+      { model: 'Gemini 4 Hydrogen (High)', outTok: 2000, ttftMs: 20000, streamMs: 4000 },
+      // Short-stream burst (< 3s) on executor -> excluded by sustained stream filter
+      { model: 'Gemini 4 Hydrogen (High)', outTok: 564, ttftMs: 4000, streamMs: 580 }
+    ];
+
+    seedSession('planner-only', plannerGens);
+    const plannerState = parseSessionData('planner-only', { includeSessions: false });
+    assert.equal(plannerState.requests[6].tpsMode, 'whole');
+    assert.equal(plannerState.requests[6].tps, 92.3);
+    assert.equal(plannerState.requests[6].tpsDurationMs, 18492);
+    assert.equal(plannerState.turns[6].tps, 92.3);
+    assert.equal(plannerState.telemetry.peakTps, 160);
+
+    seedSession('mixed-orch', [...plannerGens, ...executorGens]);
+    const mixedState = parseSessionData('mixed-orch', { includeSessions: false });
+    assert.equal(mixedState.requests[6].tpsMode, 'whole');
+    assert.equal(mixedState.requests[6].tps, 92.3);
+    assert.equal(mixedState.telemetry.peakTps, 500);
+  } finally {
+    if (previous === undefined) delete process.env.ANTIGRAVITY_APP_DATA_DIR;
+    else process.env.ANTIGRAVITY_APP_DATA_DIR = previous;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+

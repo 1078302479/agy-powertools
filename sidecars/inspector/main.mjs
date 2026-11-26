@@ -6,7 +6,7 @@ import { startNativeIntegration } from '../../lib/native-host.mjs';
 import { serveRuntime } from '../../lib/runtime-control.mjs';
 import { installationPaths } from '../../lib/lifecycle.mjs';
 import { createSettingsStore, DEFAULT_SETTINGS } from '../../lib/settings.mjs';
-import { configureLaunchers, createColdStartRelaunchCoordinator, isRemoteSshEnvironment, manualLaunchCommand, maybePromptPostUpdateRelaunch, recordDebugPortReady, recordProxyReady, scheduleRelaunchWithDebugPort } from '../../lib/launcher.mjs';
+import { configureLaunchers, createColdStartRelaunchCoordinator, isRemoteSshEnvironment, manualLaunchCommand, maybePromptPostUpdateRelaunch, recordDebugPortReady, recordProxyReady, scheduleRelaunchWithDebugPort, verifyRelaunchStarted } from '../../lib/launcher.mjs';
 import { checkProxyPortOpen, inspectProxyRuntime } from '../../lib/proxy.mjs';
 import { startSidecarWebUi } from '../../lib/sidecar-ui.mjs';
 import { checkForUpdates } from '../../lib/updates.mjs';
@@ -117,7 +117,11 @@ if (isDirectRun) {
         update: updateStatus(undefined, version)
       };
     },
-    onRelaunch: () => remoteSsh ? { scheduled: false, reason: 'ssh-remote' } : scheduleRelaunchWithDebugPort({ dataDir: paths.data, home: paths.home }),
+    onRelaunch: async () => {
+      if (remoteSsh) return { scheduled: false, reason: 'ssh-remote' };
+      const scheduled = scheduleRelaunchWithDebugPort({ dataDir: paths.data, home: paths.home });
+      return verifyRelaunchStarted(scheduled, { dataDir: paths.data });
+    },
     onSetSettings: patch => settings.set(patch),
     onCheckUpdate: () => checkForUpdates({ currentVersion: version }),
     onInstallUpdate: ({ version: expectedVersion } = {}) => startUpdate({ currentVersion: version, expectedVersion }),

@@ -224,6 +224,15 @@ sh ./install.sh
 
 ## 更新日志
 
+### v2.16.9
+- **重构 Windows 重启器为静态纯 Node.js 脚本，消除企业杀软/EDR 高危误报特征**：
+  - 新增随包下发、受 SHA-256 校验的静态 `scripts/relaunch-worker.mjs` 与明面可见的 `scripts/relaunch-antigravity.cmd`，彻底移除重启链路中的 PowerShell、动态 `.ps1` / `.lnk` 投放、`WScript.Shell`、`-WindowStyle Hidden`、`-ExecutionPolicy Bypass`、嵌套 PowerShell、WMI 与脚本自删行为，并对任务 JSON 实施严格目标文件名、60 秒时效、参数/环境变量白名单与路径穿越校验；关闭旧进程改用单次批量 `taskkill.exe` 温和关闭加 Node 内置 `process.kill` 兜底，拉起新实例经 libuv `detached + stdio: 'ignore'` 彻底隔离 Windows Terminal ConPTY。
+  - 快捷方式修补新增纯 Node `.lnk` 字节预检，已修补或无关快捷方式零次调用 PowerShell，并清理全仓库 `-Command` 调用上无效的 `-ExecutionPolicy Bypass` 与冗余 `-WindowStyle Hidden`。
+  - 补齐真实 ACK 就绪校验与杀软拦截优雅降级：若 2.5 秒内未收到重启器就绪 ACK，自动熔断冷启动重启、立即释放前端 `switchingInProgress` 状态并提示手动重启与可复制启动命令，修复伴生页 3 秒轮询抹掉错误提示的问题。
+- **修复模型与会话峰值速度（`peakTps`）被缓冲尾包虚高的问题**：
+  - 对「`streamingMs < 1500ms` 且流式占比 `< 6%` 且输出 `>= 500` Token」的大工具调用缓冲尾包自动回退整包速度口径（兼容既有 90 天历史归档无缝修正，无需清缓存）。
+  - 概览模型表与会话/子智能体统计统一改用 `robustPeakTps`：优先在持续流请求（`>= 3s` 且 `>= 100` Token）中统计并通过 Tukey 上篱笆过滤孤立局部缓冲毛刺，同时保留真实高速 Flash 流与混合模型 Orchestrator 的按模型分组统计。
+
 ### v2.16.8
 - **输入框拖入超过 20 MB 大文件自动转为原生文件引用（#46）**：保留 Antigravity 原生 20 MB 附件限制不变；仅在拖入超过 20 MB 的本地文件时拦截（不读取文件内容），将绝对路径通过原生 Lexical Mention 管道直接插入为可点击的文件引用标签（支持 Windows 盘符、UNC/NAS、POSIX、空格、`#` 与中文路径）；普通文件原样透传，混合拖拽时普通文件继续正常附加、超限文件转为引用，自动隔离侧边栏拖拽与 SSH 远端窗口。
 - **侧边栏显示菜单翻译作用域保护（吸收 PR #82，感谢 `@statertly-pixel`）**：将 `Project`、`Sort Conversations`、`Sort Projects`、`Auto Pin`、`Archived Only`、`Subtitles`、`Decorations` 等 7 个菜单词条在全部九种语言下均限定为仅在菜单/选项上下文内生效（同时覆盖文本节点与 `title`/`placeholder` 属性），避免恰好重名的会话或项目标题被误翻。

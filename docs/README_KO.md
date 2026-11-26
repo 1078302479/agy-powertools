@@ -224,6 +224,10 @@ sh ./install.sh
 
 ## 변경 이력
 
+### v2.16.9
+- **Windows 재시작기를 정적 순수 Node.js 워커로 교체하여 기업용 백신/EDR 오탐 요소 제거**: 패키지 내 검증된 `scripts/relaunch-worker.mjs`와 가시적 `scripts/relaunch-antigravity.cmd`를 사용해 PowerShell, 동적 `.ps1`/`.lnk` 생성, `WScript.Shell`, 숨김 플래그 및 자가 삭제를 완전히 제거하고, 순수 Node `.lnk` 사전 검사, 실제 ACK 검증 및 차단 시 수동 재시작 안내를 추가했습니다.
+- **버퍼링된 도구 호출 꼬리 구간으로 인한 최고 속도(`peakTps`) 과대 계상 수정**: 극단적 단기 버퍼 플러시(`< 1500ms`, 비중 `< 6%`, `>= 500` 토큰)를 전체 요청 속도로 보정하고(기존 아카이브 포함), 지속 스트림과 Tukey 상한 울타리 기반의 `robustPeakTps`를 적용했습니다.
+
 ### v2.16.8
 - **20 MB 초과 파일을 입력창에 드롭 시 네이티브 파일 참조로 자동 변환 (#46)**: Antigravity 기본 20 MB 첨부 제한을 유지하면서 20 MB 초과 로컬 파일만 내용을 읽지 않고 네이티브 파일 참조로 삽입합니다(혼합 드롭 시 일반 첨부 유지, 사이드바 및 SSH 원격 창 격리).
 - **사이드바 표시 메뉴 번역 컨텍스트 보호 (PR #82 통합, `@statertly-pixel` 감사)**: `Project`, `Sort Conversations`, `Sort Projects`, `Auto Pin`, `Archived Only`, `Subtitles`, `Decorations` 항목을 9개 언어 모두에서 메뉴 컨텍스트로 한정하여 동일한 이름의 대화나 프로젝트 제목이 오역되지 않도록 했습니다.

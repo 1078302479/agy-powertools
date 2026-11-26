@@ -224,6 +224,10 @@ Alle Einstellungen greifen sofort unter **Powertools -> Einstellungen** und werd
 
 ## Changelog
 
+### v2.16.9
+- **Windows-Neustart auf statischen Node.js-Worker umgestellt, um Fehlalarme von Unternehmens-AV/EDR zu vermeiden**: Nutzt die signierten/geprüften Paketdateien `scripts/relaunch-worker.mjs` und `scripts/relaunch-antigravity.cmd` vollständig ohne PowerShell, dynamische `.ps1`/`.lnk`-Erstellung, `WScript.Shell`, versteckte Flags oder Selbstlöschung, ergänzt um reinen Node-`.lnk`-Vorfilter, echte ACK-Prüfung und sauberen Fallback auf manuellen Neustart.
+- **Überhöhte Spitzengeschwindigkeiten (`peakTps`) durch gepufferte Tool-Aufruf-Bursts behoben**: Stuft extreme Kurz-Tail-Pufferungen (`< 1500 ms`, `< 6 %` Anteil, `>= 500` Tokens) auf die Gesamtgeschwindigkeit zurück (inkl. bestehender Archive) und berechnet `robustPeakTps` aus anhaltenden Streams mit Tukey-Ausreißerfilter bei vollem Erhalt echter Hochgeschwindigkeits-Flash-Streams.
+
 ### v2.16.8
 - **Dateien über 20 MB beim Ablegen im Eingabefeld als native Dateireferenz einfügen (#46)**: Behält das native 20-MB-Limit für normale Dateien bei und fügt lokale Dateien über 20 MB ohne Einlesen des Dateiinhalts als native Dateireferenz ein (einschließlich gemischter Ablagen sowie Isolation von Seitenleiste und SSH-Remote-Fenstern).
 - **Kontextschutz für Seitenleisten-Menüübersetzungen in allen neun Sprachen (inkl. PR #82, danke an `@statertly-pixel`)**: Beschränkt `Project`, `Sort Conversations`, `Sort Projects`, `Auto Pin`, `Archived Only`, `Subtitles` und `Decorations` auf Menükontexte, damit gleichnamige Unterhaltungs- oder Projekttitel unverändert bleiben.

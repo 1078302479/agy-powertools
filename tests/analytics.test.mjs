@@ -11,10 +11,16 @@ import { requestEvents, resolveUsageDataDirs, usageDashboard } from '../lib/anal
 test('buffered provider responses use whole-request timing while genuine streamed responses exclude TTFT',()=>{
  const events=requestEvents({generations:[
   {requestId:'same-id',stepIndices:[8],modelName:'model',inputTokens:100,cacheReadTokens:0,outputTokens:1000,thinkingTokens:800,responseTokens:200,ttftMs:9990,streamingMs:10},
-  {requestId:'streamed-id',stepIndices:[9],modelName:'model',inputTokens:100,cacheReadTokens:0,outputTokens:1324,thinkingTokens:751,responseTokens:573,ttftMs:117690,streamingMs:9248}
- ],times:new Map([[8,{createdMs:1000}],[9,{createdMs:2000}]])},'source');
+  {requestId:'streamed-id',stepIndices:[9],modelName:'model',inputTokens:100,cacheReadTokens:0,outputTokens:1324,thinkingTokens:751,responseTokens:573,ttftMs:117690,streamingMs:9248},
+  {requestId:'buffered-tail-id',stepIndices:[10],modelName:'Gemini 4 Neon (High)',inputTokens:1000,cacheReadTokens:0,outputTokens:1707,thinkingTokens:1200,responseTokens:507,ttftMs:17627,streamingMs:865},
+  {requestId:'short-low-tok',stepIndices:[11],modelName:'Gemini 4 Neon (High)',inputTokens:100,cacheReadTokens:0,outputTokens:400,thinkingTokens:200,responseTokens:200,ttftMs:25000,streamingMs:1000},
+  {requestId:'fast-high-ratio',stepIndices:[12],modelName:'Gemini 4 Flash',inputTokens:100,cacheReadTokens:0,outputTokens:600,thinkingTokens:100,responseTokens:500,ttftMs:5000,streamingMs:1000}
+ ],times:new Map([[8,{createdMs:1000}],[9,{createdMs:2000}],[10,{createdMs:3000}],[11,{createdMs:4000}],[12,{createdMs:5000}]])},'source');
  assert.equal(events[0].tps,100);assert.equal(events[0].wholeTps,100);assert.equal(events[0].tpsMode,'whole');assert.equal(events[0].durationMs,10000);assert.equal(events[0].tpsDurationMs,10000);assert.equal(events[0].timestampMs,1000);assert.equal(events[0].id,'same-id');
  assert.equal(events[1].tps,143.2);assert.equal(events[1].wholeTps,10.4);assert.equal(events[1].tpsMode,'stream');assert.equal(events[1].durationMs,126938);assert.equal(events[1].tpsDurationMs,9248);
+ assert.equal(events[2].tps,92.3);assert.equal(events[2].wholeTps,92.3);assert.equal(events[2].tpsMode,'whole');assert.equal(events[2].durationMs,18492);assert.equal(events[2].tpsDurationMs,18492);
+ assert.equal(events[3].tps,400);assert.equal(events[3].tpsMode,'stream');assert.equal(events[3].tpsDurationMs,1000);
+ assert.equal(events[4].tps,600);assert.equal(events[4].tpsMode,'stream');assert.equal(events[4].tpsDurationMs,1000);
 });
 test('progress counts leaf tasks without counting headings twice',()=>{
  const tasks=parseChecklist('- [ ] Parent\n  - [x] First\n  - [/] Active\n- [ ] Later');
@@ -353,5 +359,69 @@ test('usage archive expires old rows and retains the newest 20000 records per pr
     assert.equal(saved.length, 20000);
     writeFileSync(path, JSON.stringify([records[0], records.at(-1)]));
     assert.deepEqual(usageDashboard(profile, { includeCli: false, force: true }).requests, [records[0]]);
+  } finally { rmSync(profile, { recursive: true, force: true }); }
+});
+
+test('usage archive normalizes stale buffered-tail rows in place without wiping history', () => {
+  const profile = mkdtempSync(join(tmpdir(), 'agy-archive-tail-'));
+  try {
+    const dir = join(profile, 'plugin_data', 'agy-powertools');
+    mkdirSync(dir, { recursive: true });
+    const now = Date.now();
+    const staleBuffered = {
+      id: 'archived-buffered-tail',
+      conversationId: 'archived-conv',
+      timestampMs: now - 3600_000,
+      model: 'Gemini 4 Neon (High)',
+      inputTokens: 5000,
+      cacheReadTokens: 10000,
+      outputTokens: 1707,
+      ttftMs: 17627,
+      streamingMs: 865,
+      durationMs: 18492,
+      tpsDurationMs: 865,
+      tps: 1973.4,
+      wholeTps: 92.3,
+      tpsMode: 'stream',
+      status: 'success',
+      retryErrors: []
+    };
+    const genuineStream = {
+      id: 'archived-genuine-stream',
+      conversationId: 'archived-conv',
+      timestampMs: now - 7200_000,
+      model: 'Gemini 4 Neon (High)',
+      inputTokens: 1000,
+      cacheReadTokens: 5000,
+      outputTokens: 1324,
+      ttftMs: 117690,
+      streamingMs: 9248,
+      durationMs: 126938,
+      tpsDurationMs: 9248,
+      tps: 143.2,
+      wholeTps: 10.4,
+      tpsMode: 'stream',
+      status: 'success',
+      retryErrors: []
+    };
+    const path = join(dir, 'usage-history-cache.json');
+    writeFileSync(path, JSON.stringify([staleBuffered, genuineStream]));
+
+    const result = usageDashboard(profile, { includeCli: false, force: true });
+    assert.equal(result.totalRequests, 2);
+    const normalized = result.requests.find(r => r.id === 'archived-buffered-tail');
+    const kept = result.requests.find(r => r.id === 'archived-genuine-stream');
+    assert.equal(normalized.tpsMode, 'whole');
+    assert.equal(normalized.tps, 92.3);
+    assert.equal(normalized.wholeTps, 92.3);
+    assert.equal(normalized.tpsDurationMs, 18492);
+    assert.equal(kept.tpsMode, 'stream');
+    assert.equal(kept.tps, 143.2);
+    assert.equal(kept.tpsDurationMs, 9248);
+
+    const persisted = JSON.parse(readFileSync(path, 'utf8'));
+    assert.equal(persisted.length, 2);
+    assert.equal(persisted.find(r => r.id === 'archived-buffered-tail').tpsMode, 'whole');
+    assert.equal(persisted.find(r => r.id === 'archived-buffered-tail').tps, 92.3);
   } finally { rmSync(profile, { recursive: true, force: true }); }
 });

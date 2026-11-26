@@ -321,6 +321,7 @@ test('launcher delegates Windows shortcuts and relaunch properly in WSL2 without
       wsl: true,
       resolveWslExe: () => ({ winPath: fakeExe, wslPath: '' }),
       resolveWslTemp: () => ({ winPath: 'C:\\Users\\dev\\AppData\\Local\\Temp', wslPath: winTempDir }),
+      resolveWslNode: () => ({ command: '/mnt/c/Program Files/nodejs/node.exe', extraEnv: {} }),
       spawnProcess(cmd, args, opts) {
         spawned = { cmd, args, opts };
         return { unref() {} };
@@ -328,10 +329,14 @@ test('launcher delegates Windows shortcuts and relaunch properly in WSL2 without
     });
     assert.equal(relaunched.scheduled, true);
     assert.equal(relaunched.target, fakeExe);
-    assert.equal(spawned.cmd, 'powershell.exe');
-    assert.equal(spawned.opts.env.AGY_RELAUNCH_SCRIPT, 'C:\\Users\\dev\\AppData\\Local\\Temp\\agy-powertools-relaunch.ps1');
-    assert.ok(spawned.opts.env.WSLENV.includes('AGY_RELAUNCH_SCRIPT'));
-    assert.ok(readFileSync(join(winTempDir, 'agy-powertools-relaunch.ps1'), 'utf8').includes(fakeExe));
+    assert.equal(relaunched.launchMethod, 'wsl-node-worker');
+    assert.equal(spawned.cmd, '/mnt/c/Program Files/nodejs/node.exe');
+    assert.equal(/powershell/i.test(spawned.cmd), false);
+    assert.equal(spawned.args[1], 'C:\\Users\\dev\\AppData\\Local\\Temp\\agy-powertools-relaunch-job.json');
+    const wslJob = JSON.parse(readFileSync(join(winTempDir, 'agy-powertools-relaunch-job.json'), 'utf8'));
+    assert.equal(wslJob.target, fakeExe);
+    assert.equal(wslJob.nonce, relaunched.nonce);
+    assert.deepEqual(wslJob.args, ['--remote-debugging-port=0']);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
