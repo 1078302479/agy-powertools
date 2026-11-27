@@ -53,6 +53,10 @@
    - 默认值：`notch`（骑缝光环微标，骑跨输入框顶部边框，占底栏宽度 0px）
    - 支持设置面板切换 5 种模式：`notch`（骑缝光环微标）、`tip`（光环末端游标）、`watermark`（右上角微水印）、`inline`（底栏纯数字呼应）、`off`（仅光环）
    - 主要涉及文件：`lib/settings.mjs`、`lib/native-ui.js`、`lib/native-panels.js`、`tests/settings.test.mjs`、`tests/native-ui.test.mjs`
-2. **代码与文案约束**
+2. **Codex CLI MCP 集成 (`agy-codex`)**
+   - 通过插件内置零依赖 Stdio MCP Server（`mcp_config.json` -> `scripts/codex-mcp.mjs` -> `lib/codex-bridge.mjs`）暴露 `codex_doctor`、`codex_run`、`codex_resume`、`codex_review` 4 个工具，并配套 `skills/codex-cli/SKILL.md` 协作技能。
+   - 自动探测 `/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex`、PATH 及自定义 `codexPath`，自动继承 Powertools 代理配置，默认沙盒 `workspace-write`。
+   - 主要涉及文件：`lib/codex-bridge.mjs`、`scripts/codex-mcp.mjs`、`mcp_config.json`、`skills/codex-cli/SKILL.md`、`lib/settings.mjs`、`lib/package.mjs`、`lib/native-panels.js`、`tests/codex-bridge.test.mjs`
+3. **代码与文案约束**
    - 所有遥测与统计展示保持简洁，禁止使用中点字符作为分隔符。
    - 二次开发期间建议在插件「设置 -> 关于」中关闭空闲自动热更新，避免覆盖本地安装版本。

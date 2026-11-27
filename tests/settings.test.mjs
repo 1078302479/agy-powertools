@@ -114,6 +114,16 @@ test('settings persist, merge safely, and reject unknown options without changin
     assert.equal(store.get().proxyBypass, 'localhost,127.0.0.1,::1,192.168.0.0/16');
     assert.equal(store.get().proxyForceHttp1, true);
     store.set({ proxyEnabled: false, proxyUrl: '', proxyBypass: 'localhost,127.0.0.1,::1', proxyForceHttp1: false });
+    assert.equal(store.get().codexEnabled, true);
+    assert.equal(store.get().codexPath, '');
+    assert.equal(store.get().codexDefaultModel, '');
+    assert.equal(store.get().codexDefaultSandbox, 'workspace-write');
+    store.set({ codexEnabled: false, codexPath: '  /usr/local/bin/codex  ', codexDefaultModel: ' gpt-5-codex ', codexDefaultSandbox: 'read-only' });
+    assert.equal(store.get().codexEnabled, false);
+    assert.equal(store.get().codexPath, '/usr/local/bin/codex');
+    assert.equal(store.get().codexDefaultModel, 'gpt-5-codex');
+    assert.equal(store.get().codexDefaultSandbox, 'read-only');
+    store.set({ codexEnabled: true, codexPath: '', codexDefaultModel: '', codexDefaultSandbox: 'workspace-write' });
     assert.equal(store.get().sidebarProjectLimit, 0);
     store.set({ sidebarProjectLimit: 3 }); assert.equal(store.get().sidebarProjectLimit, 3);
     store.set({ sidebarProjectLimit: -1 }); assert.equal(store.get().sidebarProjectLimit, -1);
@@ -143,7 +153,7 @@ test('settings persist, merge safely, and reject unknown options without changin
     store.set({contextLimit:256000});assert.equal(store.get().contextLimit,256000);
     store.set({contextLimit:0});assert.equal(store.get().contextLimit,0);
     const before = readFileSync(join(directory, 'settings.json'), 'utf8');
-    for (const value of [{ compact: 'false' }, { turnMeta: 'yes' }, { userBubbleTint: 'yes' }, { userBubblePreset: 'neon' }, { userBubbleColor: 'red' }, { userBubbleColor: '#123;color:red' }, { userBubbleStrength: 5 }, { userBubbleStrength: 105 }, { userBubbleStrength: 20.5 }, { sessionSearch: 'yes' }, { sidebarFolderDrop: 'yes' }, { sidebarFolderDropPin: 'yes' }, { composerQuotaHaloWindow: '1d' }, { composerQuotaHaloValue: 'invalid' }, { composerQuotaHaloPopoverStyle: 'rings' }, { sidebarRunningBeam: 'yes' }, { sidebarRunningBeamPalette: 'quota' }, { sidebarHideNativeSpinner: 1 }, { sidebarRunningGroup: 'on' }, { unknown: true }, { toString: false }, {language:'invalid'}, {overviewRange:'custom'}, {overviewRange:'invalid'}, {pricingMode:'batch'}, {pricingMode:true}, {accountViewMode:'grid'}, {accountQuotaWindow:'1h'}, {proxyUrl:'ftp://127.0.0.1:21'}, {proxyUrl:'http://127.0.0.1:7897;calc'}, {proxyBypass:'localhost"bad'}, {contextLimit:999999}, []]) assert.throws(() => store.set(value), /设置/);
+    for (const value of [{ compact: 'false' }, { turnMeta: 'yes' }, { userBubbleTint: 'yes' }, { userBubblePreset: 'neon' }, { userBubbleColor: 'red' }, { userBubbleColor: '#123;color:red' }, { userBubbleStrength: 5 }, { userBubbleStrength: 105 }, { userBubbleStrength: 20.5 }, { sessionSearch: 'yes' }, { sidebarFolderDrop: 'yes' }, { sidebarFolderDropPin: 'yes' }, { composerQuotaHaloWindow: '1d' }, { composerQuotaHaloValue: 'invalid' }, { composerQuotaHaloPopoverStyle: 'rings' }, { codexEnabled: 'yes' }, { codexDefaultSandbox: 'danger-full-access' }, { codexDefaultModel: 'bad model' }, { codexPath: 'bad\npath' }, { sidebarRunningBeam: 'yes' }, { sidebarRunningBeamPalette: 'quota' }, { sidebarHideNativeSpinner: 1 }, { sidebarRunningGroup: 'on' }, { unknown: true }, { toString: false }, {language:'invalid'}, {overviewRange:'custom'}, {overviewRange:'invalid'}, {pricingMode:'batch'}, {pricingMode:true}, {accountViewMode:'grid'}, {accountQuotaWindow:'1h'}, {proxyUrl:'ftp://127.0.0.1:21'}, {proxyUrl:'http://127.0.0.1:7897;calc'}, {proxyBypass:'localhost"bad'}, {contextLimit:999999}, []]) assert.throws(() => store.set(value), /设置/);
     assert.equal(readFileSync(join(directory, 'settings.json'), 'utf8'), before);
     store.set(DEFAULT_SETTINGS); assert.deepEqual(store.get(), DEFAULT_SETTINGS);
     store.set({ compact: false, language: DEFAULT_SETTINGS.language === 'en' ? 'zh-CN' : 'en' });
