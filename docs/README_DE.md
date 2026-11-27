@@ -13,7 +13,7 @@
     <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20WSL2-475569" height="20" alt="Plattform" />
   </p>
   <!-- plugin-badges:end -->
-  <p><a href="../README.md">简体中文</a> | <a href="README_ZH_TW.md">繁體中文</a> | <a href="../README_EN.md">English</a> | <a href="README_FR.md">Français</a> | <a href="README_JA.md">日本語</a> | <a href="README_KO.md">한국어</a> | <strong>Deutsch</strong> | <a href="README_ES.md">Español</a> | <a href="README_RU.md">Русский</a></p>
+  <p><a href="../README.md">简体中文</a> | <a href="README_ZH_TW.md">繁體中文</a> | <a href="../README_EN.md">English</a> | <a href="README_FR.md">Français</a> | <a href="README_JA.md">日本語</a> | <a href="README_KO.md">한국어</a> | <strong>Deutsch</strong> | <a href="README_ES.md">Español</a> | <a href="README_RU.md">Русский</a> | <a href="README_VI.md">Tiếng Việt</a></p>
   <p>
     <a href="#screenshots">Screenshots</a> |
     <a href="#funktionen">Funktionen</a> |
@@ -223,6 +223,12 @@ Alle Einstellungen greifen sofort unter **Powertools -> Einstellungen** und werd
 ---
 
 ## Changelog
+
+### v2.16.13
+- **CNY-Währungsumrechnung auf stille automatische Live-Wechselkurse umgestellt (fester Offline-Fallback `6.7`, keine Wechselkurs-UI)**: Ergänzt `createExchangeRateStore` in [pricing.mjs](../lib/pricing.mjs), das bei gewählter CNY-Anzeige über `createProxyFetcher()` im Hintergrund kostenlose öffentliche USD-zu-CNY-Kurse abruft (primär `open.er-api.com`, Fallback `api.frankfurter.app`, 24-Stunden-Lokalcache, stiller Fallback `6.7` im Offline- oder Fehlerfall), und entfernt das manuelle Wechselkursfeld sowie den Referenzkurshinweis aus den Einstellungen und der Preisseite.
+- **Fehlende Runden-Fußzeilentelemetrie und `...`-Verzweigungsschaltfläche unter Antigravity 2.35.2 behoben (closes #111)**: Führt die fokussierte Hilfsfunktion `findResponseActionRow()` ein, die innerhalb einer einzelnen Runde über `[data-turn-content]` / `worked-for-collapsible` hinaus nach oben sucht, Einzelbutton-Tooltip-Wrapper entfernt und gestuft über Attribute, Icon-Ligaturen, verknüpfte Tooltips sowie React-Fiber-Metadaten zurückfällt, während der `responseDoneCache`-Cache-Treffer wiederhergestellt wird.
+- **Breite des Schnellübersicht-Popovers bei schmaleren Fenstern anhand des linken Freiraums erhalten (closes #110, inklusive PR #109; danke an `@qimengdunjia`)**: Ersetzt das feste Schrumpfen auf `64vw` bei `.pt-qp-pop` durch den dynamisch gemessenen Wert `--pt-qp-max-w`, sodass das breite zweispaltige Layout in Viewports von `960px–1468px` erhalten bleibt, und bereinigt das Attribut beim Schließen, Deaktivieren oder Entfernen.
+- **Vietnamesische Lokalisierung (`vi`) und `docs/README_VI.md` ergänzt (inklusive PR #112; danke an `@nhattuan612`)**: Erweitert Powertools auf 10 unterstützte Sprachen mit vollständiger Parität aller 623 `uiEntries`, abgestimmtem Regex-Abgleich für `Worked for` / `Đã xử lý` sowie `Tiếng Việt`-Sprachlinks in allen 10 README-Dateien.
 
 ### v2.16.12
 - **Neu gestaltete kategorisierte Einstellungs-UI mit kategorieübergreifender Live-Suche**: Gliedert die Einstellungen oben in 5 segmentierte Kategorien („Allgemein“, „Strahlen & Seitenleiste“, „Statistik & Chat“, „Konten & Proxy“, „System“) samt Live-Suchfeld über alle Kategorien; ordnet 4 untergeordnete Schalter (Vier-Punkte-Ladeanzeige ausblenden, Halo-Kontingentfenster, Klick auf Dauer zum Aufklappen der Tools, abgelegte Projekte automatisch anheften) ihren jeweiligen Eltern-Bereichen zu, entfernt 3 doppelte Seitenansichtszeilen bei erhaltener Speicherung, fasst Exportieren / Importieren / Zurücksetzen in einer sauberen Zeile zusammen, strafft Beschreibungen und hält „Über“ dauerhaft am unteren Rand sichtbar.

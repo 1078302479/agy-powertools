@@ -6,6 +6,7 @@ import { startNativeIntegration } from '../../lib/native-host.mjs';
 import { serveRuntime } from '../../lib/runtime-control.mjs';
 import { installationPaths } from '../../lib/lifecycle.mjs';
 import { createSettingsStore, DEFAULT_SETTINGS } from '../../lib/settings.mjs';
+import { createExchangeRateStore } from '../../lib/pricing.mjs';
 import { configureLaunchers, createColdStartRelaunchCoordinator, isRemoteSshEnvironment, manualLaunchCommand, maybePromptPostUpdateRelaunch, recordDebugPortReady, recordProxyReady, scheduleRelaunchWithDebugPort, verifyRelaunchStarted } from '../../lib/launcher.mjs';
 import { checkProxyPortOpen, inspectProxyRuntime } from '../../lib/proxy.mjs';
 import { startSidecarWebUi } from '../../lib/sidecar-ui.mjs';
@@ -27,6 +28,8 @@ const isDirectRun = (() => {
 if (isDirectRun) {
   const paths = installationPaths();
   const settings = createSettingsStore();
+  const fxStore = createExchangeRateStore(paths.data, { home: paths.home, env: process.env });
+  if (settings.get().currency === 'CNY') void fxStore.refresh().catch(() => {});
   const remoteSsh = isRemoteSshEnvironment();
   let missingPortPolls = 0, shortcutsHealed = false, everConnectedDebugPort = false;
   const relaunchCoordinator = createColdStartRelaunchCoordinator({
@@ -86,6 +89,8 @@ if (isDirectRun) {
   }
   const stop = startNativeIntegration({
     parseSessionData,
+    fxStore,
+    home: paths.home,
     onDebugPortReady() {
       const wasConnected = everConnectedDebugPort;
       everConnectedDebugPort = true;
@@ -161,7 +166,11 @@ if (isDirectRun) {
       const scheduled = scheduleRelaunchWithDebugPort({ dataDir: paths.data, home: paths.home });
       return verifyRelaunchStarted(scheduled, { dataDir: paths.data });
     },
-    onSetSettings: patch => settings.set(patch),
+    onSetSettings: patch => {
+      const next = settings.set(patch);
+      if (next.currency === 'CNY') void fxStore.refresh().catch(() => {});
+      return next;
+    },
     onCheckUpdate: () => checkForUpdates({ currentVersion: version }),
     onInstallUpdate: ({ version: expectedVersion } = {}) => startUpdate({ currentVersion: version, expectedVersion }),
     onUpdateStatus: () => updateStatus(undefined, version)

@@ -13,7 +13,7 @@
     <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20WSL2-475569" height="20" alt="Platform" />
   </p>
   <!-- plugin-badges:end -->
-  <p><a href="../README.md">简体中文</a> | <a href="README_ZH_TW.md">繁體中文</a> | <a href="../README_EN.md">English</a> | <strong>Français</strong> | <a href="README_JA.md">日本語</a> | <a href="README_KO.md">한국어</a> | <a href="README_DE.md">Deutsch</a> | <a href="README_ES.md">Español</a> | <a href="README_RU.md">Русский</a></p>
+  <p><a href="../README.md">简体中文</a> | <a href="README_ZH_TW.md">繁體中文</a> | <a href="../README_EN.md">English</a> | <strong>Français</strong> | <a href="README_JA.md">日本語</a> | <a href="README_KO.md">한국어</a> | <a href="README_DE.md">Deutsch</a> | <a href="README_ES.md">Español</a> | <a href="README_RU.md">Русский</a> | <a href="README_VI.md">Tiếng Việt</a></p>
   <p>
     <a href="#captures-décran">Captures d'écran</a> |
     <a href="#fonctionnalités">Fonctionnalités</a> |
@@ -223,6 +223,12 @@ Chaque réglage s'applique en temps réel dans **Powertools -> Paramètres** et 
 ---
 
 ## Historique des versions
+
+### v2.16.13
+- **Conversion en CNY via des taux de change en direct silencieux et automatiques (repli codé en dur à `6.7`, zéro interface de taux)** : ajout de `createExchangeRateStore` dans [pricing.mjs](../lib/pricing.mjs) récupérant en arrière-plan des taux publics gratuits USD vers CNY via `createProxyFetcher()` (`open.er-api.com` avec repli sur `api.frankfurter.app`, cache local de 24 h et repli silencieux à `6.7` hors ligne), et suppression du champ de taux manuel et de la note tarifaire dans Paramètres et Tarifs.
+- **Correction de l'absence de la télémétrie en pied de réponse et du bouton de branchement `...` sous Antigravity 2.35.2 (closes #111)** : introduction de l'assistant dédié `findResponseActionRow()` qui remonte les ancêtres d'un tour au-delà de `[data-turn-content]` / `worked-for-collapsible`, retire les conteneurs d'infobulle à bouton unique et s'appuie en cascade sur les attributs, ligatures d'icônes, infobulles liées et métadonnées React fiber tout en rétablissant le cache `responseDoneCache`.
+- **Préservation de la largeur du panneau d'accès rapide grâce à l'espace disponible à gauche sur les fenêtres étroites (closes #110, intégrant la PR #109, merci `@qimengdunjia`)** : remplacement de la réduction fixe `64vw` de `.pt-qp-pop` par la largeur dynamique mesurée `--pt-qp-max-w` afin de conserver la disposition large sur deux colonnes sur les fenêtres `960px–1468px`, avec nettoyage des attributs lors de la fermeture, de la désactivation ou du démontage.
+- **Ajout de la localisation vietnamienne (`vi`) et de `docs/README_VI.md` (intégrant la PR #112, merci `@nhattuan612`)** : extension à 10 langues d'interface avec alignement complet des 623 entrées `uiEntries`, harmonisation de l'expression régulière `Worked for` / `Đã xử lý` et ajout du lien `Tiếng Việt` dans les 10 fichiers README.
 
 ### v2.16.12
 - **Interface des Paramètres repensée par catégories avec recherche en direct inter-catégories** : réorganisation des Paramètres en 5 catégories segmentées en haut (« Général », « Faisceaux et barre latérale », « Stats et chat », « Comptes et proxy », « Système ») accompagnées d'un champ de recherche en direct multi-catégories ; intégration de 4 options subordonnées (masquer l'indicateur à quatre points, fenêtre du halo de quota, clic sur la durée pour déplier les outils, épinglage automatique des projets déposés) dans les tiroirs parents, suppression de 3 lignes d'affichage en double tout en conservant la persistance, regroupement d'Exporter / Importer / Réinitialiser sur une seule ligne, allègement des descriptions et maintien permanent de la carte « À propos » en bas.

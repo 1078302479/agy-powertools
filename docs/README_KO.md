@@ -13,7 +13,7 @@
     <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20WSL2-475569" height="20" alt="Platform" />
   </p>
   <!-- plugin-badges:end -->
-  <p><a href="../README.md">简体中文</a> | <a href="README_ZH_TW.md">繁體中文</a> | <a href="../README_EN.md">English</a> | <a href="README_FR.md">Français</a> | <a href="README_JA.md">日本語</a> | <strong>한국어</strong> | <a href="README_DE.md">Deutsch</a> | <a href="README_ES.md">Español</a> | <a href="README_RU.md">Русский</a></p>
+  <p><a href="../README.md">简体中文</a> | <a href="README_ZH_TW.md">繁體中文</a> | <a href="../README_EN.md">English</a> | <a href="README_FR.md">Français</a> | <a href="README_JA.md">日本語</a> | <strong>한국어</strong> | <a href="README_DE.md">Deutsch</a> | <a href="README_ES.md">Español</a> | <a href="README_RU.md">Русский</a> | <a href="README_VI.md">Tiếng Việt</a></p>
   <p>
     <a href="#스크린샷">스크린샷</a> |
     <a href="#주요-기능">주요 기능</a> |
@@ -223,6 +223,12 @@ sh ./install.sh
 ---
 
 ## 변경 이력
+
+### v2.16.13
+- **위안화(CNY) 통화 환산을 백그라운드 자동 실시간 환율로 전환 (오프라인 기본값 `6.7`, 환율 설정 UI 제거)**: [pricing.mjs](../lib/pricing.mjs)에 `createExchangeRateStore`를 추가해 위안화 표시 선택 시 `createProxyFetcher()`를 통해 무료 공개 USD-CNY 실시간 환율을 백그라운드에서 자동 조회(기본 `open.er-api.com`, 보조 `api.frankfurter.app`, 24시간 로컬 캐시, 오프라인 또는 오류 시 무음으로 `6.7` 대체)하며, 설정 및 요금 탭에서 수동 환율 입력란과 기준 환율 안내를 제거했습니다.
+- **Antigravity 2.35.2에서 응답 하단 작업 막대에 '턴 하단 통계'와 `...` 분기 버튼이 표시되지 않는 문제 수정 (closes #111)**: 단일 책임 헬퍼 `findResponseActionRow()`를 도입해 단일 턴 컨테이너 내에서 `[data-turn-content]` / `worked-for-collapsible` 바깥쪽 상위 요소까지 탐색하고 단일 버튼 툴팁 래퍼를 벗겨낸 뒤 속성, 아이콘 리가처, 연결된 툴팁, React fiber 메타데이터 순으로 단계별 폴백 탐지를 수행하며 `responseDoneCache` 캐시 적중도 복구했습니다.
+- **좁은 창에서 빠른 개요 팝오버가 `64vw` 기준으로 성급히 축소되는 문제 수정 (closes #110, PR #109 통합, `@qimengdunjia` 감사)**: `.pt-qp-pop`의 고정 `64vw` 축소를 트리거 왼쪽 가용 공간 기반의 동적 `--pt-qp-max-w`로 대체해 `960px–1468px` 뷰포트에서도 왼쪽 여유 공간을 활용해 넓은 2열 레이아웃을 유지하고, 닫힘, 비활성화 또는 해제 시 속성을 정리합니다.
+- **베트남어(`vi`) 현지화 및 `docs/README_VI.md` 추가 (PR #112 통합, `@nhattuan612` 감사)**: 지원 언어를 10개 언어로 확장하고 `v2.16.12`+ 기준 전체 623개 `uiEntries` 일치, `Worked for` / `Đã xử lý` 정규식 정합성 수정 및 전체 10개 README 상단의 `Tiếng Việt` 언어 전환 링크를 반영했습니다.
 
 ### v2.16.12
 - **카테고리별 설정 UI 전면 개편 및 실시간 통합 검색 추가**: 설정 화면을 상단 5개 세그먼트 카테고리(일반, 빔 및 사이드바, 통계 및 채팅, 계정 및 프록시, 시스템)로 재구성하고 오른쪽에 카테고리 간 실시간 검색 상자를 배치했습니다. 4개의 종속 토글(점 4개 스피너 숨기기, 할당량 헤일로 주기, 소요 시간 클릭으로 도구 펼치기, 드롭한 프로젝트 자동 고정)을 상위 드로어 안으로 정리하고, 페이지 내에서 바로 전환 가능한 중복 보기 행 3개를 제거(저장값은 유지)했으며, 내보내기 / 가져오기 / 기본값 복원을 한 줄로 통합하고 설명을 간결하게 다듬은 뒤 '정보' 카드를 하단에 고정했습니다.

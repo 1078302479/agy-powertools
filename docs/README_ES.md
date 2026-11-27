@@ -13,7 +13,7 @@
     <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20WSL2-475569" height="20" alt="Platform" />
   </p>
   <!-- plugin-badges:end -->
-  <p><a href="../README.md">简体中文</a> | <a href="README_ZH_TW.md">繁體中文</a> | <a href="../README_EN.md">English</a> | <a href="README_FR.md">Français</a> | <a href="README_JA.md">日本語</a> | <a href="README_KO.md">한국어</a> | <a href="README_DE.md">Deutsch</a> | <strong>Español</strong> | <a href="README_RU.md">Русский</a></p>
+  <p><a href="../README.md">简体中文</a> | <a href="README_ZH_TW.md">繁體中文</a> | <a href="../README_EN.md">English</a> | <a href="README_FR.md">Français</a> | <a href="README_JA.md">日本語</a> | <a href="README_KO.md">한국어</a> | <a href="README_DE.md">Deutsch</a> | <strong>Español</strong> | <a href="README_RU.md">Русский</a> | <a href="README_VI.md">Tiếng Việt</a></p>
   <p>
     <a href="#capturas-de-pantalla">Capturas</a> |
     <a href="#funciones">Funciones</a> |
@@ -223,6 +223,12 @@ Cada ajuste se aplica al instante en **Powertools -> Configuración** y se guard
 ---
 
 ## Registro de cambios
+
+### v2.16.13
+- **Cambio de la conversión a CNY a tipos de cambio en vivo silenciosos y automáticos (respaldo fijo `6.7`, sin interfaz de tasa)**: Añade `createExchangeRateStore` en [pricing.mjs](../lib/pricing.mjs) para consultar en segundo plano tipos de cambio públicos y gratuitos de USD a CNY mediante `createProxyFetcher()` (`open.er-api.com` con respaldo en `api.frankfurter.app`, caché local de 24 h y respaldo silencioso `6.7` sin conexión), y elimina el campo de tasa manual y la nota de referencia en Configuración y Precios.
+- **Corrección de la ausencia de la telemetría al pie del turno y del botón de bifurcación `...` en Antigravity 2.35.2 (closes #111)**: Introduce la función dedicada `findResponseActionRow()` que recorre los contenedores ancestros del turno más allá de `[data-turn-content]` / `worked-for-collapsible`, desenvuelve los contenedores de tooltip de un solo botón y aplica detección escalonada por atributos, ligaduras de iconos, tooltips vinculados y metadatos de React fiber, restaurando además la caché `responseDoneCache`.
+- **Conservación del ancho del panel emergente de Resumen rápido usando el espacio libre izquierdo en ventanas más estrechas (closes #110, integra PR #109, gracias a `@qimengdunjia`)**: Reemplaza el encogimiento fijo `64vw` de `.pt-qp-pop` por la medida dinámica `--pt-qp-max-w` para mantener el diseño amplio de dos columnas en ventanas de `960px–1468px`, limpiando el atributo al cerrar, desactivar o desmontar.
+- **Incorporación de la localización al vietnamita (`vi`) y `docs/README_VI.md` (integra PR #112, gracias a `@nhattuan612`)**: Amplía Powertools a 10 idiomas compatibles con paridad completa de las 623 entradas `uiEntries`, alineación de expresiones regulares entre `Worked for` / `Đã xử lý` y enlaces de `Tiếng Việt` en los 10 archivos README.
 
 ### v2.16.12
 - **Interfaz de Configuración rediseñada por categorías con búsqueda en vivo entre categorías**: Reorganiza Configuración en 5 categorías segmentadas en la parte superior (General, Haces y barra lateral, Estadísticas y chat, Cuentas y proxy, Sistema) junto con un cuadro de búsqueda en vivo global; agrupa 4 interruptores secundarios (ocultar indicador de cuatro puntos, ventana del halo de cuota, clic en la duración para expandir herramientas, fijar automáticamente proyectos arrastrados) dentro de sus paneles padre, elimina 3 filas de vista duplicadas manteniendo su persistencia, unifica Exportar / Importar / Restablecer en una sola fila limpia, simplifica descripciones y mantiene Acerca de visible en la parte inferior.

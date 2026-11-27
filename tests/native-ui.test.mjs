@@ -4998,7 +4998,8 @@ test('duration carries >= 1h, tokens carry >= 1e9 to B and format zh 万/亿/萬
     return [];
   };
 
-  let stored = { enabled: true, contextRing: true, speedStats: true, timing: true, turnMeta: true, language: 'zh-CN', tokenUnit: 'compact', currency: 'USD', cnyRate: 7.2 };
+  let stored = { enabled: true, contextRing: true, speedStats: true, timing: true, turnMeta: true, language: 'zh-CN', tokenUnit: 'compact', currency: 'USD' };
+  let serverFxRate;
   const sampleState = {
     conversationId: 'conv-fmt',
     modelName: 'Gemini 4 Carbon',
@@ -5063,7 +5064,11 @@ test('duration carries >= 1h, tokens carry >= 1e9 to B and format zh 万/亿/萬
     queueMicrotask(() => {
       if (req.method === 'settings.get') p.context.__agyPowertoolsReceive(req.id, { ...stored });
       else if (req.method === 'settings.set') { stored = { ...stored, ...req.settings }; p.context.__agyPowertoolsReceive(req.id, { ...stored }); }
-      else if (req.method === 'state') p.context.__agyPowertoolsReceive(req.id, JSON.parse(JSON.stringify(sampleState)));
+      else if (req.method === 'state') {
+        const reply = JSON.parse(JSON.stringify(sampleState));
+        if (serverFxRate != null) reply.fxRate = serverFxRate;
+        p.context.__agyPowertoolsReceive(req.id, reply);
+      }
       else p.context.__agyPowertoolsReceive(req.id, { ok: true });
     });
   };
@@ -5097,8 +5102,9 @@ test('duration carries >= 1h, tokens carry >= 1e9 to B and format zh 万/亿/萬
   assert.match(metaText, /\$0\.0008/);
   assert.doesNotMatch(`${ringText} ${compText} ${metaText}`, /[\u00b7\u2022\u2027\u30fb]/);
 
-  // 2. Switch to zh-CN + zh units + CNY with custom rate 7.5
-  await capturedEnv.change({ tokenUnit: 'zh', currency: 'CNY', cnyRate: 7.5 });
+  // 2. Switch to zh-CN + zh units + CNY with absent live FX rate -> uses silent 6.7 fallback
+  assert.equal(capturedEnv.fxRate(), 6.7);
+  await capturedEnv.change({ tokenUnit: 'zh', currency: 'CNY' });
   ringText = collectText(renderedByKind.get('ring'));
   metaText = collectText(renderedByKind.get('turn-meta'));
   assert.match(ringText, /11\.83亿/);
@@ -5106,14 +5112,25 @@ test('duration carries >= 1h, tokens carry >= 1e9 to B and format zh 万/亿/萬
   assert.match(ringText, /23\.77万 \/ 100万/);
   assert.match(ringText, /\b8540\b/);
   assert.match(ringText, /\b381\b/);
-  assert.match(ringText, /¥78\.75/);
+  assert.match(ringText, /¥70\.35/);
   assert.match(metaText, /23\.77万/);
   assert.match(metaText, /1\.5万/);
-  assert.match(metaText, /¥0\.0060/);
+  assert.match(metaText, /¥0\.0054/);
   assert.doesNotMatch(`${ringText} ${metaText}`, /[\u00b7\u2022\u2027\u30fb]/);
 
-  // 3. Switch to zh-TW + zh units + CNY (rate 7.2): Traditional 小時 / 億 / 萬
-  await capturedEnv.change({ language: 'zh-TW', cnyRate: 7.2 });
+  // 2b. Live FX broadcast (7.5) updates rendered CNY prices silently and instantaneously
+  p.context.__agyPowertoolsSetFxRate(7.5);
+  assert.equal(capturedEnv.fxRate(), 7.5);
+  ringText = collectText(renderedByKind.get('ring'));
+  metaText = collectText(renderedByKind.get('turn-meta'));
+  assert.match(ringText, /¥78\.75/);
+  assert.match(metaText, /¥0\.0060/);
+
+  // 3. Switch to zh-TW + zh units + CNY with state-delivered live FX rate 7.2: Traditional 小時 / 億 / 萬
+  serverFxRate = 7.2;
+  await capturedEnv.change({ language: 'zh-TW' });
+  await capturedEnv.refreshState();
+  assert.equal(capturedEnv.fxRate(), 7.2);
   ringText = collectText(renderedByKind.get('ring'));
   compText = collectText(renderedByKind.get('completion'));
   assert.match(ringText, /21小時53分18秒/);
@@ -5133,4 +5150,199 @@ test('duration carries >= 1h, tokens carry >= 1e9 to B and format zh 万/亿/萬
   assert.match(ringText, /\$10\.50/);
   assert.match(compText, /Worked for 21h 53m 18s/);
   p.context.__agyPowertools.dispose();
+});
+
+test('QuickPopover keeps full 940px width when space remains on the left and tracks anchor space across resizes', () => {
+  const panelsCode = readFileSync(new URL('../lib/native-panels.js', import.meta.url), 'utf8');
+  const styles = [];
+  const states = [];
+  const effects = [];
+  const resizeObservers = [];
+  const rootProps = new Map();
+  const winListeners = new Map();
+  let setPropCalls = 0;
+  let stateIdx = 0;
+  let quickEnabled = true;
+
+  const React = {
+    createElement: (type, props, ...children) => ({ type, props: props || {}, children }),
+    Fragment: 'fragment',
+    useId: () => 'qp-tip-1',
+    useState: init => {
+      const i = stateIdx++;
+      if (!(i in states)) states[i] = typeof init === 'function' ? init() : init;
+      return [states[i], val => { states[i] = typeof val === 'function' ? val(states[i]) : val; }];
+    },
+    useEffect: (fn, deps) => { effects.push({ fn, deps }); },
+    useLayoutEffect: (fn, deps) => { effects.push({ fn, deps }); },
+    useSyncExternalStore: (_, getSnap) => getSnap()
+  };
+
+  let innerWidth = 1024;
+  let anchorRect = { left: 955, right: 983, top: 38, bottom: 66, width: 28, height: 28 };
+  let anchorConnected = true;
+  const anchorEl = {
+    get isConnected() { return anchorConnected; },
+    getBoundingClientRect: () => anchorRect,
+    closest: () => null,
+    parentElement: null
+  };
+
+  const ctx = vm.createContext({
+    React,
+    Intl,
+    URL,
+    ResizeObserver: class MockResizeObserver {
+      constructor(cb) {
+        this.cb = cb;
+        this.observed = [];
+        this.disconnected = false;
+        resizeObservers.push(this);
+      }
+      observe(el) { this.observed.push(el); }
+      disconnect() { this.disconnected = true; }
+      trigger() { this.cb([], this); }
+    },
+    get innerWidth() { return innerWidth; },
+    window: {
+      addEventListener: (type, fn) => {
+        if (!winListeners.has(type)) winListeners.set(type, new Set());
+        winListeners.get(type).add(fn);
+      },
+      removeEventListener: (type, fn) => {
+        winListeners.get(type)?.delete(fn);
+      }
+    },
+    document: {
+      createElement: tag => ({ tagName: tag, dataset: {}, textContent: '', remove() {} }),
+      head: { append: node => styles.push(node) },
+      body: { nodeName: 'BODY' },
+      documentElement: {
+        style: {
+          getPropertyValue: name => rootProps.get(name) || '',
+          setProperty: (name, value) => { setPropCalls++; rootProps.set(name, String(value)); },
+          removeProperty: name => { rootProps.delete(name); }
+        }
+      }
+    },
+    localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+    __agyDashboard: {
+      dateRange: () => ({ preset: 'weeklyQuota', start: 0, end: 1, activePools: [], status: 'unstarted' }),
+      summarizeRequests: () => ({ requests: [], success: 0, errors: 0, tokens: 0, inputTokens: 0, cacheReadTokens: 0, outputTokens: 0, cost: 0, priced: 0, points: [], models: [] }),
+      distributionModels: () => [],
+      subscriptionIdentity: () => ({ family: 'pro', style: 'pro', label: 'Pro' }),
+      annotateCacheAnomalies: () => new Map()
+    },
+    setInterval: () => 1,
+    clearInterval: () => {},
+    setTimeout: () => 1,
+    clearTimeout: () => {},
+    Uy: 'button',
+    Sy: 'tooltip',
+    dq: ({ name }) => ({ type: 'icon', props: { name }, children: [] }),
+    HC: ({ children, ...p }) => React.createElement('popover', p, ...(Array.isArray(children) ? children : [children])),
+    IC: ({ children, ...p }) => React.createElement('popover-trigger', p, ...(Array.isArray(children) ? children : [children])),
+    JC: ({ children, ...p }) => React.createElement('popover-content', p, ...(Array.isArray(children) ? children : [children])),
+    VP: 'section',
+    TP: 'card',
+    UP: 'row',
+    XP: 'switch'
+  });
+
+  vm.runInContext(panelsCode, ctx);
+  const panels = ctx.__agyPanels({
+    t: v => v,
+    options: () => ({ enabled: true, titlebarQuickPanel: quickEnabled, language: 'zh-CN' }),
+    dashboard: () => null,
+    loadDashboard: () => Promise.resolve(null),
+    loadProxyStatus: () => Promise.resolve(null),
+    subscribe: () => () => {},
+    revision: () => 0,
+    capabilities: () => ({ models: [] })
+  });
+
+  const css = styles[0].textContent;
+  assert.doesNotMatch(css, /\.pt-qp-pop\{[^}]*64vw/);
+  assert.match(css, /\.pt-qp-pop\{[^}]*width:min\(940px,var\(--pt-qp-max-w,calc\(100vw - 24px\)\)\)!important;max-width:calc\(100vw - 24px\)!important;/);
+
+  const renderAndRunEffects = () => {
+    stateIdx = 0;
+    effects.length = 0;
+    const tree = panels.QuickPopover();
+    if (tree?.props?.ref) tree.props.ref(anchorEl);
+    const cleanups = effects.map(e => e.fn()).filter(fn => typeof fn === 'function');
+    return { tree, cleanups };
+  };
+
+  // Closed by default: no width variable or resize listener active
+  let pass = renderAndRunEffects();
+  assert.equal(rootProps.has('--pt-qp-max-w'), false);
+  assert.equal(winListeners.get('resize')?.size || 0, 0);
+
+  // Opening at 1024px window keeps 971px available width so min(940px, 971px) stays at full 940px
+  pass.tree.children[0].props.onOpenChange(true);
+  assert.equal(rootProps.get('--pt-qp-max-w'), '971px');
+  for (const fn of pass.cleanups) fn();
+  pass = renderAndRunEffects();
+  assert.equal(rootProps.get('--pt-qp-max-w'), '971px');
+  assert.equal(winListeners.get('resize')?.size, 1);
+
+  // Redundant trigger at same dimensions avoids duplicate setProperty writes
+  const callsBeforeSameSize = setPropCalls;
+  resizeObservers.at(-1).trigger();
+  assert.equal(setPropCalls, callsBeforeSameSize);
+
+  // Shrinking to 960px (half-screen) caps to 907px (rect.right - 12px left margin) rather than 64vw (614px)
+  innerWidth = 960;
+  anchorRect = { left: 891, right: 919, top: 38, bottom: 66, width: 28, height: 28 };
+  for (const fn of winListeners.get('resize')) fn();
+  assert.equal(rootProps.get('--pt-qp-max-w'), '907px');
+
+  // Expanding back to wide 1728px updates available width to 1674px (so min(940px, 1674px) returns to 940px)
+  innerWidth = 1728;
+  anchorRect = { left: 1658, right: 1686, top: 38, bottom: 66, width: 28, height: 28 };
+  resizeObservers.at(-1).trigger();
+  assert.equal(rootProps.get('--pt-qp-max-w'), '1674px');
+
+  // Left-half anchor edge case prefers larger right-side space instead of collapsing against left margin
+  innerWidth = 1000;
+  anchorRect = { left: 20, right: 48, top: 38, bottom: 66, width: 28, height: 28 };
+  resizeObservers.at(-1).trigger();
+  assert.equal(rootProps.get('--pt-qp-max-w'), '968px');
+
+  // Disconnected or zero-size anchor skips overwriting
+  anchorRect = { left: 0, right: 0, top: 0, bottom: 0, width: 0, height: 0 };
+  resizeObservers.at(-1).trigger();
+  assert.equal(rootProps.get('--pt-qp-max-w'), '968px');
+  anchorConnected = false;
+  anchorRect = { left: 955, right: 983, top: 38, bottom: 66, width: 28, height: 28 };
+  resizeObservers.at(-1).trigger();
+  assert.equal(rootProps.get('--pt-qp-max-w'), '968px');
+
+  // Closing cleans up --pt-qp-max-w, listeners, and observers
+  anchorConnected = true;
+  pass.tree.children[0].props.onOpenChange(false);
+  for (const fn of pass.cleanups) fn();
+  pass = renderAndRunEffects();
+  assert.equal(rootProps.has('--pt-qp-max-w'), false);
+  assert.equal(winListeners.get('resize')?.size || 0, 0);
+  assert.equal(resizeObservers.every(ro => ro.disconnected), true);
+
+  // Disabling titlebarQuickPanel while open clears --pt-qp-max-w
+  pass.tree.children[0].props.onOpenChange(true);
+  for (const fn of pass.cleanups) fn();
+  pass = renderAndRunEffects();
+  assert.equal(rootProps.get('--pt-qp-max-w'), '971px');
+  quickEnabled = false;
+  for (const fn of pass.cleanups) fn();
+  pass = renderAndRunEffects();
+  assert.equal(rootProps.has('--pt-qp-max-w'), false);
+
+  // Disposing panels while open also clears --pt-qp-max-w
+  quickEnabled = true;
+  for (const fn of pass.cleanups) fn();
+  pass = renderAndRunEffects();
+  assert.equal(rootProps.get('--pt-qp-max-w'), '971px');
+  panels.dispose();
+  assert.equal(rootProps.has('--pt-qp-max-w'), false);
 });

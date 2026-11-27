@@ -304,6 +304,7 @@ function createPanelHarness(accountsData, opts = {}, hooks = {}) {
     t: v => v,
     defaults: currentOpts,
     options: () => currentOpts,
+    fxRate: () => (typeof hooks.fxRate === 'function' ? hooks.fxRate() : hooks.fxRate),
     settingsError: () => '',
     state: () => ({ contextWindow: { maxTokens: 200000 } }),
     accounts: () => accountsData,
@@ -2403,7 +2404,7 @@ test('Settings renders 5 category tabs, live cross-category search, nested subor
   assert.equal(disabledUi.find(disabledTree, 'agy-setting-row-language'), null);
 });
 
-test('Token unit (compact/zh), currency display (USD/CNY + cnyRate), Progress >= 1h clock, and Settings UI / search work seamlessly', () => {
+test('Token unit (compact/zh), silent live FX currency display (USD/CNY with 6.7 fallback), and Settings UI / search work seamlessly', () => {
   const now = Date.now();
   const sampleDash = {
     pricing: {
@@ -2418,7 +2419,7 @@ test('Token unit (compact/zh), currency display (USD/CNY + cnyRate), Progress >=
   };
 
   // 1. Default compact + USD in Overview and Pricing
-  const usdUi = createPanelHarness(null, { enabled: true, language: 'zh-CN', overviewRange: '24h', tokenUnit: 'compact', currency: 'USD', cnyRate: 7.2, multiAccount: false });
+  const usdUi = createPanelHarness(null, { enabled: true, language: 'zh-CN', overviewRange: '24h', tokenUnit: 'compact', currency: 'USD', multiAccount: false });
   const usdOv = usdUi.renderOverview(sampleDash);
   const usdOvText = usdUi.collectText(usdOv);
   assert.ok(usdOvText.includes('1.18B'));
@@ -2431,8 +2432,8 @@ test('Token unit (compact/zh), currency display (USD/CNY + cnyRate), Progress >=
   assert.ok(usdPriceText.includes('$4'));
   assert.ok(usdPriceText.includes('$20'));
 
-  // 2. zh-CN + zh token unit + CNY with custom cnyRate 7.5 across Overview, EventTable, and Pricing
-  const cnyUi = createPanelHarness(null, { enabled: true, language: 'zh-CN', overviewRange: '24h', tokenUnit: 'zh', currency: 'CNY', cnyRate: 7.5, multiAccount: false });
+  // 2. zh-CN + zh token unit + CNY with silent live env.fxRate() = 7.5 across Overview, EventTable, and Pricing (no rate note shown!)
+  const cnyUi = createPanelHarness(null, { enabled: true, language: 'zh-CN', overviewRange: '24h', tokenUnit: 'zh', currency: 'CNY', multiAccount: false }, { fxRate: 7.5 });
   const cnyOv = cnyUi.renderOverview(sampleDash);
   const cnyOvText = cnyUi.collectText(cnyOv);
   assert.ok(cnyOvText.includes('11.83亿'));
@@ -2451,22 +2452,27 @@ test('Token unit (compact/zh), currency display (USD/CNY + cnyRate), Progress >=
   const cnyPrice = cnyUi.renderPricing(sampleDash);
   const cnyPriceText = cnyUi.collectText(cnyPrice);
   assert.ok(cnyPriceText.includes('每百万 Token 单价 (CNY)'));
-  assert.ok(cnyUi.find(cnyPrice, 'agy-price-cny-rate-note'));
-  assert.ok(cnyPriceText.includes('参考汇率 1 USD = 7.5 CNY'));
+  assert.equal(cnyUi.find(cnyPrice, 'agy-price-cny-rate-note'), null);
+  assert.equal(cnyPriceText.includes('参考汇率'), false);
   assert.ok(cnyPriceText.includes('¥30.00'));
   assert.ok(cnyPriceText.includes('¥150.00'));
   assert.equal(/[\u00b7\u2022\u2027\u30fb]/.test(cnyPriceText), false);
 
-  // 3. zh-TW + zh token unit + CNY renders Traditional 萬 / 億 / 幣 / 匯率
-  const twUi = createPanelHarness(null, { enabled: true, language: 'zh-TW', overviewRange: '24h', tokenUnit: 'zh', currency: 'CNY', cnyRate: 7.2, multiAccount: false });
+  // 3. zh-TW + zh token unit + CNY with absent fxRate uses silent 6.7 fallback
+  const twUi = createPanelHarness(null, { enabled: true, language: 'zh-TW', overviewRange: '24h', tokenUnit: 'zh', currency: 'CNY', multiAccount: false });
   const twOvText = twUi.collectText(twUi.renderOverview(sampleDash));
   assert.ok(twOvText.includes('11.83億'));
   assert.ok(twOvText.includes('23.77萬'));
-  assert.ok(twOvText.includes('¥72.00'));
+  assert.ok(twOvText.includes('¥67.00'));
+  const twPrice = twUi.renderPricing(sampleDash);
+  const twPriceText = twUi.collectText(twPrice);
+  assert.equal(twUi.find(twPrice, 'agy-price-cny-rate-note'), null);
+  assert.ok(twPriceText.includes('¥26.80'));
+  assert.ok(twPriceText.includes('¥134.00'));
 
-  // 4. Settings UI: tokenUnit & currency rows in 统计与进度, cnyRate nested sub-row hidden when USD & shown when CNY, validation/reset, and live Settings search
+  // 4. Settings UI: tokenUnit & currency rows in 统计与进度, NO manual cnyRate sub-row even when CNY is selected, and live Settings search
   const changes = [];
-  const setUi = createPanelHarness(null, { enabled: true, language: 'zh-CN', tokenUnit: 'compact', currency: 'USD', cnyRate: 7.2, multiAccount: false }, { onChange: p => changes.push(p) });
+  const setUi = createPanelHarness(null, { enabled: true, language: 'zh-CN', tokenUnit: 'compact', currency: 'USD', multiAccount: false }, { onChange: p => changes.push(p) });
   let tree = setUi.renderSettings();
   setUi.find(tree, 'agy-settings-cat-features').props.onClick();
   tree = setUi.renderSettings();
@@ -2476,35 +2482,13 @@ test('Token unit (compact/zh), currency display (USD/CNY + cnyRate), Progress >=
   assert.ok(setUi.find(tree, 'agy-currency-select'));
   assert.equal(setUi.find(tree, 'agy-setting-row-cnyRate'), null);
 
-  // Select CNY -> cnyRate nested panel appears with width 88 input and no reset button at default 7.2
+  // Select CNY -> saves currency and renders NO manual rate panel/input
   setUi.find(tree, 'agy-currency-select-CNY').props.onClick();
   assert.deepEqual({ ...changes.at(-1) }, { currency: 'CNY' });
   tree = setUi.renderSettings();
-  const rateRow = setUi.find(tree, 'agy-setting-row-cnyRate');
-  assert.ok(rateRow);
-  assert.equal(rateRow.props.className, 'pt-bubble-panel');
-  const rateInput = setUi.find(rateRow, 'agy-cny-rate-input');
-  assert.ok(rateInput);
-  assert.equal(rateInput.props.style.width, 88);
-  assert.equal(setUi.find(rateRow, 'agy-cny-rate-reset'), null);
-
-  // Invalid input shows alert and does not save
-  rateInput.props.onChange({ target: { value: '0.01' } });
-  rateInput.props.onBlur({ target: { value: '0.01' } });
-  tree = setUi.renderSettings();
-  assert.ok(setUi.find(tree, 'agy-cny-rate-error'));
-  assert.equal(changes.length, 1);
-
-  // Valid input saves on Enter, exposes reset button, clicking reset restores 7.2
-  setUi.find(tree, 'agy-cny-rate-input').props.onChange({ target: { value: '7.5' } });
-  setUi.find(tree, 'agy-cny-rate-input').props.onKeyDown({ key: 'Enter', preventDefault() {} });
-  assert.deepEqual({ ...changes.at(-1) }, { cnyRate: 7.5 });
-  tree = setUi.renderSettings();
-  assert.equal(setUi.find(tree, 'agy-cny-rate-error'), null);
-  const resetBtn = setUi.find(tree, 'agy-cny-rate-reset');
-  assert.ok(resetBtn);
-  resetBtn.props.onClick();
-  assert.deepEqual({ ...changes.at(-1) }, { cnyRate: 7.2 });
+  assert.equal(setUi.find(tree, 'agy-setting-row-cnyRate'), null);
+  assert.equal(setUi.find(tree, 'agy-cny-rate-input'), null);
+  assert.equal(setUi.collectText(tree).includes('参考汇率'), false);
 
   // Live Settings search from default general tab finds both rows via Chinese & English keywords
   setUi.find(tree, 'agy-settings-cat-general').props.onClick();
@@ -2512,6 +2496,7 @@ test('Token unit (compact/zh), currency display (USD/CNY + cnyRate), Progress >=
   setUi.find(tree, 'agy-settings-search').props.onChange({ target: { value: '人民币' } });
   tree = setUi.renderSettings();
   assert.ok(setUi.find(tree, 'agy-setting-row-currency'));
+  assert.equal(setUi.find(tree, 'agy-setting-row-cnyRate'), null);
   assert.equal(setUi.find(tree, 'agy-setting-row-tokenUnit'), null);
 
   setUi.find(tree, 'agy-settings-search').props.onChange({ target: { value: '亿' } });

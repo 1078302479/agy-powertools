@@ -13,7 +13,7 @@
     <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20WSL2-475569" height="20" alt="Platform" />
   </p>
   <!-- plugin-badges:end -->
-  <p><strong>简体中文</strong> | <a href="docs/README_ZH_TW.md">繁體中文</a> | <a href="README_EN.md">English</a> | <a href="docs/README_FR.md">Français</a> | <a href="docs/README_JA.md">日本語</a> | <a href="docs/README_KO.md">한국어</a> | <a href="docs/README_DE.md">Deutsch</a> | <a href="docs/README_ES.md">Español</a> | <a href="docs/README_RU.md">Русский</a></p>
+  <p><strong>简体中文</strong> | <a href="docs/README_ZH_TW.md">繁體中文</a> | <a href="README_EN.md">English</a> | <a href="docs/README_FR.md">Français</a> | <a href="docs/README_JA.md">日本語</a> | <a href="docs/README_KO.md">한국어</a> | <a href="docs/README_DE.md">Deutsch</a> | <a href="docs/README_ES.md">Español</a> | <a href="docs/README_RU.md">Русский</a> | <a href="docs/README_VI.md">Tiếng Việt</a></p>
   <p>
     <a href="#界面预览">界面预览</a> |
     <a href="#主要功能">主要功能</a> |
@@ -223,6 +223,12 @@ sh ./install.sh
 ---
 
 ## 更新日志
+
+### v2.16.13
+- **人民币计价改用后台静默实时汇率（离线兜底 `6.7`，界面零额外配置）**：在 [pricing.mjs](lib/pricing.mjs) 新增 `createExchangeRateStore`，选择人民币显示时后台经 `createProxyFetcher()` 自动拉取免费公开实时汇率（主源 `open.er-api.com`、备源 `api.frankfurter.app`，24 小时本地缓存，离线或异常静默兜底 `6.7`），并移除设置页与价格页的手动汇率输入框和参考汇率提示。
+- **修复 Antigravity 2.35.2 回复底部操作栏未挂载「每轮底栏统计」与「... 回答分支」按钮（closes #111）**：新增单一职责的 `findResponseActionRow()`，支持在单轮容器内向外回溯并剥离单按钮 tooltip 包装层，按属性、图标字形、tooltip 关联节点与 React fiber 分层兜底识别，同时恢复 `responseDoneCache` 缓存命中。
+- **修复标题栏快捷概览浮窗在窗口缩窄时过早按 `64vw` 收缩的问题（closes #110，吸收 PR #109，感谢 `@qimengdunjia`）**：将 `.pt-qp-pop` 宽度改为基于触发器可用左侧空间的动态 `--pt-qp-max-w`，在 `960px–1468px` 窗口下充分利用左侧富余空间保持宽屏双栏布局，并在关闭、禁用或卸载时清理属性。
+- **新增越南语（`vi`）本地化与 `docs/README_VI.md`（吸收 PR #112，感谢 `@nhattuan612`）**：扩展至 10 种显示语言，补齐 `v2.16.12`+ 全量 623 条 `uiEntries` 对齐、修复 `Worked for` / `Đã xử lý` 匹配一致性，并在全部 10 份 README 顶部接入 `Tiếng Việt` 语言切换入口。
 
 ### v2.16.12
 - **全新分层设置界面与实时跨组搜索**：将设置页重构为 5 个顶部分段分类（常规与外观、流光与侧栏、统计与增强、账号与网络、系统与维护）并配备右侧实时跨组搜索框；将 4 项从属开关（四圆点隐藏、光环周期、点击用时展开工具、拖入置顶）收进对应父开关抽屉，移除 3 个在页面内可直接切换的重复偏好行，将导出/导入/恢复默认整合为单行并精简文案，「关于」与更新卡片常驻底部。

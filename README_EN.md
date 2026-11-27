@@ -13,7 +13,7 @@
     <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20WSL2-475569" height="20" alt="Platform" />
   </p>
   <!-- plugin-badges:end -->
-  <p><a href="README.md">简体中文</a> | <a href="docs/README_ZH_TW.md">繁體中文</a> | <strong>English</strong> | <a href="docs/README_FR.md">Français</a> | <a href="docs/README_JA.md">日本語</a> | <a href="docs/README_KO.md">한국어</a> | <a href="docs/README_DE.md">Deutsch</a> | <a href="docs/README_ES.md">Español</a> | <a href="docs/README_RU.md">Русский</a></p>
+  <p><a href="README.md">简体中文</a> | <a href="docs/README_ZH_TW.md">繁體中文</a> | <strong>English</strong> | <a href="docs/README_FR.md">Français</a> | <a href="docs/README_JA.md">日本語</a> | <a href="docs/README_KO.md">한국어</a> | <a href="docs/README_DE.md">Deutsch</a> | <a href="docs/README_ES.md">Español</a> | <a href="docs/README_RU.md">Русский</a> | <a href="docs/README_VI.md">Tiếng Việt</a></p>
   <p>
     <a href="#screenshots">Screenshots</a> |
     <a href="#features">Features</a> |
@@ -223,6 +223,12 @@ Every setting applies live in **Powertools -> Settings** and saves automatically
 ---
 
 ## Changelog
+
+### v2.16.13
+- **Switch CNY currency conversion to silent automatic live exchange rates (hardcoded `6.7` fallback, zero rate UI)**: Adds `createExchangeRateStore` in [pricing.mjs](lib/pricing.mjs) fetching free public USD-to-CNY rates via `createProxyFetcher()` (`open.er-api.com` with `api.frankfurter.app` fallback, 24h local cache, silent `6.7` fallback when offline) and removes the manual rate input and Pricing note from the UI.
+- **Fix missing per-turn footer telemetry and `...` branch button on Antigravity 2.35.2 (closes #111)**: Introduces a clean `findResponseActionRow()` helper that walks single-turn ancestors past `[data-turn-content]` / `worked-for-collapsible`, unwraps single-button tooltip wrappers, and falls back across attributes, icon ligatures, linked tooltips, and React fiber metadata while restoring `responseDoneCache` caching.
+- **Preserve Quick Popover width using available left space on narrower windows (closes #110, incorporating PR #109, thanks `@qimengdunjia`)**: Replaces fixed `64vw` shrinking with measured `--pt-qp-max-w` space to keep the wide two-column layout across `960px–1468px` viewports and cleans up on close, disable, and dispose.
+- **Add Vietnamese (`vi`) localization and `docs/README_VI.md` (incorporating PR #112, thanks `@nhattuan612`)**: Expands Powertools to 10 supported languages with full `uiEntries` parity, `Worked for` / `Đã xử lý` regex alignment, and `Tiếng Việt` links across all 10 READMEs.
 
 ### v2.16.12
 - **Redesigned categorized Settings UI with cross-category live search**: Reorganizes Settings into 5 top segmented categories (General, Beams & Sidebar, Stats & Chat, Accounts & Proxy, System) paired with a live cross-category search box; nests 4 subordinate toggles (hide four-dot spinner, quota halo window, click timing for tools, auto-pin dropped projects) inside their parent drawers, removes 3 duplicate page-level view rows while preserving persistence, consolidates Export / Import / Reset into one clean row, streamlines descriptions, and keeps About visible at the bottom.

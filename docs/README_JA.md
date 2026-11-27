@@ -13,7 +13,7 @@
     <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20WSL2-475569" height="20" alt="Platform" />
   </p>
   <!-- plugin-badges:end -->
-  <p><a href="../README.md">简体中文</a> | <a href="README_ZH_TW.md">繁體中文</a> | <a href="../README_EN.md">English</a> | <a href="README_FR.md">Français</a> | <strong>日本語</strong> | <a href="README_KO.md">한국어</a> | <a href="README_DE.md">Deutsch</a> | <a href="README_ES.md">Español</a> | <a href="README_RU.md">Русский</a></p>
+  <p><a href="../README.md">简体中文</a> | <a href="README_ZH_TW.md">繁體中文</a> | <a href="../README_EN.md">English</a> | <a href="README_FR.md">Français</a> | <strong>日本語</strong> | <a href="README_KO.md">한국어</a> | <a href="README_DE.md">Deutsch</a> | <a href="README_ES.md">Español</a> | <a href="README_RU.md">Русский</a> | <a href="README_VI.md">Tiếng Việt</a></p>
   <p>
     <a href="#スクリーンショット">スクリーンショット</a> |
     <a href="#主な機能">主な機能</a> |
@@ -223,6 +223,12 @@ sh ./install.sh
 ---
 
 ## 変更履歴
+
+### v2.16.13
+- **人民元（CNY）換算をバックグラウンドの自動リアルタイム為替レートへ切り替え（オフライン時は固定 `6.7` にフォールバック、レート設定 UI を撤廃）**: [pricing.mjs](../lib/pricing.mjs) に `createExchangeRateStore` を追加し、人民元表示の選択時に `createProxyFetcher()` 経由で無料の公開 USD/CNY 為替レートを自動取得（主取得元 `open.er-api.com`、予備 `api.frankfurter.app`、24 時間ローカルキャッシュ、オフラインまたは異常時は静かに `6.7` へフォールバック）するようにし、設定画面と料金タブから手動レート入力欄および基準レート注記を削除しました。
+- **Antigravity 2.35.2 で回答下部の操作バーに「ターンフッター統計」と `...` 分岐ボタンが表示されない不具合を修正（closes #111）**: 単一責務の `findResponseActionRow()` ヘルパーを導入し、単一ターン内の祖先要素を `[data-turn-content]` / `worked-for-collapsible` の外側まで遡って単一ボタンのツールチップラッパーを剥がした上で、属性、アイコンリガチャ、関連ツールチップ、React fiber メタデータの順にフォールバック検出し、`responseDoneCache` のキャッシュヒットも復元しました。
+- **狭いウィンドウ幅でクイック概要ポップオーバーが `64vw` で過度に縮小される不具合を修正（closes #110、PR #109 を統合、`@qimengdunjia` 氏に感謝）**: `.pt-qp-pop` の固定 `64vw` 縮小をトリガー左側の空きスペースから実測する動的 `--pt-qp-max-w` へ置き換え、`960px–1468px` のウィンドウ幅でも左側の余白を活用してワイドな 2 カラム表示を維持し、閉じる、無効化、または破棄時に属性を確実にクリーンアップします。
+- **ベトナム語（`vi`）ローカライズおよび `docs/README_VI.md` を追加（PR #112 を統合、`@nhattuan612` 氏に感謝）**: 対応言語を 10 言語へ拡大し、`v2.16.12`+ の全 623 件の `uiEntries` パリティを整備、さらに `Worked for` / `Đã xử lý` の正規表現一致を修正して、全 10 件の README 上部に `Tiếng Việt` 言語切り替えリンクを追加しました。
 
 ### v2.16.12
 - **カテゴリ別設定 UI の刷新およびカテゴリ横断ライブ検索を追加**: 設定画面を上部の 5 セグメント（「一般」、「ビームとサイドバー」、「統計とチャット」、「アカウントとプロキシ」、「システム」）へ再編成し、右側にカテゴリ横断のライブ検索ボックスを配置しました。4 つの従属トグル（4 点スピナー非表示、クォータリングの集計期間、所要時間クリックでツール展開、ドロップしたプロジェクトを自動ピン留め）を親ドロワー内へ格納し、ページ内で直接切り替えられる重複行 3 件を削除（永続化は維持）、エクスポート / インポート / 既定に戻すを 1 行に統合して説明文を簡潔化し、「このプラグインについて」カードを最下部に常設しました。

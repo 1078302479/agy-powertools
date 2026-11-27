@@ -13,7 +13,7 @@
     <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20WSL2-475569" height="20" alt="Platform" />
   </p>
   <!-- plugin-badges:end -->
-  <p><a href="../README.md">简体中文</a> | <strong>繁體中文</strong> | <a href="../README_EN.md">English</a> | <a href="README_FR.md">Français</a> | <a href="README_JA.md">日本語</a> | <a href="README_KO.md">한국어</a> | <a href="README_DE.md">Deutsch</a> | <a href="README_ES.md">Español</a> | <a href="README_RU.md">Русский</a></p>
+  <p><a href="../README.md">简体中文</a> | <strong>繁體中文</strong> | <a href="../README_EN.md">English</a> | <a href="README_FR.md">Français</a> | <a href="README_JA.md">日本語</a> | <a href="README_KO.md">한국어</a> | <a href="README_DE.md">Deutsch</a> | <a href="README_ES.md">Español</a> | <a href="README_RU.md">Русский</a> | <a href="README_VI.md">Tiếng Việt</a></p>
   <p>
     <a href="#介面預覽">介面預覽</a> |
     <a href="#主要功能">主要功能</a> |
@@ -223,6 +223,12 @@ sh ./install.sh
 ---
 
 ## 更新日誌
+
+### v2.16.13
+- **人民幣計價改用背景靜默即時匯率（離線備援 `6.7`，介面零額外設定）**：在 [pricing.mjs](../lib/pricing.mjs) 新增 `createExchangeRateStore`，選擇人民幣顯示時背景經由 `createProxyFetcher()` 自動拉取免費公開即時匯率（主源 `open.er-api.com`、備源 `api.frankfurter.app`，24 小時本機快取，離線或異常靜默備援 `6.7`），並移除設定頁與價格頁的手動匯率輸入框與參考匯率提示。
+- **修正 Antigravity 2.35.2 回覆底部操作列未掛載「每輪底欄統計」與「... 回答分支」按鈕（closes #111）**：新增單一職責的 `findResponseActionRow()`，支援在單輪容器內向外回溯（越過 `[data-turn-content]` / `worked-for-collapsible`）並剝離單按鈕 tooltip 包裝層，依屬性、圖示字形、tooltip 關聯節點與 React fiber 分層備援辨識，同時恢復 `responseDoneCache` 快取命中。
+- **修正標題列快捷概覽浮動視窗在視窗縮窄時過早按 `64vw` 收縮的問題（closes #110，整合 PR #109，感謝 `@qimengdunjia`）**：將 `.pt-qp-pop` 寬度改為基於觸發器可用左側空間的動態 `--pt-qp-max-w`，在 `960px–1468px` 視窗下充分利用左側餘裕空間維持寬螢幕雙欄排版，並在關閉、停用或卸載時清理屬性。
+- **新增越南語（`vi`）在地化與 `docs/README_VI.md`（整合 PR #112，感謝 `@nhattuan612`）**：擴展至 10 種顯示語言，補齊 `v2.16.12`+ 全量 623 條 `uiEntries` 對齊、修正 `Worked for` / `Đã xử lý` 匹配一致性，並在全部 10 份 README 頂部接入 `Tiếng Việt` 語言切換入口。
 
 ### v2.16.12
 - **全新分層設定介面與即時跨組搜尋**：將設定頁重構為 5 個頂部分段分類（一般與外觀、流光與側邊欄、統計與增強、帳號與網路、系統與維護）並配備右側即時跨組搜尋框；將 4 項從屬開關（四圓點隱藏、光環週期、點擊耗時展開工具、拖入置頂）收進對應父開關抽屜，移除 3 個在頁面內可直接切換的重複偏好列，將匯出/匯入/恢復預設整合為單列並精簡文案，「關於」與更新卡片常駐底部。

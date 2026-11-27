@@ -6,7 +6,6 @@ import { tmpdir } from 'node:os';
 import {
   createSettingsStore,
   CURRENCIES,
-  DEFAULT_CNY_RATE,
   DEFAULT_SETTINGS,
   detectSystemLanguage,
   exportSettingsPayload,
@@ -152,24 +151,25 @@ test('settings persist, merge safely, and reject unknown options without changin
     store.set({ pricingMode: 'standard' }); assert.equal(store.get().pricingMode, 'standard');
     assert.deepEqual([...TOKEN_UNITS], ['compact', 'zh']);
     assert.deepEqual([...CURRENCIES], ['USD', 'CNY']);
-    assert.equal(DEFAULT_CNY_RATE, 7.2);
     assert.equal(DEFAULT_SETTINGS.tokenUnit, 'compact');
     assert.equal(DEFAULT_SETTINGS.currency, 'USD');
-    assert.equal(DEFAULT_SETTINGS.cnyRate, 7.2);
-    store.set({ tokenUnit: 'zh', currency: 'CNY', cnyRate: 7.35 });
+    assert.equal(Object.hasOwn(DEFAULT_SETTINGS, 'cnyRate'), false);
+    store.set({ tokenUnit: 'zh', currency: 'CNY' });
     assert.equal(store.get().tokenUnit, 'zh');
     assert.equal(store.get().currency, 'CNY');
-    assert.equal(store.get().cnyRate, 7.35);
-    store.set({ cnyRate: 0.1 }); assert.equal(store.get().cnyRate, 0.1);
-    store.set({ cnyRate: 1000 }); assert.equal(store.get().cnyRate, 1000);
-    store.set({ tokenUnit: 'compact', currency: 'USD', cnyRate: 7.2 });
+    // Legacy settings.json containing cnyRate loads cleanly without errors and strips unknown key
+    writeFileSync(join(directory, 'settings.json'), JSON.stringify({ ...store.get(), cnyRate: 7.2 }, null, 2));
+    const legacyLoaded = store.get();
+    assert.equal(legacyLoaded.currency, 'CNY');
+    assert.equal(Object.hasOwn(legacyLoaded, 'cnyRate'), false);
+    store.set({ tokenUnit: 'compact', currency: 'USD' });
     store.set({ enabled: false }); assert.equal(store.get().enabled, false);
     assert.equal(DEFAULT_SETTINGS.contextLimit, 0);
     store.set({language:'en',contextLimit:1000000});assert.equal(store.get().contextLimit,1000000);assert.equal(store.get().language,'en');
     store.set({contextLimit:256000});assert.equal(store.get().contextLimit,256000);
     store.set({contextLimit:0});assert.equal(store.get().contextLimit,0);
     const before = readFileSync(join(directory, 'settings.json'), 'utf8');
-    for (const value of [{ compact: 'false' }, { turnMeta: 'yes' }, { userBubbleTint: 'yes' }, { userBubblePreset: 'neon' }, { userBubbleColor: 'red' }, { userBubbleColor: '#123;color:red' }, { userBubbleStrength: 5 }, { userBubbleStrength: 105 }, { userBubbleStrength: 20.5 }, { sessionSearch: 'yes' }, { sidebarFolderDrop: 'yes' }, { sidebarFolderDropPin: 'yes' }, { composerQuotaHaloWindow: '1d' }, { sidebarRunningBeam: 'yes' }, { sidebarRunningBeamPalette: 'quota' }, { sidebarRunningBeamStyle: 'pulse' }, { sidebarRunningBeamStyle: 'orbit' }, { sidebarRunningBeamStyle: 123 }, { sidebarHideNativeSpinner: 1 }, { sidebarRunningGroup: 'on' }, { unknown: true }, { toString: false }, {language:'invalid'}, {overviewRange:'custom'}, {overviewRange:'invalid'}, {pricingMode:'batch'}, {pricingMode:true}, {tokenUnit:'metric'}, {tokenUnit:1}, {currency:'EUR'}, {currency:'cny'}, {cnyRate:0}, {cnyRate:0.09}, {cnyRate:1000.1}, {cnyRate:Number.NaN}, {cnyRate:Number.POSITIVE_INFINITY}, {cnyRate:'7.2'}, {accountViewMode:'grid'}, {accountQuotaWindow:'1h'}, {proxyUrl:'ftp://127.0.0.1:21'}, {proxyUrl:'http://127.0.0.1:7897;calc'}, {proxyBypass:'localhost"bad'}, {contextLimit:999999}, []]) assert.throws(() => store.set(value), /设置/);
+    for (const value of [{ compact: 'false' }, { turnMeta: 'yes' }, { userBubbleTint: 'yes' }, { userBubblePreset: 'neon' }, { userBubbleColor: 'red' }, { userBubbleColor: '#123;color:red' }, { userBubbleStrength: 5 }, { userBubbleStrength: 105 }, { userBubbleStrength: 20.5 }, { sessionSearch: 'yes' }, { sidebarFolderDrop: 'yes' }, { sidebarFolderDropPin: 'yes' }, { composerQuotaHaloWindow: '1d' }, { sidebarRunningBeam: 'yes' }, { sidebarRunningBeamPalette: 'quota' }, { sidebarRunningBeamStyle: 'pulse' }, { sidebarRunningBeamStyle: 'orbit' }, { sidebarRunningBeamStyle: 123 }, { sidebarHideNativeSpinner: 1 }, { sidebarRunningGroup: 'on' }, { unknown: true }, { toString: false }, {language:'invalid'}, {overviewRange:'custom'}, {overviewRange:'invalid'}, {pricingMode:'batch'}, {pricingMode:true}, {tokenUnit:'metric'}, {tokenUnit:1}, {currency:'EUR'}, {currency:'cny'}, {cnyRate:7.2}, {accountViewMode:'grid'}, {accountQuotaWindow:'1h'}, {proxyUrl:'ftp://127.0.0.1:21'}, {proxyUrl:'http://127.0.0.1:7897;calc'}, {proxyBypass:'localhost"bad'}, {contextLimit:999999}, []]) assert.throws(() => store.set(value), /设置/);
     assert.equal(readFileSync(join(directory, 'settings.json'), 'utf8'), before);
     store.set(DEFAULT_SETTINGS); assert.deepEqual(store.get(), DEFAULT_SETTINGS);
     store.set({ compact: false, language: DEFAULT_SETTINGS.language === 'en' ? 'zh-CN' : 'en' });
@@ -194,11 +194,11 @@ test('detectSystemLanguage selects zh-CN, zh-TW, or en across BCP-47 and POSIX u
   assert.equal(detectSystemLanguage({ locale: 'C.UTF-8', env: { LANG: 'zh_CN.UTF-8' } }), 'zh-CN');
 });
 
-test('all nine locale tags and POSIX locale names persist across settings stores', () => {
+test('all ten locale tags and POSIX locale names persist across settings stores', () => {
   const dir = mkdtempSync(join(tmpdir(), 'agy-locales-'));
   try {
     const store = createSettingsStore(dir);
-    for (const [tag, language] of Object.entries({'zh-CN':'zh-CN','zh-TW':'zh-TW','en-GB':'en','fr-FR':'fr','ja-JP':'ja','ko-KR':'ko','de-DE':'de','es-ES':'es','ru-RU':'ru'})) {
+    for (const [tag, language] of Object.entries({'zh-CN':'zh-CN','zh-TW':'zh-TW','en-GB':'en','fr-FR':'fr','ja-JP':'ja','ko-KR':'ko','de-DE':'de','es-ES':'es','ru-RU':'ru','vi-VN':'vi'})) {
       assert.equal(detectSystemLanguage({locale:tag}), language);
       assert.equal(detectSystemLanguage({env:{LC_MESSAGES:tag.replace('-', '_')+'.UTF-8'}}), language);
       store.set({language});
@@ -250,20 +250,21 @@ test('stripProxyUrlCredentials and exportSettingsPayload strip proxy auth and ex
   );
 
   // Without proxy credentials, strippedProxyAuth is false
-  const cleanExport = exportSettingsPayload({ ...DEFAULT_SETTINGS, proxyUrl: 'http://127.0.0.1:7897', sidebarRunningBeamStyle: 'pulse-outside', tokenUnit: 'zh', currency: 'CNY', cnyRate: 7.45 });
+  const cleanExport = exportSettingsPayload({ ...DEFAULT_SETTINGS, proxyUrl: 'http://127.0.0.1:7897', sidebarRunningBeamStyle: 'pulse-outside', tokenUnit: 'zh', currency: 'CNY' });
   assert.equal(cleanExport.strippedProxyAuth, false);
   assert.equal(cleanExport.settings.proxyUrl, 'http://127.0.0.1:7897');
   assert.equal(cleanExport.settings.sidebarRunningBeamStyle, 'pulse-outside');
   assert.equal(cleanExport.settings.tokenUnit, 'zh');
   assert.equal(cleanExport.settings.currency, 'CNY');
-  assert.equal(cleanExport.settings.cnyRate, 7.45);
+  assert.equal(Object.hasOwn(cleanExport.settings, 'cnyRate'), false);
 
-  // Roundtrip sidebarRunningBeamStyle + tokenUnit/currency/cnyRate through sanitizeImportedSettings (valid accepted, invalid skipped)
-  const beamRoundtrip = sanitizeImportedSettings(JSON.stringify(cleanExport));
+  // Roundtrip sidebarRunningBeamStyle + tokenUnit/currency through sanitizeImportedSettings; legacy cnyRate is cleanly skipped
+  const beamRoundtrip = sanitizeImportedSettings(JSON.stringify({ ...cleanExport, settings: { ...cleanExport.settings, cnyRate: 7.2 } }));
   assert.equal(beamRoundtrip.patch.sidebarRunningBeamStyle, 'pulse-outside');
   assert.equal(beamRoundtrip.patch.tokenUnit, 'zh');
   assert.equal(beamRoundtrip.patch.currency, 'CNY');
-  assert.equal(beamRoundtrip.patch.cnyRate, 7.45);
+  assert.equal(Object.hasOwn(beamRoundtrip.patch, 'cnyRate'), false);
+  assert.ok(beamRoundtrip.skippedKeys.includes('cnyRate'));
   const beamInnerImport = sanitizeImportedSettings({
     format: SETTINGS_EXPORT_FORMAT,
     schemaVersion: 1,
@@ -273,7 +274,7 @@ test('stripProxyUrlCredentials and exportSettingsPayload strip proxy auth and ex
   const beamBadImport = sanitizeImportedSettings({
     format: SETTINGS_EXPORT_FORMAT,
     schemaVersion: 1,
-    settings: { sidebarRunningBeam: true, sidebarRunningBeamStyle: 'invalid-style', tokenUnit: 'invalid', currency: 'EUR', cnyRate: 0.01 }
+    settings: { sidebarRunningBeam: true, sidebarRunningBeamStyle: 'invalid-style', tokenUnit: 'invalid', currency: 'EUR', cnyRate: 7.2 }
   });
   assert.deepEqual(beamBadImport.patch, { sidebarRunningBeam: true });
   assert.deepEqual(beamBadImport.skippedKeys.sort(), ['cnyRate', 'currency', 'sidebarRunningBeamStyle', 'tokenUnit']);

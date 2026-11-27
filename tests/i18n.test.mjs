@@ -88,7 +88,7 @@ test('Traditional Chinese (zh-TW) uses Taiwan IT terminology, converts UI string
   assert.equal(toZhTw('无缝切换渐变红色动画，悬停查看，通过拖拽置顶'), '無縫切換漸變紅色動畫，懸停查看，透過拖曳置頂');
   assert.equal(toZhTw('21小时53分18秒'), '21小時53分18秒');
   assert.equal(toZhTw('Token 计数单位：K / M / B（国际通用）或 万 / 亿（中文计数）'), 'Token 計數單位：K / M / B（國際通用）或 萬 / 億（中文計數）');
-  assert.equal(toZhTw('费用显示币种：人民币 (¥)，参考汇率 (USD -> CNY)'), '費用顯示幣種：人民幣 (¥)，參考匯率 (USD -> CNY)');
+  assert.equal(toZhTw('费用显示币种：人民币 (¥) / 美元 ($)'), '費用顯示幣種：人民幣 (¥) / 美元 ($)');
   assert.doesNotMatch(readFileSync('lib/zh-tw.mjs', 'utf8'), /'仍'\s*:\s*'仍'/);
   const simplifiedOnly=/[万亿币种国与个为义于产仅从仓们价优会传体余侧关内写准减凑凭击划则刚创删务动区协单占却历压参发变号后听启周响唤围图圆场声处备头夹实审对导将尝尽层带帮并广库应开异强归当录径忆态总战执扩扬抢护报担拦择挂换据数断无旧时昵显暂机权条来栏树样档检汇没洁浅测浏滚满点热状独环现电监盘码确碍离积称稳筛签简类紧级线组细织终结给络绝统继续缓编缩网联脑范营补装观规视览触计订认让议记许设访证识诊试话询该详语误说请读调败账费资转轮软载较辅辑输边过运这进远违连迟适选遥邮采钟钥钮链销错键长闭问闲间阅队阶际险随隐静页顶项顺顿预频题额风馈驻验骤麦标彻么释谈极扫经齐绪购买维铺迁滞册办学杠盖纯纲胶脚觉脉晕]/;
   for(const file of ['lib/native-i18n.js','lib/native-panels.js','lib/native-sidebar-monitor.js','lib/native-sidebar-drop.mjs','lib/native-ui.js','lib/sidecar-ui.mjs']){
@@ -361,8 +361,8 @@ test('every pack covers the native catalog, static UI calls, and sidebar menus',
   const basePatternRegexes = getLocalePack(packLanguages[0]).patterns.map(([pattern]) => pattern);
   const mismatchToastEn = 'Account switch failed: logged in as another account. Please re-login the target account.';
   const mismatchToastZh = '切号未生效：当前登录的仍是其他账号，已标记目标凭据失效，请重新登录目标账号。';
-  const WORKED_RE = /^(?:Worked for\b|用时(?:\s|$)|用時(?:\s|$)|Durée\s*:|作業時間(?:\s|$)|작업 시간(?:\s|$)|Bearbeitungszeit(?:\s|$)|Tiempo de trabajo(?:\s|$)|Время работы(?:\s|$))/;
-  const UPDATES_RE = /(?:[\u00b7\u2022\-]\s*)?(\d+)\s+(?:updates?\b|条进度|條進度|étapes?\b|件の更新|개 업데이트|Aktualisierung(?:en)?\b|actualizaci[oó]n(?:es)?\b|обновлени\S*)/i;
+  const WORKED_RE = /^(?:Worked for\b|用时(?:\s|$)|用時(?:\s|$)|Durée\s*:|作業時間(?:\s|$)|작업 시간(?:\s|$)|Bearbeitungszeit(?:\s|$)|Tiempo de trabajo(?:\s|$)|Время работы(?:\s|$)|Đã xử lý(?:\s|$))/;
+  const UPDATES_RE = /(?:[\u00b7\u2022\-]\s*)?(\d+)\s+(?:updates?\b|条进度|條進度|étapes?\b|件の更新|개 업데이트|Aktualisierung(?:en)?\b|actualizaci[oó]n(?:es)?\b|обновлени\S*|cập nhật\b)/i;
   for (const lang of packLanguages) {
     const pack = getLocalePack(lang);
     for (const key of nativeKeys) if (key && !/[\u3400-\u9fff]/u.test(key)) assert.ok(Object.hasOwn(pack.entries, key) && pack.entries[key]?.trim(), `${lang} entries parity: ${key}`);
@@ -373,7 +373,7 @@ test('every pack covers the native catalog, static UI calls, and sidebar menus',
       assert.ok(pack.uiEntries[beamKey]?.trim(), `${lang}: missing beam style key ${beamKey}`);
       assert.doesNotMatch(pack.uiEntries[beamKey], /[\u00b7\u2022\u2027\u30fb]|Pulse Inner|Pulse Outside/u, `${lang}: invalid beam style translation for ${beamKey}`);
     }
-    for (const settingsKey of ['Beams & Sidebar', 'Stats & Chat', 'Accounts & Proxy', 'Search settings…', 'No matching settings', 'Beams & halos', 'Sidebar & layout', 'Config & reset', 'Settings backup & reset', 'Token unit', 'K / M / B (International)', 'Wan / Yi (Chinese)', 'Display currency', 'USD ($)', 'CNY (¥)', 'Reference rate (USD -> CNY)', 'Price per 1M tokens (CNY)', 'Ref. rate', 'Reset 7.2']) {
+    for (const settingsKey of ['Beams & Sidebar', 'Stats & Chat', 'Accounts & Proxy', 'Search settings…', 'No matching settings', 'Beams & halos', 'Sidebar & layout', 'Config & reset', 'Settings backup & reset', 'Token unit', 'K / M / B (International)', 'Wan / Yi (Chinese)', 'Display currency', 'USD ($)', 'CNY (¥)', 'Price per 1M tokens (CNY)']) {
       assert.ok(pack.uiEntries[settingsKey]?.trim(), `${lang}: missing Settings category/search key ${settingsKey}`);
       assert.doesNotMatch(pack.uiEntries[settingsKey], /[\u00b7\u2022\u2027\u30fb]/u, `${lang}: forbidden dot in Settings key ${settingsKey}`);
     }
@@ -381,6 +381,9 @@ test('every pack covers the native catalog, static UI calls, and sidebar menus',
     assert.equal(Object.hasOwn(pack.uiEntries, 'Default quota window'), false, `${lang}: stale Default quota window key`);
     assert.equal(Object.hasOwn(pack.uiEntries, 'Pulse Inner'), false, `${lang}: stale Pulse Inner key`);
     assert.equal(Object.hasOwn(pack.uiEntries, 'Pulse Outside'), false, `${lang}: stale Pulse Outside key`);
+    for (const staleKey of ['Reference rate (USD -> CNY)', 'Display conversion only; local records and official prices stay in USD.', 'Rate must be between 0.1 and 1000', 'Ref. rate', 'Reset 7.2']) {
+      assert.equal(Object.hasOwn(pack.uiEntries, staleKey), false, `${lang}: stale ${staleKey} key`);
+    }
     assert.deepEqual(pack.patterns.map(([pattern]) => pattern), basePatternRegexes, `${lang}: pattern parity`);
     for (const [pattern] of pack.patterns) assert.doesNotThrow(()=>new RegExp(pattern));
     assert.deepEqual(JSON.parse(JSON.stringify(pack)),pack);
@@ -399,6 +402,18 @@ test('every pack covers the native catalog, static UI calls, and sidebar menus',
       assert.match(rendered, UPDATES_RE, `${lang}: ${rendered}`);
     }
     assert.match(t('Worked for 5m', lang), WORKED_RE);
+    if (lang === 'vi') {
+      assert.equal(pack.uiEntries['Worked for'], 'Đã xử lý');
+      assert.equal(t('Worked for', 'vi'), 'Đã xử lý');
+      assert.equal(t('Worked for 8m 28s \u00b7 4 updates', 'vi'), 'Đã xử lý 8p 28s - 4 cập nhật');
+      assert.equal(t('Resets in 3h 33m', 'vi'), 'Đặt lại sau 3g 33p');
+      assert.match(t('You have used some of your weekly limit, it will fully refresh in 3 days, 11 hours.', 'vi'), /3 ngày 11 giờ/);
+      const frPack = getLocalePack('fr');
+      for (const bucket of ['entries', 'uiEntries', 'sidecar']) {
+        assert.deepEqual(Object.keys(pack[bucket]).sort(), Object.keys(frPack[bucket]).sort(), `vi ${bucket} key parity with fr`);
+      }
+      assert.equal(pack.months.length, frPack.months.length);
+    }
   }
 });
 
@@ -429,7 +444,7 @@ test('switching all languages restores text and leaves project names and code un
   assert.equal(nodes[1].nodeValue,'Sort Projects');
 });
 
-test('sidebar menu-only labels translate only inside menu contexts across all 9 languages', () => {
+test('sidebar menu-only labels translate only inside menu contexts across all 10 languages', () => {
   const matchesSelector = (sel, area) => Boolean(area) && sel.split(',').includes(area);
   const makeNode = (text, area) => {
     const state = { area };
@@ -467,7 +482,7 @@ test('sidebar menu-only labels translate only inside menu contexts across all 9 
     return lang === 'zh-TW' ? toZhTw(expectedZhCn[label]) : expectedZhCn[label];
   };
 
-  assert.deepEqual(SUPPORTED_LANGUAGES, ['zh-CN', 'zh-TW', 'en', 'fr', 'ja', 'ko', 'de', 'es', 'ru']);
+  assert.deepEqual(SUPPORTED_LANGUAGES, ['zh-CN', 'zh-TW', 'en', 'fr', 'ja', 'ko', 'de', 'es', 'ru', 'vi']);
 
   const menuNodes = menuLabels.map(label => makeNode(label, '[role="menu"]'));
   const altMenuNodes = ['[role="menuitem"]', '[role="menuitemradio"]', '[role="listbox"]', 'label'].map(area => makeNode('Sort Projects', area));
@@ -550,8 +565,8 @@ test('sidebar menu-only labels translate only inside menu contexts across all 9 
   }
 });
 
-test('locale data and the nine guides exclude forbidden separators', () => {
-  const files=['README.md','README_EN.md',...['ZH_TW','FR','JA','KO','DE','ES','RU'].map(x=>`docs/README_${x}.md`),...['index',...packLanguages].map(x=>`lib/locales/${x}.mjs`)];
+test('locale data and all localized guides exclude forbidden separators', () => {
+  const files=['README.md','README_EN.md',...['ZH_TW','FR','JA','KO','DE','ES','RU','VI'].map(x=>`docs/README_${x}.md`),...['index',...packLanguages].map(x=>`lib/locales/${x}.mjs`)];
   for (const file of files) assert.doesNotMatch(readFileSync(file,'utf8'),/[\u00b7\u2022\u2027\u30fb]/u,file);
 });
 
@@ -585,7 +600,7 @@ test('disabled integration serves the selected pack and scoped overrides through
   } finally {await stop?.();globalThis.fetch=fetchBefore;rmSync(dataDir,{recursive:true,force:true});}
 });
 
-test('PR #83 selective absorption protects conversation titles, scopes risky single-word controls, and syncs structured patterns across all 9 languages', () => {
+test('PR #83 selective absorption protects conversation titles, scopes risky single-word controls, and syncs structured patterns across all 10 languages', () => {
   const source = readFileSync('lib/native-i18n.js', 'utf8');
   // Do NOT include PR #84 premature overlay selectors
   assert.equal(source.includes('data-agy-translate-root'), false);
