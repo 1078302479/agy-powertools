@@ -224,6 +224,11 @@ sh ./install.sh
 
 ## 更新日志
 
+### v2.16.10
+- **修复独立代理下 HTTPS 隧道被跳过导致检查更新失败（PR #92，closes #90，感谢 `@qimengdunjia`）**：将 [proxy.mjs](lib/proxy.mjs) 中 `httpsGetThroughProxy` 由 `agent: false` 改为复用绑定 `tlsSocket` 的独立 `https.Agent({ keepAlive: false })`，同步保持响应体流式读取期间的 `AbortSignal` 中止有效与非 HTTPS 跳转防回退，并将 `update.check`、`update.autoCheck`、`update.install` 的前端 RPC 超时对齐至 18 秒。
+- **修复长任务每次工具调用重绘输入框底栏引发的 Windows IME 悬浮窗闪烁（#89）**：将 `composerRingSig` 精简为仅跟踪底栏按钮可见字段（按开关条件门控），同时让展开的上下文窗口与会话统计浮窗直接读取实时状态，既消除无谓重绘又保持弹窗数据实时刷新。
+- **新增个人配置导入与导出功能（#88）**：在「设置」页底部新增「导出配置 / 导入配置」（`agy-powertools-settings.json`），仅导出白名单偏好并自动剥离代理 URL 账密（绝不导出多账号凭据、Token 或本地缓存），保留 `enabled` / `multiAccount` / `autoSwitchAccount` 本机状态；导入时支持向前兼容未知字段、跨系统缺失字体非致命回退默认，并完整适配九种语言错误提示与并发语言包热拉取。
+
 ### v2.16.9
 - **重构 Windows 重启器为静态纯 Node.js 脚本，消除企业杀软/EDR 高危误报特征**：
   - 新增随包下发、受 SHA-256 校验的静态 `scripts/relaunch-worker.mjs` 与明面可见的 `scripts/relaunch-antigravity.cmd`，彻底移除重启链路中的 PowerShell、动态 `.ps1` / `.lnk` 投放、`WScript.Shell`、`-WindowStyle Hidden`、`-ExecutionPolicy Bypass`、嵌套 PowerShell、WMI 与脚本自删行为，并对任务 JSON 实施严格目标文件名、60 秒时效、参数/环境变量白名单与路径穿越校验；关闭旧进程改用单次批量 `taskkill.exe` 温和关闭加 Node 内置 `process.kill` 兜底，拉起新实例经 libuv `detached + stdio: 'ignore'` 彻底隔离 Windows Terminal ConPTY。

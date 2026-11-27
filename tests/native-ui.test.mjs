@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
+import { getLocalePack } from '../lib/locales/index.mjs';
+import { toZhTw } from '../lib/zh-tw.mjs';
 
 const source = readFileSync(new URL('../lib/native-ui.js', import.meta.url), 'utf8');
 
@@ -2944,4 +2946,852 @@ test('composer popover buttons retain accessible names without hover tips', () =
     assert.match(props, /'aria-label': t\('[^']+'\)/);
     assert.doesNotMatch(props, /data-pt-tip/);
   }
+});
+
+test('Issue #89: composer ring skips re-renders on popover-only changes while open popovers stay live', async () => {
+  const p = page(true);
+  p.context.location.pathname = '/c/conv-ime-89';
+  const intervals = [];
+  let fakeNow = 1_795_950_000_000;
+  p.context.Date = class extends Date { static now() { return fakeNow; } };
+  p.context.setInterval = (fn, ms) => { const entry = { fn, ms }; intervals.push(entry); return intervals.length; };
+  p.context.clearInterval = () => {};
+
+  let ringRenders = 0;
+  let lastRingEl = null;
+  const card = { isConnected: true, children: [], insertBefore(n) { n.isConnected = true; this.children.push(n); } };
+  const flexParent = { isConnected: true, children: [], insertBefore(n) { n.isConnected = true; this.children.push(n); } };
+  const model = {
+    isConnected: true,
+    textContent: 'Gemini 4 Carbon',
+    parentElement: flexParent,
+    nextSibling: null,
+    closest: sel => sel === '.surface-composer-card' ? card : null
+  };
+  p.document.querySelectorAll = sel => (sel === '[data-testid="model-selector-trigger"]' ? [model] : []);
+  p.context.getComputedStyle = () => ({ display: 'flex' });
+  p.context.React = {
+    createElement: (type, props, ...children) => ({ type, props: props || {}, children }),
+    Fragment: 'fragment',
+    useEffect() {},
+    useState: init => [typeof init === 'function' ? init() : init, () => {}],
+    useSyncExternalStore: (_, getSnap) => getSnap()
+  };
+  p.context.HC = () => null;
+  p.context.IC = 'IC';
+  p.context.JC = 'JC';
+  p.context.Uy = 'Uy';
+  p.context.k0 = 'k0';
+  p.context.__agyDashboard = { cacheObservation: () => null };
+  p.context.ReactDOM = {
+    createRoot(mount) {
+      return {
+        render(tree) {
+          if (mount.dataset?.agyPowertoolsRoot === 'ring') {
+            ringRenders++;
+            lastRingEl = tree;
+          }
+        },
+        unmount() {}
+      };
+    }
+  };
+  p.context.__agyNativeAdapter.wrap = el => el;
+  p.context.__agyNativeAdapter.composerCascadeId = () => 'conv-ime-89';
+  p.context.__agyNativeAdapter.executionState = () => ({ conversationId: 'conv-ime-89', status: 2 });
+
+  const serverState = {
+    conversationId: 'conv-ime-89',
+    modelName: 'Gemini 4 Carbon',
+    costUsd: 0.05,
+    contextWindow: {
+      usedTokens: 50000,
+      maxTokens: 1000000,
+      usedPercent: 5,
+      inputTokens: 1000,
+      cacheReadTokens: 49000,
+      compactedPending: false,
+      compactions: 0,
+      categories: [{ key: 'chat', label: 'Chat Messages', tokens: 50000, percent: 5 }],
+      models: []
+    },
+    telemetry: {
+      turnCount: 1,
+      stepCount: 3,
+      totalTokens: 50000,
+      requestCount: 2,
+      errorCount: 0,
+      toolCount: 1,
+      tps: 55,
+      peakTps: 60,
+      latestTps: 55,
+      cacheHitPercent: 98,
+      inputTokens: 1000,
+      cacheReadTokens: 49000,
+      outputTokens: 200,
+      thinkingTokens: 0,
+      modelTimeMs: 1000,
+      toolTimeMs: 500,
+      avgTtftMs: 200
+    },
+    progress: { status: 'running', phase: 'tools', toolCount: 1, recentActivity: [], tasks: [] },
+    turns: [{ turnNumber: 1, status: 'running' }],
+    requests: [{ id: 'req-1', timestampMs: fakeNow - 2000 }],
+    errors: []
+  };
+
+  p.context.__agyPowertoolsHost = raw => {
+    const req = JSON.parse(raw);
+    queueMicrotask(() => {
+      if (req.method === 'settings.get') {
+        p.context.__agyPowertoolsReceive(req.id, { enabled: true, contextRing: true, speedStats: true, language: 'zh-CN' });
+      } else if (req.method === 'state') {
+        p.context.__agyPowertoolsReceive(req.id, JSON.parse(JSON.stringify(serverState)));
+      } else {
+        p.context.__agyPowertoolsReceive(req.id, { ok: true });
+      }
+    });
+  };
+  p.context.__agyInitialSettings = { enabled: true, contextRing: true, speedStats: true, language: 'zh-CN' };
+  vm.runInContext(source, p.context);
+  await new Promise(r => setTimeout(r, 25));
+
+  assert.ok(ringRenders >= 1);
+  const initialRingTree = lastRingEl.type(lastRingEl.props);
+  const collectText = node => {
+    if (node == null || typeof node === 'boolean') return '';
+    if (typeof node === 'string' || typeof node === 'number') return String(node);
+    if (Array.isArray(node)) return node.map(collectText).join(' ');
+    if (typeof node === 'object') {
+      if (typeof node.type === 'function') return collectText(node.type(node.props));
+      return collectText(node.children);
+    }
+    return '';
+  };
+  const findNode = (node, pred) => {
+    if (!node || typeof node !== 'object') return null;
+    if (pred(node)) return node;
+    for (const c of Array.isArray(node.children) ? node.children : [node.children]) {
+      const hit = findNode(c, pred);
+      if (hit) return hit;
+    }
+    return null;
+  };
+  const ctxPopup = findNode(initialRingTree, n => n.props?.['data-testid'] === 'agy-context-popup');
+  const statsPopup = findNode(initialRingTree, n => n.props?.['data-testid'] === 'agy-stats-popup');
+  const ctxDetailsEl = ctxPopup.children[0];
+  const statsDetailsEl = statsPopup.children[0];
+  assert.equal(typeof ctxDetailsEl.type, 'function');
+  assert.equal(typeof statsDetailsEl.type, 'function');
+
+  const mainPoll = intervals.find(i => i.ms === 2000);
+  const poll = async () => {
+    fakeNow += 2000;
+    mainPoll.fn();
+    await new Promise(r => setTimeout(r, 20));
+  };
+
+  // Mutate popover-only fields (stepCount, toolCount, costUsd, cacheReadTokens, peakTps, compactions)
+  // while keeping closed composer trigger values (usedPercent, compactedPending, latestTps) unchanged.
+  const rendersBeforePopoverChanges = ringRenders;
+  serverState.costUsd = 0.42;
+  serverState.contextWindow.cacheReadTokens = 48500;
+  serverState.contextWindow.inputTokens = 1500;
+  serverState.contextWindow.compactions = 1;
+  serverState.telemetry.stepCount = 14;
+  serverState.telemetry.toolCount = 9;
+  serverState.telemetry.peakTps = 112;
+  serverState.telemetry.totalTokens = 92000;
+  await poll();
+
+  assert.equal(ringRenders, rendersBeforePopoverChanges, 'popover-only telemetry changes must not re-render composer ring root');
+
+  // Re-rendering already-mounted popovers with their original stale data prop must read fresh live state via stateForConversation()
+  const freshCtxText = collectText(ctxDetailsEl.type(ctxDetailsEl.props));
+  assert.match(freshCtxText, /已压缩 1 次/);
+  assert.match(freshCtxText, /48\.5k/);
+  assert.match(freshCtxText, /1\.5k/);
+
+  const freshStatsText = collectText(statsDetailsEl.type(statsDetailsEl.props));
+  assert.match(freshStatsText, /1 \/ 14/);
+  assert.match(freshStatsText, /92\.0k/);
+  assert.match(freshStatsText, /\$0\.42/);
+  assert.match(freshStatsText, /112 tok\/s/);
+
+  // Subagent ContextDetails must keep using its own passed stats rather than main conversation state
+  const subCtxText = collectText(ctxDetailsEl.type({
+    isSubagent: true,
+    data: {
+      conversationId: 'conv-ime-89',
+      contextWindow: { usedTokens: 12000, maxTokens: 200000, usedPercent: 6, compactions: 3, categories: [] },
+      telemetry: {}
+    }
+  }));
+  assert.match(subCtxText, /已压缩 3 次/);
+  assert.match(subCtxText, /已使用 6%/);
+
+  // Mutating closed-button visible fields MUST re-render the composer ring root
+  serverState.contextWindow.usedPercent = 6.5;
+  await poll();
+  assert.equal(ringRenders, rendersBeforePopoverChanges + 1);
+
+  serverState.contextWindow.compactedPending = true;
+  await poll();
+  assert.equal(ringRenders, rendersBeforePopoverChanges + 2);
+
+  serverState.telemetry.latestTps = 72;
+  await poll();
+  assert.equal(ringRenders, rendersBeforePopoverChanges + 3);
+
+  p.context.__agyPowertools.dispose();
+});
+
+test('PR #92: update RPC methods use 18000 ms timeout alongside pricing.refresh', async () => {
+  const p = page(true);
+  const timeoutByMethod = new Map();
+  let pendingMs = 0;
+  p.context.setTimeout = (_fn, ms) => { pendingMs = ms; return 1; };
+  let capturedEnv = null;
+  p.context.__agyPanels = env => { capturedEnv = env; return { dispose() {} }; };
+  p.context.__agyNativeAdapter.installPage = () => true;
+  p.context.__agyPowertoolsHost = raw => {
+    const req = JSON.parse(raw);
+    if (!timeoutByMethod.has(req.method)) timeoutByMethod.set(req.method, pendingMs);
+    queueMicrotask(() => p.context.__agyPowertoolsReceive(req.id, { ok: true }));
+  };
+  p.context.__agyInitialSettings = { enabled: true, language: 'zh-CN' };
+  vm.runInContext(source, p.context);
+  await new Promise(r => setImmediate(r));
+
+  for (const method of ['pricing.refresh', 'update.check', 'update.autoCheck', 'update.install', 'settings.export']) {
+    pendingMs = 0;
+    await capturedEnv.request(method, { version: '2.17.0' });
+  }
+  assert.equal(timeoutByMethod.get('pricing.refresh'), 18000);
+  assert.equal(timeoutByMethod.get('update.check'), 18000);
+  assert.equal(timeoutByMethod.get('update.autoCheck'), 18000);
+  assert.equal(timeoutByMethod.get('update.install'), 18000);
+  assert.equal(timeoutByMethod.get('settings.export'), 10000);
+
+  p.context.__agyPowertools.dispose();
+});
+
+test('Issue #88: exportSettings/importSettings handle downloads, size guards, cross-OS missing fonts, and Settings UI renders clean feedback without middle dots', async () => {
+  // Part A: native-ui env.exportSettings & env.importSettings
+  const p = fontPage({ enabled: true, compact: true, language: 'zh-CN', pricingMode: 'standard', proxyEnabled: false, proxyUrl: '' });
+  const downloads = [];
+  const revokedUrls = [];
+  let createdBlobText = '';
+  p.context.Blob = class MockBlob {
+    constructor(parts, opts) { this.parts = parts; this.type = opts?.type || ''; createdBlobText = parts.join(''); }
+  };
+  p.context.URL = {
+    createObjectURL: () => 'blob:mock-settings-1',
+    revokeObjectURL: url => { revokedUrls.push(url); }
+  };
+  const origCreateEl = p.document.createElement;
+  p.document.createElement = tag => {
+    if (tag === 'a') {
+      const a = { tagName: 'A', style: {}, clicked: false, removed: false, click() { this.clicked = true; downloads.push({ href: this.href, download: this.download }); }, remove() { this.removed = true; } };
+      return a;
+    }
+    return origCreateEl(tag);
+  };
+  const rpcCalls = [];
+  let storedSettings = { enabled: true, compact: true, language: 'zh-CN', pricingMode: 'standard', customFont: '', customFontWeight: 0 };
+  p.context.__agyPowertoolsHost = raw => {
+    const req = JSON.parse(raw);
+    rpcCalls.push(req);
+    queueMicrotask(() => {
+      if (req.method === 'settings.export') {
+        p.context.__agyPowertoolsReceive(req.id, {
+          format: 'agy-powertools-settings',
+          schemaVersion: 1,
+          pluginVersion: '2.16.9',
+          exportedAt: '2026-11-27T00:00:00.000Z',
+          settings: { ...storedSettings },
+          strippedProxyAuth: true
+        });
+      } else if (req.method === 'settings.import') {
+        const parsed = JSON.parse(req.payload);
+        storedSettings = { ...storedSettings, ...parsed.settings };
+        const importedKeys = Object.keys(parsed.settings || {});
+        p.context.__agyPowertoolsReceive(req.id, {
+          settings: { ...storedSettings },
+          appliedCount: 4,
+          importedKeys,
+          skippedKeys: ['futureFlag'],
+          strippedProxyAuth: true
+        });
+      } else if (req.method === 'settings.set') {
+        storedSettings = { ...storedSettings, ...req.settings };
+        p.context.__agyPowertoolsReceive(req.id, { ...storedSettings });
+      } else if (req.method === 'i18n.pack') {
+        p.context.__agyPowertoolsReceive(req.id, { pack: null, custom: [] });
+      } else {
+        p.context.__agyPowertoolsReceive(req.id, { ...storedSettings });
+      }
+    });
+  };
+  await new Promise(r => setImmediate(r));
+
+  const expRes = await p.env.exportSettings();
+  assert.equal(expRes.ok, true);
+  assert.equal(expRes.strippedProxyAuth, true);
+  assert.equal(downloads.length, 1);
+  assert.equal(downloads[0].download, 'agy-powertools-settings.json');
+  assert.equal(downloads[0].href, 'blob:mock-settings-1');
+  assert.ok(createdBlobText.endsWith('\n'));
+  const exportedObj = JSON.parse(createdBlobText);
+  assert.equal(exportedObj.format, 'agy-powertools-settings');
+  assert.equal(exportedObj.schemaVersion, 1);
+  assert.equal('strippedProxyAuth' in exportedObj, false);
+
+  await assert.rejects(() => p.env.importSettings('   '), /为空|empty/i);
+  await assert.rejects(() => p.env.importSettings('a'.repeat(128 * 1024 + 1)), /128 KB/);
+
+  const importPayload = JSON.stringify({
+    format: 'agy-powertools-settings',
+    schemaVersion: 1,
+    settings: { compact: false, language: 'en', pricingMode: 'promo', customFont: 'PingFang SC', customFontWeight: 500 }
+  });
+  const impRes = await p.env.importSettings(importPayload);
+  assert.equal(impRes.ok, true);
+  assert.equal(impRes.appliedCount, 4);
+  assert.deepEqual(Array.from(impRes.skippedKeys), ['futureFlag']);
+  assert.equal(impRes.strippedProxyAuth, true);
+  assert.equal(impRes.missingFont, 'PingFang SC');
+  assert.equal(p.env.options().compact, false);
+  assert.equal(p.env.options().language, 'en');
+  assert.equal(p.env.options().pricingMode, 'promo');
+  assert.equal(p.env.options().customFont, '');
+  assert.equal(p.env.options().customFontWeight, 0);
+  assert.equal(p.env.customFontError(), '');
+  assert.ok(rpcCalls.some(c => c.method === 'settings.set' && c.settings?.customFont === '' && c.settings?.customFontWeight === 0));
+  p.context.__agyPowertools.dispose();
+
+  // Part B: native-panels Settings renders export/import controls and inline feedback without middle dots
+  const panelsCode = readFileSync(new URL('../lib/native-panels.js', import.meta.url), 'utf8');
+  const states = [];
+  const refs = [];
+  let stateIdx = 0, refIdx = 0;
+  const React = {
+    createElement: (type, props, ...children) => ({ type, props: props || {}, children }),
+    Fragment: 'fragment',
+    useId: () => 'id-88',
+    useState: init => {
+      const i = stateIdx++;
+      if (!(i in states)) states[i] = typeof init === 'function' ? init() : init;
+      return [states[i], val => { states[i] = typeof val === 'function' ? val(states[i]) : val; }];
+    },
+    useRef: init => {
+      const i = refIdx++;
+      if (!(i in refs)) refs[i] = { current: init };
+      return refs[i];
+    },
+    useEffect() {},
+    useSyncExternalStore: (_, getSnap) => getSnap()
+  };
+  const wrapTag = name => ({ children, ...props }) => React.createElement(name, props, ...(Array.isArray(children) ? children : [children]));
+  const panelCtx = vm.createContext({
+    React,
+    Intl,
+    URL,
+    document: { createElement: tag => ({ tagName: tag, dataset: {}, textContent: '', remove() {} }), head: { append() {} } },
+    localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+    __agyDashboard: {
+      dateRange: () => ({ preset: 'weeklyQuota', start: 0, end: 1, activePools: [], status: 'unstarted' }),
+      summarizeRequests: () => ({ requests: [], success: 0, errors: 0, tokens: 0, inputTokens: 0, cacheReadTokens: 0, outputTokens: 0, cost: 0, priced: 0, points: [], models: [] }),
+      distributionModels: () => [],
+      subscriptionIdentity: () => ({ family: 'pro', style: 'pro', label: 'Pro' }),
+      annotateCacheAnomalies: () => new Map()
+    },
+    setInterval: () => 1,
+    clearInterval: () => {},
+    Uy: 'button',
+    Sy: 'tooltip',
+    dq: ({ name }) => ({ type: 'icon', props: { name }, children: [] }),
+    kT: wrapTag('kT'), lT: wrapTag('lT'), mT: wrapTag('mT'), nT: wrapTag('nT'),
+    HC: wrapTag('HC'), IC: wrapTag('IC'), JC: wrapTag('JC'),
+    VP: wrapTag('VP'), TP: wrapTag('TP'), UP: wrapTag('UP'), XP: wrapTag('XP')
+  });
+  vm.runInContext(panelsCode, panelCtx);
+
+  let exportCalls = 0;
+  const importPayloads = [];
+  let importMode = 'ok';
+  const currentOpts = { enabled: true, language: 'zh-CN', multiAccount: false, contextLimit: 0, sidebarProjectLimit: 0, overviewRange: 'weeklyQuota', pricingMode: 'standard' };
+  const panels = panelCtx.__agyPanels({
+    t: v => v,
+    version: '2.16.9',
+    defaults: { ...currentOpts },
+    project: {},
+    options: () => currentOpts,
+    dashboard: () => null,
+    loadDashboard: () => Promise.resolve(null),
+    subscribe: () => () => {},
+    revision: () => 0,
+    consumeRequestedTab: () => 'settings',
+    state: () => ({ contextWindow: { maxTokens: 1000000 } }),
+    settingsError: () => '',
+    customFontError: () => '',
+    customFontNotice: () => '',
+    fontInfo: () => ({}),
+    capabilities: () => ({ models: [] }),
+    change: async () => {},
+    resetSettings: async () => {},
+    exportSettings: async () => { exportCalls++; return { ok: true, strippedProxyAuth: true }; },
+    importSettings: async raw => {
+      importPayloads.push(raw);
+      if (importMode === 'error') throw new Error('Invalid settings format');
+      return { ok: true, appliedCount: 5, skippedKeys: [], strippedProxyAuth: true, missingFont: 'PingFang SC' };
+    }
+  });
+
+  const findByTestId = (node, tid) => {
+    if (!node || typeof node !== 'object') return null;
+    if (node.props?.['data-testid'] === tid) return node;
+    for (const child of Array.isArray(node.children) ? node.children : [node.children]) {
+      const hit = findByTestId(child, tid);
+      if (hit) return hit;
+    }
+    return null;
+  };
+  const renderSettings = () => {
+    stateIdx = 0; refIdx = 0;
+    const pageTree = panels.Page();
+    const settingsComp = pageTree.children[1].children[1].children[0];
+    stateIdx = 20; refIdx = 20;
+    return settingsComp.type(settingsComp.props);
+  };
+
+  let tree = renderSettings();
+  const exportBtn = findByTestId(tree, 'agy-export-settings-btn');
+  const importBtn = findByTestId(tree, 'agy-import-settings-btn');
+  const importInput = findByTestId(tree, 'agy-import-settings-input');
+  assert.ok(exportBtn);
+  assert.ok(importBtn);
+  assert.ok(importInput);
+  assert.equal(importInput.props.accept, '.json,application/json');
+
+  // Clicking export calls env.exportSettings and renders clean status without middle dots
+  exportBtn.props.onClick();
+  await new Promise(r => setImmediate(r));
+  assert.equal(exportCalls, 1);
+  tree = renderSettings();
+  const exportStatus = findByTestId(tree, 'agy-settings-transfer-status');
+  assert.ok(exportStatus);
+  assert.equal(exportStatus.props.role, 'status');
+  const exportMsg = exportStatus.children.join('');
+  assert.match(exportMsg, /已导出配置/);
+  assert.match(exportMsg, /代理账号密码/);
+  assert.doesNotMatch(exportMsg, /[\u00b7\u2022\u2027\u30fb]/);
+
+  // Clicking import triggers hidden file input click, and selecting a file calls env.importSettings
+  let inputClicked = false;
+  importInput.props.ref.current = { click() { inputClicked = true; }, value: 'backup.json' };
+  importBtn.props.onClick();
+  assert.equal(inputClicked, true);
+
+  await importInput.props.onChange({
+    target: {
+      value: 'backup.json',
+      files: [{ size: 42, text: async () => '{"format":"agy-powertools-settings"}' }]
+    }
+  });
+  assert.deepEqual(importPayloads, ['{"format":"agy-powertools-settings"}']);
+  tree = renderSettings();
+  const importStatus = findByTestId(tree, 'agy-settings-transfer-status');
+  assert.ok(importStatus);
+  assert.equal(importStatus.props.role, 'status');
+  const importMsg = importStatus.children.join('');
+  assert.match(importMsg, /已导入配置/);
+  assert.match(importMsg, /5/);
+  assert.match(importMsg, /PingFang SC/);
+  assert.match(importMsg, /代理账号密码/);
+  assert.doesNotMatch(importMsg, /[\u00b7\u2022\u2027\u30fb]/);
+
+  // Invalid file renders inline error alert with zero middle dots
+  importMode = 'error';
+  await importInput.props.onChange({
+    target: {
+      value: 'bad.json',
+      files: [{ size: 12, text: async () => '{bad' }]
+    }
+  });
+  tree = renderSettings();
+  const errStatus = findByTestId(tree, 'agy-settings-transfer-status');
+  assert.ok(errStatus);
+  assert.equal(errStatus.props.role, 'alert');
+  assert.equal(errStatus.props['data-tone'], 'error');
+  const errMsg = errStatus.children.join('');
+  assert.match(errMsg, /导入失败/);
+  assert.match(errMsg, /Invalid settings format/);
+  assert.doesNotMatch(errMsg, /[\u00b7\u2022\u2027\u30fb]/);
+
+  panels.dispose();
+});
+
+test('partial import without customFont never invokes checkCustomFont or wipes existing customFont', async () => {
+  const p = fontPage({ enabled: true, compact: true, language: 'zh-CN', customFont: 'Uninstalled Local Font', customFontWeight: 500 });
+  let canvasMeasures = 0;
+  const origCreate = p.document.createElement;
+  p.document.createElement = tag => {
+    if (tag !== 'canvas') return origCreate(tag);
+    return {
+      getContext: () => ({
+        font: '',
+        measureText() {
+          canvasMeasures++;
+          return { width: 100 };
+        }
+      })
+    };
+  };
+  let stored = { enabled: true, compact: true, language: 'zh-CN', customFont: 'Uninstalled Local Font', customFontWeight: 500 };
+  const setCalls = [];
+  p.context.__agyPowertoolsHost = raw => {
+    const req = JSON.parse(raw);
+    queueMicrotask(() => {
+      if (req.method === 'settings.import') {
+        const parsed = JSON.parse(req.payload);
+        stored = { ...stored, ...parsed.settings };
+        p.context.__agyPowertoolsReceive(req.id, {
+          settings: { ...stored },
+          appliedCount: Object.keys(parsed.settings).length,
+          importedKeys: Object.keys(parsed.settings),
+          skippedKeys: [],
+          strippedProxyAuth: false
+        });
+      } else if (req.method === 'settings.set') {
+        setCalls.push(req.settings);
+        stored = { ...stored, ...req.settings };
+        p.context.__agyPowertoolsReceive(req.id, { ...stored });
+      } else if (req.method === 'settings.get') {
+        p.context.__agyPowertoolsReceive(req.id, { ...stored });
+      } else {
+        p.context.__agyPowertoolsReceive(req.id, {});
+      }
+    });
+  };
+  await new Promise(r => setImmediate(r));
+  canvasMeasures = 0;
+
+  const res = await p.env.importSettings(JSON.stringify({
+    format: 'agy-powertools-settings',
+    schemaVersion: 1,
+    settings: { compact: false }
+  }));
+  await new Promise(r => setImmediate(r));
+
+  assert.equal(res.ok, true);
+  assert.equal(res.appliedCount, 1);
+  assert.equal(res.missingFont, '');
+  assert.equal(canvasMeasures, 0, 'checkCustomFont must not run when customFont is not in importedKeys');
+  assert.equal(setCalls.length, 0, 'existing customFont must not be cleared via settings.set');
+  assert.equal(p.env.options().compact, false);
+  assert.equal(p.env.options().customFont, 'Uninstalled Local Font');
+  assert.equal(p.env.options().customFontWeight, 500);
+  p.context.__agyPowertools.dispose();
+});
+
+test('acceptSettings and refresh fetch i18n.pack when locale pack is missing even if language matches', async () => {
+  const p = page(true);
+  p.context.location.pathname = '/c/conv-lang-race';
+  let env;
+  p.context.__agyPanels = value => { env = value; return { dispose() {} }; };
+  p.context.__agyNativeAdapter.installPage = () => true;
+  p.context.__agyInitialSettings = { enabled: true, language: 'zh-CN' };
+  p.context.__agyLocalePack = null;
+
+  const packRequests = [];
+  let failPackOnce = true;
+  let stored = { enabled: true, language: 'zh-CN' };
+  p.context.__agyPowertoolsHost = raw => {
+    const req = JSON.parse(raw);
+    queueMicrotask(() => {
+      if (req.method === 'settings.get') {
+        p.context.__agyPowertoolsReceive(req.id, { ...stored });
+      } else if (req.method === 'settings.set') {
+        stored = { ...stored, ...req.settings };
+        p.context.__agyPowertoolsReceive(req.id, { ...stored });
+      } else if (req.method === 'i18n.pack') {
+        packRequests.push(req.language);
+        if (failPackOnce && req.language === 'ja') {
+          failPackOnce = false;
+          p.context.__agyPowertoolsReceive(req.id, { error: 'transient pack failure' });
+          return;
+        }
+        p.context.__agyPowertoolsReceive(req.id, { pack: getLocalePack(req.language), custom: [] });
+      } else if (req.method === 'state') {
+        p.context.__agyPowertoolsReceive(req.id, {
+          conversationId: 'conv-lang-race',
+          stateRev: 2,
+          settings: { ...stored },
+          contextWindow: {},
+          telemetry: {},
+          turns: [],
+          requests: []
+        });
+      } else {
+        p.context.__agyPowertoolsReceive(req.id, {});
+      }
+    });
+  };
+  vm.runInContext(source, p.context);
+  await new Promise(r => setImmediate(r));
+
+  // 1. Concurrent refresh delivers external language change to 'ja'; first i18n.pack fails transiently
+  //    so options.language becomes 'ja' while __agyLocalePack is still null.
+  stored = { enabled: true, language: 'ja' };
+  await env.refreshState();
+  assert.deepEqual(packRequests, ['ja']);
+  assert.equal(env.options().language, 'ja');
+  assert.equal(p.context.__agyLocalePack, null);
+
+  // 2. Next acceptSettings call with same language ('ja') must STILL fetch i18n.pack because __agyLocalePack?.lang !== 'ja'.
+  await env.change({ language: 'ja' });
+  assert.deepEqual(packRequests, ['ja', 'ja']);
+  assert.equal(p.context.__agyLocalePack?.lang, 'ja');
+
+  // 3. Another external language switch via refresh() to 'fr' fetches and installs the 'fr' pack cleanly.
+  stored = { enabled: true, language: 'fr' };
+  await env.refreshState();
+  assert.deepEqual(packRequests, ['ja', 'ja', 'fr']);
+  assert.equal(env.options().language, 'fr');
+  assert.equal(p.context.__agyLocalePack?.lang, 'fr');
+
+  p.context.__agyPowertools.dispose();
+});
+
+test('import validation error codes localize across zh-TW, en, fr, and ja without raw Simplified Chinese leaks or middle dots', async () => {
+  const errorCodes = [
+    'too-large',
+    'invalid-json',
+    'invalid-data',
+    'invalid-format',
+    'unsupported-version',
+    'missing-settings',
+    'no-applicable-settings'
+  ];
+  const simplifiedOnly = /[万与个为义于产仅从仓们价优会传体余侧关内写准减凑凭击划则刚创删务动区协单占却历压参发变号后听启周响唤围图圆场声处备头夹实审对导将尝尽层带帮并广库应开异强归当录径忆态总战执扩扬抢护报担拦择挂换据数断无旧时昵显暂机权条来栏树样档检汇没洁浅测浏滚满点热状独环现电监盘码确碍离积称稳筛签简类紧级线组细织终结给络绝统继续缓编缩网联脑范营补装观规视览触计订认让议记许设访证识诊试话询该详语误说请读调败账费资转轮软载较辅辑输边过运这进远违连迟适选遥邮采钟钥钮链销错键长闭问闲间阅队阶际险随隐静页顶项顺顿预频题额风馈驻验骤麦标彻]/;
+  const i18nSrc = readFileSync(new URL('../lib/native-i18n.js', import.meta.url), 'utf8');
+  const panelsSrc = readFileSync(new URL('../lib/native-panels.js', import.meta.url), 'utf8');
+
+  for (const lang of ['zh-TW', 'en', 'fr', 'ja']) {
+    // A. Test native-ui importSettings localization with simulated Simplified Chinese host error + errorCode
+    const p = fontPage({ enabled: true, language: lang });
+    p.context.__agyToZhTw = toZhTw;
+    p.context.__agyLocalePack = getLocalePack(lang);
+    p.context.NodeFilter = { SHOW_TEXT: 4 };
+    p.document.createTreeWalker = () => ({ nextNode: () => null });
+    vm.runInContext(i18nSrc, p.context);
+
+    let nextErrCode = 'invalid-format';
+    p.context.__agyPowertoolsHost = raw => {
+      const req = JSON.parse(raw);
+      queueMicrotask(() => {
+        if (req.method === 'settings.import') {
+          p.context.__agyPowertoolsReceive(req.id, {
+            error: '设置导入文件格式无效（原始简体）',
+            errorCode: nextErrCode
+          });
+        } else if (req.method === 'i18n.pack') {
+          p.context.__agyPowertoolsReceive(req.id, { pack: getLocalePack(req.language), custom: [] });
+        } else {
+          p.context.__agyPowertoolsReceive(req.id, { enabled: true, language: lang });
+        }
+      });
+    };
+    await new Promise(r => setImmediate(r));
+
+    for (const code of errorCodes) {
+      nextErrCode = code;
+      let caught = null;
+      try {
+        await p.env.importSettings('{"format":"test"}');
+      } catch (err) {
+        caught = err;
+      }
+      assert.ok(caught && typeof caught.message === 'string', `${lang}/${code}: expected rejection`);
+      assert.equal(caught.code, code);
+      assert.ok(caught.message.length > 0);
+      assert.doesNotMatch(caught.message, /原始简体/, `${lang}/${code}: leaked raw Simplified Chinese host message`);
+      assert.doesNotMatch(caught.message, /[\u00b7\u2022\u2027\u30fb]/, `${lang}/${code}: forbidden middle dot`);
+      if (lang === 'en' || lang === 'fr') {
+        assert.doesNotMatch(caught.message, /[\u4e00-\u9fff]/, `${lang}/${code}: unexpected CJK in "${caught.message}"`);
+      } else if (lang === 'zh-TW') {
+        assert.doesNotMatch(caught.message, simplifiedOnly, `${lang}/${code}: simplified glyph in "${caught.message}"`);
+      }
+    }
+    p.context.__agyPowertools.dispose();
+
+    // B. Test native-panels Settings renders localized error code in alert banner
+    const states = [];
+    const refs = [];
+    let stateIdx = 0, refIdx = 0;
+    const React = {
+      createElement: (type, props, ...children) => ({ type, props: props || {}, children }),
+      Fragment: 'fragment',
+      useId: () => 'id-i18n-err',
+      useState: init => {
+        const i = stateIdx++;
+        if (!(i in states)) states[i] = typeof init === 'function' ? init() : init;
+        return [states[i], val => { states[i] = typeof val === 'function' ? val(states[i]) : val; }];
+      },
+      useRef: init => {
+        const i = refIdx++;
+        if (!(i in refs)) refs[i] = { current: init };
+        return refs[i];
+      },
+      useEffect() {},
+      useSyncExternalStore: (_, getSnap) => getSnap()
+    };
+    const wrapTag = name => ({ children, ...props }) => React.createElement(name, props, ...(Array.isArray(children) ? children : [children]));
+    const panelDoc = {
+      nodeType: 9,
+      createElement: tag => ({ tagName: tag, dataset: {}, textContent: '', remove() {} }),
+      head: { append() {} },
+      createTreeWalker: () => ({ nextNode: () => null }),
+      querySelectorAll: () => []
+    };
+    const panelCtx = vm.createContext({
+      React, Intl, URL,
+      document: panelDoc,
+      NodeFilter: { SHOW_TEXT: 4 },
+      MutationObserver: class { observe() {} disconnect() {} },
+      localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+      __agyToZhTw: toZhTw,
+      __agyLocalePack: getLocalePack(lang),
+      __agyDashboard: {
+        dateRange: () => ({ preset: 'weeklyQuota', start: 0, end: 1, activePools: [], status: 'unstarted' }),
+        summarizeRequests: () => ({ requests: [], success: 0, errors: 0, tokens: 0, inputTokens: 0, cacheReadTokens: 0, outputTokens: 0, cost: 0, priced: 0, points: [], models: [] }),
+        distributionModels: () => [],
+        subscriptionIdentity: () => ({ family: 'pro', style: 'pro', label: 'Pro' }),
+        annotateCacheAnomalies: () => new Map()
+      },
+      setInterval: () => 1, clearInterval: () => {},
+      Uy: 'button', Sy: 'tooltip', dq: ({ name }) => ({ type: 'icon', props: { name }, children: [] }),
+      kT: wrapTag('kT'), lT: wrapTag('lT'), mT: wrapTag('mT'), nT: wrapTag('nT'),
+      HC: wrapTag('HC'), IC: wrapTag('IC'), JC: wrapTag('JC'),
+      VP: wrapTag('VP'), TP: wrapTag('TP'), UP: wrapTag('UP'), XP: wrapTag('XP')
+    });
+    vm.runInContext(i18nSrc, panelCtx);
+    vm.runInContext(panelsSrc, panelCtx);
+
+    const currentOpts = { enabled: true, language: lang, multiAccount: false, contextLimit: 0, sidebarProjectLimit: 0, overviewRange: 'weeklyQuota', pricingMode: 'standard' };
+    const panels = panelCtx.__agyPanels({
+      t: v => panelCtx.__agyI18n.t(v, lang),
+      version: '2.16.9',
+      defaults: { ...currentOpts },
+      project: {},
+      options: () => currentOpts,
+      dashboard: () => null,
+      loadDashboard: () => Promise.resolve(null),
+      subscribe: () => () => {},
+      revision: () => 0,
+      consumeRequestedTab: () => 'settings',
+      state: () => ({ contextWindow: { maxTokens: 1000000 } }),
+      settingsError: () => '',
+      customFontError: () => '',
+      customFontNotice: () => '',
+      fontInfo: () => ({}),
+      capabilities: () => ({ models: [] }),
+      change: async () => {},
+      resetSettings: async () => {},
+      exportSettings: async () => ({ ok: true }),
+      importSettings: async () => {
+        const err = new Error('原始简体兜底');
+        err.code = 'no-applicable-settings';
+        throw err;
+      }
+    });
+    const findByTestId = (node, tid) => {
+      if (!node || typeof node !== 'object') return null;
+      if (node.props?.['data-testid'] === tid) return node;
+      for (const child of Array.isArray(node.children) ? node.children : [node.children]) {
+        const hit = findByTestId(child, tid);
+        if (hit) return hit;
+      }
+      return null;
+    };
+    const renderSettings = () => {
+      stateIdx = 0; refIdx = 0;
+      const pageTree = panels.Page();
+      const settingsComp = pageTree.children[1].children[1].children[0];
+      stateIdx = 20; refIdx = 20;
+      return settingsComp.type(settingsComp.props);
+    };
+    let tree = renderSettings();
+    const importInput = findByTestId(tree, 'agy-import-settings-input');
+    await importInput.props.onChange({ target: { value: 'empty.json', files: [{ size: 20, text: async () => '{}' }] } });
+    tree = renderSettings();
+    const errEl = findByTestId(tree, 'agy-settings-transfer-status');
+    const rendered = errEl.children.join('');
+    assert.doesNotMatch(rendered, /原始简体/);
+    assert.doesNotMatch(rendered, /[\u00b7\u2022\u2027\u30fb]/);
+    if (lang === 'en') assert.equal(rendered, 'Import failed: No applicable settings found in file');
+    else if (lang === 'fr') assert.equal(rendered, 'Échec de l’importation: Aucun paramètre applicable trouvé dans le fichier');
+    else if (lang === 'ja') assert.equal(rendered, 'インポートに失敗しました: 適用可能な設定項目が見つかりませんでした');
+    else if (lang === 'zh-TW') assert.equal(rendered, '導入失敗: 未找到可應用的有效設定項');
+    panels.dispose();
+  }
+});
+
+test('composerRingSig gates contextWindow and speedStats fields on their respective toggles', async () => {
+  const p = page(true);
+  p.context.location.pathname = '/c/conv-sig';
+  let renderCount = 0;
+  p.context.React = { createElement: (type, props, ...children) => ({ type, props, children }) };
+  p.context.ReactDOM = {
+    createRoot() {
+      return {
+        render() { renderCount++; },
+        unmount() {}
+      };
+    }
+  };
+  p.context.getComputedStyle = () => ({ display: 'flex' });
+  const parent = { insertBefore(child) { child.isConnected = true; } };
+  const card = { cid: 'conv-sig' };
+  const trigger = { cid: 'conv-sig', isConnected: true, parentElement: parent, nextSibling: null, closest: sel => sel === '.surface-composer-card' ? card : null };
+  p.document.querySelectorAll = sel => sel === '[data-testid="model-selector-trigger"]' ? [trigger] : [];
+  p.context.__agyNativeAdapter.wrap = el => el;
+  p.context.__agyNativeAdapter.composerCascadeId = el => el?.cid || '';
+  let env;
+  p.context.__agyPanels = value => { env = value; return { dispose() {} }; };
+  p.context.__agyNativeAdapter.installPage = () => true;
+
+  let curSettings = { enabled: true, contextRing: false, speedStats: true, language: 'en' };
+  let curState = { conversationId: 'conv-sig', stateRev: 1, settings: curSettings, contextWindow: { usedPercent: 10, usedTokens: 1000, maxTokens: 10000 }, telemetry: { latestTps: 42 }, turns: [], requests: [] };
+  p.context.__agyInitialSettings = { ...curSettings };
+  p.context.__agyPowertoolsHost = raw => {
+    const req = JSON.parse(raw);
+    queueMicrotask(() => {
+      if (req.method === 'settings.get') p.context.__agyPowertoolsReceive(req.id, { ...curSettings });
+      else if (req.method === 'settings.set') { curSettings = { ...curSettings, ...req.settings }; p.context.__agyPowertoolsReceive(req.id, { ...curSettings }); }
+      else if (req.method === 'state') p.context.__agyPowertoolsReceive(req.id, { ...curState, settings: { ...curSettings } });
+      else p.context.__agyPowertoolsReceive(req.id, {});
+    });
+  };
+  vm.runInContext(source, p.context);
+  await new Promise(r => setImmediate(r));
+  const baseline = renderCount;
+
+  // Context window changes while contextRing is disabled must not trigger ring re-render
+  curState = { ...curState, stateRev: 2, contextWindow: { usedPercent: 75, usedTokens: 7500, maxTokens: 10000 } };
+  await env.refreshState();
+  assert.equal(renderCount, baseline);
+
+  // Switch toggles: contextRing=true, speedStats=false
+  await env.change({ contextRing: true, speedStats: false });
+  const afterToggle = renderCount;
+  assert.ok(afterToggle > baseline);
+
+  // Telemetry speed changes while speedStats is disabled must not trigger ring re-render
+  curState = { ...curState, stateRev: 3, telemetry: { latestTps: 99.5 } };
+  await env.refreshState();
+  assert.equal(renderCount, afterToggle);
+
+  p.context.__agyPowertools.dispose();
 });

@@ -224,6 +224,11 @@ Chaque réglage s'applique en temps réel dans **Powertools -> Paramètres** et 
 
 ## Historique des versions
 
+### v2.16.10
+- **Correction du contournement du tunnel proxy HTTPS lors de la vérification des mises à jour (PR #92, #90, merci `@qimengdunjia`)** : utilise un `https.Agent` dédié pour le socket TLS tunnellisé au lieu de `agent: false`, conserve l'annulation `AbortSignal` en cours de téléchargement et aligne les délais RPC de mise à jour sur 18 s.
+- **Correction du scintillement de l'IME Windows pendant les longues séquences d'outils (#89)** : limite `composerRingSig` aux champs visibles des boutons tout en gardant les fenêtres contextuelles ouvertes à jour en temps réel.
+- **Importation et exportation des paramètres personnels (#88)** : exporte/importe uniquement les préférences portables en JSON en supprimant les identifiants proxy et sans jamais inclure les comptes ou secrets, avec gestion non bloquante des polices absentes entre OS.
+
 ### v2.16.9
 - **Remplacement du relanceur Windows PowerShell/`.lnk` par un worker Node.js statique afin d'éliminer les faux positifs d'antivirus/EDR d'entreprise** : utilise les fichiers statiques vérifiés `scripts/relaunch-worker.mjs` et `scripts/relaunch-antigravity.cmd` sans PowerShell, ni création dynamique de `.lnk`/`.ps1`, ni drapeaux masqués ou auto-suppression, avec pré-filtrage `.lnk` en Node pur, vérification ACK réelle et bascule propre vers le redémarrage manuel en cas de blocage.
 - **Correction des pics de vitesse (`peakTps`) gonflés par les rafales mises en tampon** : reclasse les fins de flux tamponnées extrêmes (`< 1500 ms`, `< 6 %` de la durée, `>= 500` tokens) en débit global (y compris sur les archives existantes) et calcule `robustPeakTps` sur les flux soutenus (`>= 3 s`, `>= 100` tokens) avec filtrage des valeurs aberrantes de Tukey tout en préservant les modèles Flash réellement rapides.

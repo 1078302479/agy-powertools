@@ -224,6 +224,11 @@ Every setting applies live in **Powertools -> Settings** and saves automatically
 
 ## Changelog
 
+### v2.16.10
+- **Fix tunneled HTTPS proxy requests bypassing proxy on update checks (PR #92, closes #90, thanks `@qimengdunjia`)**: Uses a dedicated `https.Agent({ keepAlive: false })` overriding `createConnection` for the tunneled TLS socket instead of `agent: false`, keeps mid-body `AbortSignal` cancellation active until response close, prevents direct fallback on non-HTTPS redirects, and aligns `update.check` / `update.autoCheck` / `update.install` RPC timeouts to 18s.
+- **Fix Windows IME candidate window flicker during long tool-calling runs (#89)**: Trims `composerRingSig` strictly to closed-button visible fields (gated by active toggles) while updating `ContextDetails` and `SessionStatsDetails` to read live state on render so open popovers remain fresh without re-rendering the composer footer on every tool step.
+- **Add personal settings export and import (#88)**: Adds Export / Import settings JSON controls beside Restore defaults in Settings, exporting only portable preference keys while stripping proxy URL credentials and excluding local `enabled` / `multiAccount` / `autoSwitchAccount` toggles and all account secrets/caches; safely handles future unknown keys, missing cross-OS local fonts, multi-language error messages, and concurrent locale pack loading.
+
 ### v2.16.9
 - **Replace Windows PowerShell/`.lnk` relauncher with static Node.js worker to eliminate corporate AV/EDR false positives**:
   - Ships SHA-256-verified static `scripts/relaunch-worker.mjs` and visible `scripts/relaunch-antigravity.cmd`, completely removing PowerShell, dynamic `.ps1`/`.lnk` dropping, `WScript.Shell`, `-WindowStyle Hidden`, `-ExecutionPolicy Bypass`, nested PowerShell, WMI, and self-deleting scripts from Windows and WSL2 relaunches, while strictly validating `relaunch-job.json` (target basename, 60s TTL, arg/env allowlists, path containment). Closes existing instances via a single batched `taskkill.exe` call plus built-in `process.kill`, syncs `app_storage.json` atomically in Node, and launches `Antigravity.exe` detached with `NUL` stdio so Windows Terminal never lingers.

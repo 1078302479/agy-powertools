@@ -224,6 +224,11 @@ Alle Einstellungen greifen sofort unter **Powertools -> Einstellungen** und werd
 
 ## Changelog
 
+### v2.16.10
+- **Umgehung des HTTPS-Proxytunnels bei Update-Prüfungen behoben (PR #92, #90, danke an `@qimengdunjia`)**: Verwendet einen dedizierten `https.Agent` für den getunnelten TLS-Socket statt `agent: false`, erhält `AbortSignal` während des Body-Streams und gleicht Update-RPC-Timeouts auf 18 s an.
+- **Windows-IME-Flackern bei langen Tool-Aufrufketten behoben (#89)**: Begrenzt `composerRingSig` auf tatsächlich sichtbare Schaltflächenfelder und lässt geöffnete Popover den Live-Status direkt lesen.
+- **Export und Import persönlicher Einstellungen ergänzt (#88)**: Exportiert und importiert portierbare Einstellungen als JSON ohne Kontodaten oder Proxy-Zugangsdaten und setzt auf anderen Systemen fehlende Schriftarten sauber zurück.
+
 ### v2.16.9
 - **Windows-Neustart auf statischen Node.js-Worker umgestellt, um Fehlalarme von Unternehmens-AV/EDR zu vermeiden**: Nutzt die signierten/geprüften Paketdateien `scripts/relaunch-worker.mjs` und `scripts/relaunch-antigravity.cmd` vollständig ohne PowerShell, dynamische `.ps1`/`.lnk`-Erstellung, `WScript.Shell`, versteckte Flags oder Selbstlöschung, ergänzt um reinen Node-`.lnk`-Vorfilter, echte ACK-Prüfung und sauberen Fallback auf manuellen Neustart.
 - **Überhöhte Spitzengeschwindigkeiten (`peakTps`) durch gepufferte Tool-Aufruf-Bursts behoben**: Stuft extreme Kurz-Tail-Pufferungen (`< 1500 ms`, `< 6 %` Anteil, `>= 500` Tokens) auf die Gesamtgeschwindigkeit zurück (inkl. bestehender Archive) und berechnet `robustPeakTps` aus anhaltenden Streams mit Tukey-Ausreißerfilter bei vollem Erhalt echter Hochgeschwindigkeits-Flash-Streams.

@@ -224,6 +224,11 @@ sh ./install.sh
 
 ## 更新日誌
 
+### v2.16.10
+- **修正獨立代理下 HTTPS 通道被略過導致檢查更新失敗（PR #92，closes #90，感謝 `@qimengdunjia`）**：改用綁定 `tlsSocket` 的獨立 `https.Agent` 取代 `agent: false`，保留讀取回應期間的中止訊號處理並將更新相關 RPC 逾時對齊至 18 秒。
+- **修正長任務每次工具呼叫重繪輸入框底列造成的 Windows IME 閃爍（#89）**：精簡 `composerRingSig` 至底列可見欄位，並讓展開的上下文與會話統計彈窗即時讀取最新狀態。
+- **新增個人設定匯出與匯入（#88）**：支援匯出/匯入 JSON 偏好設定，自動剝離代理帳密並排除帳號憑證與本機風險開關，跨系統缺少字體時優雅回退預設。
+
 ### v2.16.9
 - **將 Windows 重啟器重構為靜態純 Node.js 腳本，消除企業防毒/EDR 誤報特徵**：改用隨包校驗的靜態 `scripts/relaunch-worker.mjs` 與明面可見的 `scripts/relaunch-antigravity.cmd`，移除重啟鏈路中的 PowerShell、動態 `.ps1`/`.lnk`、`WScript.Shell`、隱藏參數與腳本自刪；補齊純 Node `.lnk` 預檢、真實 ACK 校驗與攔截降級手動重啟提示。
 - **修正峰值速度（`peakTps`）受緩衝尾包影響而虛高的問題**：對極端短尾緩衝回應回退整包速度口徑（無縫修正既有歷史封存），並以持續流與 Tukey 上籬笆計算 `robustPeakTps`，同時保留真實高速 Flash 模型速度。

@@ -224,6 +224,11 @@ Cada ajuste se aplica al instante en **Powertools -> Configuración** y se guard
 
 ## Registro de cambios
 
+### v2.16.10
+- **Corrección del desvío del túnel proxy HTTPS al comprobar actualizaciones (PR #92, #90, gracias a `@qimengdunjia`)**: Usa un `https.Agent` dedicado para el socket TLS en túnel en lugar de `agent: false`, mantiene `AbortSignal` durante la lectura del cuerpo y alinea el tiempo de espera RPC de actualización a 18 s.
+- **Corrección del parpadeo del IME de Windows durante secuencias largas de herramientas (#89)**: Limita `composerRingSig` a los campos visibles de los botones mientras los paneles abiertos leen el estado en vivo.
+- **Exportación e importación de configuración personal (#88)**: Permite exportar e importar preferencias en JSON omitiendo credenciales de proxy, cuentas y secretos, con recuperación segura ante fuentes no instaladas en otro sistema operativo.
+
 ### v2.16.9
 - **Reemplazo del reiniciador PowerShell/`.lnk` en Windows por un worker estático de Node.js para eliminar falsos positivos de antivirus/EDR corporativos**: Usa los archivos estáticos verificados `scripts/relaunch-worker.mjs` y `scripts/relaunch-antigravity.cmd` sin PowerShell, sin creación dinámica de `.ps1`/`.lnk`, sin `WScript.Shell`, sin ejecución oculta ni autoeliminación, con prefiltrado `.lnk` en Node puro, verificación real de ACK y aviso limpio de reinicio manual si es bloqueado.
 - **Corrección de picos irreales de velocidad (`peakTps`) por respuestas almacenadas en búfer**: Reclasifica colas cortas extremas en búfer (`< 1500 ms`, `< 6 %` de duración, `>= 500` tokens) a velocidad de solicitud completa (incluso en el archivo histórico) y calcula `robustPeakTps` sobre flujos sostenidos con filtro de valores atípicos de Tukey conservando modelos Flash genuinamente rápidos.

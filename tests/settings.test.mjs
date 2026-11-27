@@ -1,9 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createSettingsStore, DEFAULT_SETTINGS, detectSystemLanguage } from '../lib/settings.mjs';
+import {
+  createSettingsStore,
+  DEFAULT_SETTINGS,
+  detectSystemLanguage,
+  exportSettingsPayload,
+  NON_PORTABLE_SETTING_KEYS,
+  sanitizeImportedSettings,
+  SETTINGS_EXPORT_FORMAT,
+  SETTINGS_EXPORT_SCHEMA_VERSION,
+  SETTINGS_IMPORT_MAX_BYTES,
+  stripProxyUrlCredentials
+} from '../lib/settings.mjs';
+import { startNativeIntegration } from '../lib/native-host.mjs';
 
 test('settings persist, merge safely, and reject unknown options without changing saved data', () => {
   const directory = mkdtempSync(join(tmpdir(), 'agy-settings-'));
@@ -172,4 +184,300 @@ test('all nine locale tags and POSIX locale names persist across settings stores
     }
     assert.equal(detectSystemLanguage({locale:'it_IT.UTF-8'}), 'en');
   } finally { rmSync(dir, {recursive:true, force:true}); }
+});
+
+test('stripProxyUrlCredentials and exportSettingsPayload strip proxy auth and exclude non-portable keys (Issue #88)', () => {
+  assert.deepEqual(stripProxyUrlCredentials('http://user:pass@127.0.0.1:7897'), { url: 'http://127.0.0.1:7897', stripped: true });
+  assert.deepEqual(stripProxyUrlCredentials('socks5://alice:s3cr3t@[::1]:1080'), { url: 'socks5://[::1]:1080', stripped: true });
+  assert.deepEqual(stripProxyUrlCredentials('http://onlyuser@127.0.0.1:7890/'), { url: 'http://127.0.0.1:7890', stripped: true });
+  assert.deepEqual(stripProxyUrlCredentials('http://:onlypass@127.0.0.1:7890'), { url: 'http://127.0.0.1:7890', stripped: true });
+  assert.deepEqual(stripProxyUrlCredentials('http://127.0.0.1:7897'), { url: 'http://127.0.0.1:7897', stripped: false });
+  assert.deepEqual(stripProxyUrlCredentials(''), { url: '', stripped: false });
+  assert.deepEqual(stripProxyUrlCredentials('not a url'), { url: 'not a url', stripped: false });
+  assert.deepEqual(stripProxyUrlCredentials(null), { url: null, stripped: false });
+
+  const exported = exportSettingsPayload({
+    ...DEFAULT_SETTINGS,
+    enabled: false,
+    multiAccount: true,
+    autoSwitchAccount: true,
+    compact: false,
+    customFont: '  Maple Mono NF CN  ',
+    userBubbleColor: '#3d7a64',
+    proxyEnabled: true,
+    proxyUrl: 'http://user:secret@127.0.0.1:7897/',
+    proxyBypass: '10.0.0.0/8'
+  }, { pluginVersion: '2.17.0' });
+
+  assert.equal(exported.format, SETTINGS_EXPORT_FORMAT);
+  assert.equal(exported.schemaVersion, SETTINGS_EXPORT_SCHEMA_VERSION);
+  assert.equal(exported.pluginVersion, '2.17.0');
+  assert.ok(!Number.isNaN(Date.parse(exported.exportedAt)));
+  assert.equal(exported.strippedProxyAuth, true);
+  assert.equal(exported.settings.proxyUrl, 'http://127.0.0.1:7897');
+  assert.equal(exported.settings.proxyBypass, 'localhost,127.0.0.1,::1,10.0.0.0/8');
+  assert.equal(exported.settings.compact, false);
+  assert.equal(exported.settings.customFont, 'Maple Mono NF CN');
+  assert.equal(exported.settings.userBubbleColor, '#3D7A64');
+  for (const key of NON_PORTABLE_SETTING_KEYS) {
+    assert.equal(Object.hasOwn(exported.settings, key), false, `exported settings must exclude ${key}`);
+  }
+  assert.equal(
+    Object.keys(exported.settings).length,
+    Object.keys(DEFAULT_SETTINGS).length - NON_PORTABLE_SETTING_KEYS.size
+  );
+
+  // Without proxy credentials, strippedProxyAuth is false
+  const cleanExport = exportSettingsPayload({ ...DEFAULT_SETTINGS, proxyUrl: 'http://127.0.0.1:7897' });
+  assert.equal(cleanExport.strippedProxyAuth, false);
+  assert.equal(cleanExport.settings.proxyUrl, 'http://127.0.0.1:7897');
+});
+
+test('sanitizeImportedSettings validates envelope, strips proxy credentials, skips non-portable/unknown/invalid keys, and rejects bad payloads (Issue #88)', () => {
+  // 1. Valid JSON string with mixed valid, non-portable, unknown future, and invalid entries + proxy auth
+  const rawJson = JSON.stringify({
+    format: SETTINGS_EXPORT_FORMAT,
+    schemaVersion: 1,
+    pluginVersion: '2.99.0',
+    settings: {
+      enabled: false,
+      multiAccount: true,
+      autoSwitchAccount: true,
+      compact: false,
+      language: 'ja',
+      customFont: '  Fira Code  ',
+      userBubbleColor: '#1a2b3c',
+      proxyUrl: 'socks5://bob:hunter2@127.0.0.1:1080',
+      proxyBypass: '192.168.1.0/24',
+      futureSettingV99: 'hello',
+      compactInvalidType: 123,
+      customFontWeight: 999,
+      userBubbleStrength: 500
+    }
+  });
+  const res = sanitizeImportedSettings(rawJson);
+  assert.equal(res.strippedProxyAuth, true);
+  assert.equal(res.appliedCount, 6);
+  assert.deepEqual(res.importedKeys.sort(), ['compact', 'customFont', 'language', 'proxyBypass', 'proxyUrl', 'userBubbleColor']);
+  assert.deepEqual(res.patch, {
+    compact: false,
+    language: 'ja',
+    customFont: 'Fira Code',
+    userBubbleColor: '#1A2B3C',
+    proxyUrl: 'socks5://127.0.0.1:1080',
+    proxyBypass: 'localhost,127.0.0.1,::1,192.168.1.0/24'
+  });
+  assert.deepEqual(res.skippedKeys.sort(), [
+    'autoSwitchAccount',
+    'compactInvalidType',
+    'customFontWeight',
+    'enabled',
+    'futureSettingV99',
+    'multiAccount',
+    'userBubbleStrength'
+  ]);
+
+  // 2. Plain object input also accepted; invalid proxyUrl with creds is skipped and does not falsely set strippedProxyAuth
+  const objRes = sanitizeImportedSettings({
+    format: SETTINGS_EXPORT_FORMAT,
+    schemaVersion: 1,
+    settings: {
+      timing: false,
+      proxyUrl: 'ftp://user:pass@127.0.0.1:21'
+    }
+  });
+  assert.deepEqual(objRes.patch, { timing: false });
+  assert.equal(objRes.appliedCount, 1);
+  assert.deepEqual(objRes.importedKeys, ['timing']);
+  assert.deepEqual(objRes.skippedKeys, ['proxyUrl']);
+  assert.equal(objRes.strippedProxyAuth, false);
+
+  // 3. Reject malformed, wrong format, unsupported schemaVersion, missing settings, empty/non-applicable settings, arrays, and oversized payloads with structured error codes
+  for (const [bad, expectedCode] of [
+    ['', 'invalid-json'],
+    ['{bad json', 'invalid-json'],
+    ['[]', 'invalid-data'],
+    [null, 'invalid-data'],
+    [undefined, 'invalid-data'],
+    [42, 'invalid-data'],
+    [[], 'invalid-data'],
+    [{}, 'invalid-format'],
+    [{ format: 'wrong-format', schemaVersion: 1, settings: {} }, 'invalid-format'],
+    [{ format: SETTINGS_EXPORT_FORMAT, schemaVersion: 0, settings: {} }, 'unsupported-version'],
+    [{ format: SETTINGS_EXPORT_FORMAT, schemaVersion: 2, settings: {} }, 'unsupported-version'],
+    [{ format: SETTINGS_EXPORT_FORMAT, schemaVersion: '1', settings: {} }, 'unsupported-version'],
+    [{ format: SETTINGS_EXPORT_FORMAT, schemaVersion: 1 }, 'missing-settings'],
+    [{ format: SETTINGS_EXPORT_FORMAT, schemaVersion: 1, settings: null }, 'missing-settings'],
+    [{ format: SETTINGS_EXPORT_FORMAT, schemaVersion: 1, settings: [] }, 'missing-settings'],
+    [{ format: SETTINGS_EXPORT_FORMAT, schemaVersion: 1, settings: {} }, 'no-applicable-settings'],
+    [{ format: SETTINGS_EXPORT_FORMAT, schemaVersion: 1, settings: { enabled: false, multiAccount: true, autoSwitchAccount: true } }, 'no-applicable-settings'],
+    [{ format: SETTINGS_EXPORT_FORMAT, schemaVersion: 1, settings: { futureUnknownKey: true, customFontWeight: 999 } }, 'no-applicable-settings'],
+    ['x'.repeat(SETTINGS_IMPORT_MAX_BYTES + 1), 'too-large'],
+    [JSON.stringify({
+      format: SETTINGS_EXPORT_FORMAT,
+      schemaVersion: 1,
+      settings: { padding: 'a'.repeat(SETTINGS_IMPORT_MAX_BYTES) }
+    }), 'too-large']
+  ]) {
+    assert.throws(
+      () => sanitizeImportedSettings(bad),
+      err => err instanceof Error && err.code === expectedCode,
+      `expected rejection with code ${expectedCode} for payload: ${String(bad).slice(0, 60)}`
+    );
+  }
+});
+
+test('native-host settings.export and settings.import RPCs strip proxy credentials, protect local-only keys, and persist atomically (Issue #88)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agy-settings-rpc-'));
+  const dataDir = join(dir, 'data');
+  mkdirSync(dataDir, { recursive: true });
+  const portFile = join(dir, 'DevToolsActivePort');
+  writeFileSync(portFile, '12349\n/devtools/browser/test\n');
+  const originalFetch = globalThis.fetch;
+  const target = { id: 'settings-rpc-win', type: 'page', title: 'Local - Antigravity', url: 'https://127.0.0.1:5015/c/conv-settings', webSocketDebuggerUrl: 'ws://127.0.0.1:12349/devtools/page/settings-rpc-win' };
+  globalThis.fetch = async () => ({ ok: true, json: async () => [target] });
+
+  let capturedClient = null;
+  let stop;
+  try {
+    const store = createSettingsStore(dataDir);
+    store.set({
+      enabled: true,
+      multiAccount: true,
+      autoSwitchAccount: true,
+      compact: false,
+      customFont: 'JetBrains Mono',
+      proxyEnabled: true,
+      proxyUrl: 'http://alice:topsecret@127.0.0.1:7897',
+      language: 'en'
+    });
+
+    stop = startNativeIntegration({
+      portFile,
+      dataDir,
+      wsl: false,
+      onStatus() {},
+      parseSessionData: () => ({}),
+      discover: async () => ['sampleNativeName'],
+      connect: async () => {
+        const listeners = new Set();
+        const replies = [];
+        const client = {
+          listeners,
+          replies,
+          onEvent(fn) { listeners.add(fn); },
+          emit(event) { return Promise.all([...listeners].map(fn => fn(event))); },
+          socket: { addEventListener() {}, close() {} },
+          async send(method, params = {}) {
+            if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'main-frame' } } };
+            if (method === 'Page.addScriptToEvaluateOnNewDocument') return { identifier: 'script-1' };
+            if (method === 'Runtime.evaluate') {
+              const expr = String(params.expression || '');
+              if (expr.includes('navigator.userAgent')) return { result: { value: { ua: 'Antigravity/2.35.2', sshKind: '', sshHost: '', title: target.title } } };
+              if (expr.includes('globalThis.__agyPowertoolsReceive')) {
+                const match = expr.match(/globalThis\.__agyPowertoolsReceive\?\.\((\d+),([\s\S]+)\)$/);
+                if (match) replies.push({ id: Number(match[1]), payload: JSON.parse(match[2]) });
+                return { result: { value: true } };
+              }
+              return { result: { value: false } };
+            }
+            return {};
+          }
+        };
+        capturedClient = client;
+        return client;
+      }
+    });
+
+    await stop.ready;
+    await capturedClient.emit({ method: 'Runtime.executionContextCreated', params: { context: { id: 10, origin: 'https://127.0.0.1:5015', auxData: { isDefault: true, frameId: 'main-frame' } } } });
+    const rpc = async (id, body) => {
+      await capturedClient.emit({
+        method: 'Runtime.bindingCalled',
+        params: { name: '__agyPowertoolsHost', executionContextId: 10, payload: JSON.stringify({ id, ...body }) }
+      });
+      return capturedClient.replies.find(r => r.id === id)?.payload;
+    };
+
+    // 1. settings.export returns clean envelope without secrets or non-portable keys
+    const exported = await rpc(1, { method: 'settings.export' });
+    assert.equal(exported.format, SETTINGS_EXPORT_FORMAT);
+    assert.equal(exported.schemaVersion, SETTINGS_EXPORT_SCHEMA_VERSION);
+    assert.ok(typeof exported.pluginVersion === 'string' && exported.pluginVersion.length > 0);
+    assert.equal(exported.strippedProxyAuth, true);
+    assert.equal(exported.settings.proxyUrl, 'http://127.0.0.1:7897');
+    assert.equal(exported.settings.customFont, 'JetBrains Mono');
+    assert.equal(Object.hasOwn(exported.settings, 'enabled'), false);
+    assert.equal(Object.hasOwn(exported.settings, 'multiAccount'), false);
+    assert.equal(Object.hasOwn(exported.settings, 'autoSwitchAccount'), false);
+
+    // 2. settings.import applies portable keys atomically, strips proxy auth, preserves local enabled/multiAccount/autoSwitchAccount
+    const imported = await rpc(2, {
+      method: 'settings.import',
+      payload: JSON.stringify({
+        format: SETTINGS_EXPORT_FORMAT,
+        schemaVersion: 1,
+        settings: {
+          enabled: false,
+          multiAccount: false,
+          autoSwitchAccount: false,
+          compact: true,
+          customFont: 'Maple Mono',
+          language: 'fr',
+          proxyUrl: 'http://bob:pw@127.0.0.1:8888',
+          unknownFutureFlag: true
+        }
+      })
+    });
+    assert.equal(imported.error, undefined);
+    assert.equal(imported.appliedCount, 4);
+    assert.deepEqual(imported.importedKeys.sort(), ['compact', 'customFont', 'language', 'proxyUrl']);
+    assert.equal(imported.strippedProxyAuth, true);
+    assert.deepEqual(imported.skippedKeys.sort(), ['autoSwitchAccount', 'enabled', 'multiAccount', 'unknownFutureFlag']);
+    assert.equal(imported.settings.enabled, true);
+    assert.equal(imported.settings.multiAccount, true);
+    assert.equal(imported.settings.autoSwitchAccount, true);
+    assert.equal(imported.settings.compact, true);
+    assert.equal(imported.settings.customFont, 'Maple Mono');
+    assert.equal(imported.settings.language, 'fr');
+    assert.equal(imported.settings.proxyUrl, 'http://127.0.0.1:8888');
+
+    // Verify atomic persistence on disk
+    const persisted = JSON.parse(readFileSync(join(dataDir, 'settings.json'), 'utf8'));
+    assert.equal(persisted.customFont, 'Maple Mono');
+    assert.equal(persisted.language, 'fr');
+    assert.equal(persisted.proxyUrl, 'http://127.0.0.1:8888');
+    assert.equal(persisted.multiAccount, true);
+
+    // 3. Invalid import payload and zero-applicable-settings payload return structured errorCode and leave disk untouched
+    const beforeDisk = readFileSync(join(dataDir, 'settings.json'), 'utf8');
+    const badImport = await rpc(3, {
+      method: 'settings.import',
+      payload: JSON.stringify({ format: 'wrong', schemaVersion: 1, settings: { compact: false } })
+    });
+    assert.ok(typeof badImport.error === 'string' && badImport.error.length > 0);
+    assert.equal(badImport.errorCode, 'invalid-format');
+    assert.equal(readFileSync(join(dataDir, 'settings.json'), 'utf8'), beforeDisk);
+
+    const emptySettingsImport = await rpc(4, {
+      method: 'settings.import',
+      payload: JSON.stringify({ format: SETTINGS_EXPORT_FORMAT, schemaVersion: 1, settings: { enabled: false, unknownOnly: 1 } })
+    });
+    assert.ok(typeof emptySettingsImport.error === 'string' && emptySettingsImport.error.length > 0);
+    assert.equal(emptySettingsImport.errorCode, 'no-applicable-settings');
+    assert.equal(readFileSync(join(dataDir, 'settings.json'), 'utf8'), beforeDisk);
+
+    // 4. Outer host payload guard (> 256 KB, <= 512 KB) does not silently drop double-JSON-encoded oversized import payloads
+    const oversizedEscaped = '\n'.repeat(132000);
+    const outerLen = JSON.stringify({ id: 5, method: 'settings.import', payload: oversizedEscaped }).length;
+    assert.ok(outerLen > 262144 && outerLen < 524288, `expected outer payload between 256KB and 512KB, got ${outerLen}`);
+    const bigImport = await rpc(5, { method: 'settings.import', payload: oversizedEscaped });
+    assert.ok(bigImport, 'outer 512 KB guard must reply instead of silently dropping');
+    assert.equal(bigImport.errorCode, 'too-large');
+    assert.equal(readFileSync(join(dataDir, 'settings.json'), 'utf8'), beforeDisk);
+  } finally {
+    await stop?.();
+    globalThis.fetch = originalFetch;
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
