@@ -224,6 +224,11 @@ sh ./install.sh
 
 ## 変更履歴
 
+### v2.16.14
+- **Windows のアカウント切り替え時に `process-list-unavailable` が発生して認証情報の復元がスキップされるリグレッションを緊急修正（closes #120）**: [relaunch-worker.mjs](../scripts/relaunch-worker.mjs) の `listWindowsCredentialWriters()` を刷新し、タイムアウトしやすい無制限な `tasklist /FI USERNAME` 走査を廃止しました。まず高速な全件 `tasklist /FO CSV /NH` を実行して非対象の `PID 0`（`System Idle Process`）をスキップし、残留する認証書き込みプロセスが存在する場合のみ該当する `IMAGENAME + USERNAME` 単位で絞り込み検索を行い、日本語や英語など各ロケールの該当なし応答にも対応しました。
+- **WSL2 モードでのプロキシ再起動失敗および `not-applied` 状態不整合ループを修正（closes #113）**: WSL2 再起動時は常に `relaunch-worker.mjs` を Windows の `%TEMP%` へコピーして対応する `cwd` で実行するようにし、9P UNC パスの停滞による 6 秒 ACK タイムアウト超過を解消しました。さらに `--wsl-distro=<distro>` の引き継ぎとホワイトリスト検証を追加し、[relaunch-worker.mjs](../scripts/relaunch-worker.mjs) で WSL2 ジョブ向けに `WSLENV` `/u` の単方向エントリ経由でプロキシ環境変数、`AGY_POWERTOOLS_PROXY_SPEC`、`GODEBUG` を伝播し、プロキシ無効化時に自動クリーンアップします。
+- **SSH リモートホストで `node:sqlite` 対応の Node 22.5+ ランタイムを優先検出（PR #117 を統合、`@dubhe` 氏に感謝）**: [ssh-remote.mjs](../lib/ssh-remote.mjs) を更新し、`nvm`、`fnm`、`mise`、`asdf`、`volta` および `~/.antigravity-hub-server/bin/agy-node` から `node:sqlite` 対応の最上位 Node ランタイムを探索するようにし、バージョン番号セグメントのアンカー一致フィルタリングと `set -e` 互換性を強化しました。
+
 ### v2.16.13
 - **人民元（CNY）換算をバックグラウンドの自動リアルタイム為替レートへ切り替え（オフライン時は固定 `6.7` にフォールバック、レート設定 UI を撤廃）**: [pricing.mjs](../lib/pricing.mjs) に `createExchangeRateStore` を追加し、人民元表示の選択時に `createProxyFetcher()` 経由で無料の公開 USD/CNY 為替レートを自動取得（主取得元 `open.er-api.com`、予備 `api.frankfurter.app`、24 時間ローカルキャッシュ、オフラインまたは異常時は静かに `6.7` へフォールバック）するようにし、設定画面と料金タブから手動レート入力欄および基準レート注記を削除しました。
 - **Antigravity 2.35.2 で回答下部の操作バーに「ターンフッター統計」と `...` 分岐ボタンが表示されない不具合を修正（closes #111）**: 単一責務の `findResponseActionRow()` ヘルパーを導入し、単一ターン内の祖先要素を `[data-turn-content]` / `worked-for-collapsible` の外側まで遡って単一ボタンのツールチップラッパーを剥がした上で、属性、アイコンリガチャ、関連ツールチップ、React fiber メタデータの順にフォールバック検出し、`responseDoneCache` のキャッシュヒットも復元しました。

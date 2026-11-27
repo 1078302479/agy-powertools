@@ -4,7 +4,7 @@
     "main.mjs"
   ],
   "env": {
-    "AGY_POWERTOOLS_VERSION": "2.16.13",
+    "AGY_POWERTOOLS_VERSION": "2.16.14",
     "NODE_USE_ENV_PROXY": "0"
   },
   "restart_policy": "always",

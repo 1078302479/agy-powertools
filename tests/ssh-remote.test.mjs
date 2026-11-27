@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { spawn } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -12,6 +12,7 @@ import {
   resolveSshWindowConfig,
   resolveRemotePosixPath,
   buildRemoteWorkerCode,
+  buildShellBootstrap,
   createRemoteTelemetryBridge
 } from '../lib/ssh-remote.mjs';
 import { parseSessionData } from '../lib/session-parser.mjs';
@@ -659,6 +660,133 @@ test('local state cache invalidates on task.md edits, execution.live/subagent ti
     globalThis.fetch = originalFetch;
     if (originalAppData === undefined) delete process.env.ANTIGRAVITY_APP_DATA_DIR;
     else process.env.ANTIGRAVITY_APP_DATA_DIR = originalAppData;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+function resolvePosixShell() {
+  if (process.platform !== 'win32') {
+    return existsSync('/bin/sh') ? { sh: '/bin/sh', toPosix: p => p } : null;
+  }
+  const roots = [
+    process.env.ProgramFiles && join(process.env.ProgramFiles, 'Git', 'usr', 'bin'),
+    process.env['ProgramFiles(x86)'] && join(process.env['ProgramFiles(x86)'], 'Git', 'usr', 'bin'),
+    'C:\\Program Files\\Git\\usr\\bin'
+  ].filter(Boolean);
+  for (const binDir of roots) {
+    const sh = join(binDir, 'sh.exe');
+    const cygpath = join(binDir, 'cygpath.exe');
+    if (existsSync(sh) && existsSync(cygpath)) {
+      return {
+        sh,
+        toPosix: p => execFileSync(cygpath, ['-u', p], { encoding: 'utf8' }).trim()
+      };
+    }
+  }
+  return null;
+}
+
+const POSIX_SHELL = resolvePosixShell();
+
+test('buildShellBootstrap emits a single-line hardened POSIX script without duplicate agy-node probes', () => {
+  const bootstrap = buildShellBootstrap();
+  assert.equal(bootstrap.trim().includes('\n'), false, 'bootstrap must remain a single line');
+  assert.match(bootstrap, /exec "\$NODE" --no-warnings -e '[^']+'/);
+  assert.equal(bootstrap.split('.gemini/antigravity/bin/agy-node').length - 1, 1, 'agy-node must only be probed in loop 1');
+  assert.equal(bootstrap.split('.antigravity-hub-server/bin/agy-node').length - 1, 1, 'hub-server agy-node must only be probed in loop 1');
+  assert.match(bootstrap, /\[ -f "\$p" \] && \[ -x "\$p" \]/);
+  assert.match(bootstrap, /if \[ -z "\$FALLBACK" \]; then FALLBACK="\$p"; fi/);
+  assert.doesNotMatch(bootstrap, /\[ -z "\$FALLBACK" \] && FALLBACK="\$p"/);
+});
+
+test('buildShellBootstrap prefers highest node:sqlite-capable Node over older PATH node, handles /v2.dev/ HOME, guards dirs, and falls back cleanly', { skip: !POSIX_SHELL }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agy-ssh-boot-'));
+  const home = join(dir, 'home');
+  const sysBin = join(dir, 'usr-bin');
+  const probeLog = join(dir, 'probes.log');
+  mkdirSync(sysBin, { recursive: true });
+
+  const makeMockNode = (targetPath, { label, sqlite, rank, logProbes = false }) => {
+    mkdirSync(join(targetPath, '..'), { recursive: true });
+    const logLine = logProbes
+      ? `printf '%s\\n' '${label}' >> '${POSIX_SHELL.toPosix(probeLog)}'`
+      : '';
+    const script = [
+      '#!/bin/sh',
+      'for arg in "$@"; do',
+      '  case "$arg" in',
+      '    *1000000*)',
+      logLine ? `      ${logLine}` : '',
+      sqlite ? `      printf '%s' '${rank}'; exit 0 ;;` : '      exit 1 ;;',
+      '    *node:sqlite*)',
+      logLine ? `      ${logLine}` : '',
+      sqlite ? '      exit 0 ;;' : '      exit 1 ;;',
+      '    *__AGY_PT__*)',
+      `      printf 'SELECTED:%s\\n' '${label}'; exit 0 ;;`,
+      '  esac',
+      'done',
+      'exit 1',
+      ''
+    ].filter(Boolean).join('\n');
+    writeFileSync(targetPath, script, { mode: 0o755 });
+  };
+
+  const runBootstrap = ({ homeDir = home, pathBin = sysBin, setE = true } = {}) => new Promise((resolve, reject) => {
+    const args = setE ? ['-e', '-s'] : ['-s'];
+    const child = spawn(POSIX_SHELL.sh, args, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: {
+        HOME: POSIX_SHELL.toPosix(homeDir),
+        PATH: `${POSIX_SHELL.toPosix(pathBin)}:/usr/bin:/bin`
+      }
+    });
+    let out = '', err = '';
+    child.stdout.on('data', c => { out += String(c); });
+    child.stderr.on('data', c => { err += String(c); });
+    child.on('error', reject);
+    child.on('close', code => resolve({ code, out, err }));
+    child.stdin.end(buildShellBootstrap({ systemCandidates: [] }));
+  });
+
+  try {
+    // 1. Only legacy Node v18 in PATH + executable directory at ~/.local/bin/node -> ignores directory and falls back cleanly to legacy PATH node
+    mkdirSync(join(home, '.local/bin/node'), { recursive: true, mode: 0o755 });
+    makeMockNode(join(sysBin, 'node'), { label: 'path-v18', sqlite: false, rank: 18020008 });
+    const fallbackRes = await runBootstrap();
+    assert.equal(fallbackRes.code, 0, fallbackRes.err);
+    assert.match(fallbackRes.out, /SELECTED:path-v18/);
+
+    // 2. Legacy v18 in PATH + non-sqlite agy-node binaries + nvm v8 (lexicographically > v22), v16, v22.22.0, v22.23.3
+    //    -> probes each agy-node only once, skips pre-v22 nvm versions, and picks highest sqlite-capable v22.23.3
+    makeMockNode(join(home, '.gemini/antigravity/bin/agy-node'), { label: 'agy-legacy', sqlite: false, rank: 20018000, logProbes: true });
+    makeMockNode(join(home, '.antigravity-hub-server/bin/agy-node'), { label: 'hub-legacy', sqlite: false, rank: 20018000, logProbes: true });
+    makeMockNode(join(home, '.nvm/versions/node/v8.17.0/bin/node'), { label: 'nvm-v8', sqlite: false, rank: 8017000, logProbes: true });
+    makeMockNode(join(home, '.nvm/versions/node/v16.20.2/bin/node'), { label: 'nvm-v16', sqlite: false, rank: 16020002, logProbes: true });
+    makeMockNode(join(home, '.nvm/versions/node/v22.22.0/bin/node'), { label: 'nvm-v22.22.0', sqlite: true, rank: 22022000 });
+    makeMockNode(join(home, '.nvm/versions/node/v22.23.3/bin/node'), { label: 'nvm-v22.23.3', sqlite: true, rank: 22023003 });
+    const upgradedRes = await runBootstrap();
+    assert.equal(upgradedRes.code, 0, upgradedRes.err);
+    assert.match(upgradedRes.out, /SELECTED:nvm-v22\.23\.3/);
+    const probed = readFileSync(probeLog, 'utf8').trim().split(/\r?\n/);
+    assert.deepEqual(probed, ['agy-legacy', 'hub-legacy'], 'agy-node candidates must be probed once and pre-v22 nvm dirs skipped');
+
+    // 3. $HOME containing /v2.dev/ (and /16.04/) must NOT skip valid Node 22 binaries under nvm or fnm
+    const devHome = join(dir, 'v2.dev', '16.04', 'home');
+    makeMockNode(join(devHome, '.nvm/versions/node/v22.14.0/bin/node'), { label: 'dev-nvm-v22.14.0', sqlite: true, rank: 22014000 });
+    makeMockNode(join(devHome, '.local/share/fnm/node-versions/v22.23.3/installation/bin/node'), { label: 'dev-fnm-v22.23.3', sqlite: true, rank: 22023003 });
+    makeMockNode(join(devHome, '.local/share/fnm/node-versions/v20.11.0/installation/bin/node'), { label: 'dev-fnm-v20', sqlite: false, rank: 20011000 });
+    const devHomeRes = await runBootstrap({ homeDir: devHome });
+    assert.equal(devHomeRes.code, 0, devHomeRes.err);
+    assert.match(devHomeRes.out, /SELECTED:dev-fnm-v22\.23\.3/);
+
+    // 4. PATH node already supports node:sqlite -> fast-paths immediately without scanning candidates
+    rmSync(join(home, '.gemini'), { recursive: true, force: true });
+    rmSync(join(home, '.antigravity-hub-server'), { recursive: true, force: true });
+    makeMockNode(join(sysBin, 'node'), { label: 'path-v24', sqlite: true, rank: 24001000 });
+    const fastRes = await runBootstrap();
+    assert.equal(fastRes.code, 0, fastRes.err);
+    assert.match(fastRes.out, /SELECTED:path-v24/);
+  } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });

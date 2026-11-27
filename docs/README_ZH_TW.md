@@ -224,6 +224,11 @@ sh ./install.sh
 
 ## 更新日誌
 
+### v2.16.14
+- **緊急修正 Windows 切號報 `process-list-unavailable` 略過憑證恢復的回歸問題（closes #120）**：重構 [relaunch-worker.mjs](../scripts/relaunch-worker.mjs) 的 `listWindowsCredentialWriters()`，不再呼叫容易在桌面多程序環境下逾時的無映像 `tasklist /FI USERNAME` 掃描；改為先執行快速全量 `tasklist /FO CSV /NH` 並放行非目標 `PID 0`（`System Idle Process`），僅在存在殘留憑證寫入程序時按具體 `IMAGENAME + USERNAME` 窄查詢並相容中文/英文無符合提示。
+- **修正 WSL2 模式下代理重啟失敗與 `not-applied` 狀態失配循環（closes #113）**：WSL2 重啟一律將 `relaunch-worker.mjs` 複製至 Windows `%TEMP%` 並切換對應工作目錄（避免 9P UNC 路徑卡頓超過 6 秒 ACK 逾時）；補齊重啟參數 `--wsl-distro=<distro>` 透傳與白名單校驗；在 [relaunch-worker.mjs](../scripts/relaunch-worker.mjs) 針對 WSL2 任務透過 `WSLENV` `/u` 單向透傳代理環境變數、`AGY_POWERTOOLS_PROXY_SPEC` 與 `GODEBUG`，關閉代理時自動清理。
+- **SSH 遠端優先探測支援 `node:sqlite` 的 Node 22.5+ 執行環境（整合 PR #117，感謝 `@dubhe`）**：在 [ssh-remote.mjs](../lib/ssh-remote.mjs) 中按版本管理器（`nvm`、`fnm`、`mise`、`asdf`、`volta`）與 `~/.antigravity-hub-server/bin/agy-node` 探測支援 `node:sqlite` 的最高版本 Node，並加固版本號區段錨定比對與 `set -e` 相容性。
+
 ### v2.16.13
 - **人民幣計價改用背景靜默即時匯率（離線備援 `6.7`，介面零額外設定）**：在 [pricing.mjs](../lib/pricing.mjs) 新增 `createExchangeRateStore`，選擇人民幣顯示時背景經由 `createProxyFetcher()` 自動拉取免費公開即時匯率（主源 `open.er-api.com`、備源 `api.frankfurter.app`，24 小時本機快取，離線或異常靜默備援 `6.7`），並移除設定頁與價格頁的手動匯率輸入框與參考匯率提示。
 - **修正 Antigravity 2.35.2 回覆底部操作列未掛載「每輪底欄統計」與「... 回答分支」按鈕（closes #111）**：新增單一職責的 `findResponseActionRow()`，支援在單輪容器內向外回溯（越過 `[data-turn-content]` / `worked-for-collapsible`）並剝離單按鈕 tooltip 包裝層，依屬性、圖示字形、tooltip 關聯節點與 React fiber 分層備援辨識，同時恢復 `responseDoneCache` 快取命中。

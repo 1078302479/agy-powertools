@@ -224,6 +224,11 @@ Every setting applies live in **Powertools -> Settings** and saves automatically
 
 ## Changelog
 
+### v2.16.14
+- **Fix Windows account-switch regression reporting `process-list-unavailable` and skipping credential restore (closes #120)**: Rewrites `listWindowsCredentialWriters()` in [relaunch-worker.mjs](scripts/relaunch-worker.mjs) to avoid slow unbounded `tasklist /FI USERNAME` timeouts by running fast unfiltered `tasklist /FO CSV /NH` first, skipping non-matching `PID 0` (`System Idle Process`), and narrowing per matched `IMAGENAME + USERNAME` with localized zero-match support only when writers are present.
+- **Fix WSL2 proxy relaunch failures and `not-applied` mismatch loops (closes #113)**: Always copies `relaunch-worker.mjs` to Windows `%TEMP%` with matching `cwd` (avoiding 9P UNC stalls past the 6s ACK timeout), forwards and allowlists `--wsl-distro=<distro>`, and propagates/cleans up proxy variables, `AGY_POWERTOOLS_PROXY_SPEC`, and `GODEBUG` via unidirectional `WSLENV` `/u` entries for WSL2 jobs.
+- **Prefer `node:sqlite`-capable Node 22.5+ runtimes on SSH remote hosts (incorporating PR #117, thanks `@dubhe`)**: Updates [ssh-remote.mjs](lib/ssh-remote.mjs) to probe `nvm`, `fnm`, `mise`, `asdf`, `volta`, and `~/.antigravity-hub-server/bin/agy-node` for the highest `node:sqlite`-capable Node runtime with anchored version-segment filtering and `set -e` safety.
+
 ### v2.16.13
 - **Switch CNY currency conversion to silent automatic live exchange rates (hardcoded `6.7` fallback, zero rate UI)**: Adds `createExchangeRateStore` in [pricing.mjs](lib/pricing.mjs) fetching free public USD-to-CNY rates via `createProxyFetcher()` (`open.er-api.com` with `api.frankfurter.app` fallback, 24h local cache, silent `6.7` fallback when offline) and removes the manual rate input and Pricing note from the UI.
 - **Fix missing per-turn footer telemetry and `...` branch button on Antigravity 2.35.2 (closes #111)**: Introduces a clean `findResponseActionRow()` helper that walks single-turn ancestors past `[data-turn-content]` / `worked-for-collapsible`, unwraps single-button tooltip wrappers, and falls back across attributes, icon ligatures, linked tooltips, and React fiber metadata while restoring `responseDoneCache` caching.

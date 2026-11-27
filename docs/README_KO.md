@@ -224,6 +224,11 @@ sh ./install.sh
 
 ## 변경 이력
 
+### v2.16.14
+- **Windows 계정 전환 시 `process-list-unavailable` 오류가 발생하며 자격 증명 복원을 건너뛰는 회귀 문제 수정 (closes #120)**: [relaunch-worker.mjs](../scripts/relaunch-worker.mjs)의 `listWindowsCredentialWriters()`를 재작성해 타임아웃이 잦은 무제한 `tasklist /FI USERNAME` 스캔을 제거하고, 먼저 빠른 전체 `tasklist /FO CSV /NH`를 실행해 비대상 `PID 0`(`System Idle Process`)을 건너뛴 뒤 잔류 자격 증명 기록 프로세스가 있을 때만 일치하는 `IMAGENAME + USERNAME` 단위로 좁혀 조회하며 다국어 무일치 응답도 지원하도록 개선했습니다.
+- **WSL2 모드에서 프록시 재시작 실패 및 `not-applied` 상태 불일치 루프 수정 (closes #113)**: WSL2 재시작 시 `relaunch-worker.mjs`를 항상 Windows `%TEMP%`로 복사하고 일치하는 `cwd`로 실행해 9P UNC 경로 지연으로 인한 6초 ACK 타임아웃 초과를 방지했으며, `--wsl-distro=<distro>` 전달 및 허용 목록 검증을 추가하고 [relaunch-worker.mjs](../scripts/relaunch-worker.mjs)에서 WSL2 작업에 대해 단방향 `WSLENV` `/u` 항목으로 프록시 환경 변수, `AGY_POWERTOOLS_PROXY_SPEC`, `GODEBUG`를 전파하며 프록시 비활성화 시 자동으로 정리합니다.
+- **SSH 원격 호스트에서 `node:sqlite`를 지원하는 Node 22.5+ 런타임 우선 탐색 (PR #117 통합, `@dubhe` 감사)**: [ssh-remote.mjs](../lib/ssh-remote.mjs)를 업데이트해 `nvm`, `fnm`, `mise`, `asdf`, `volta` 및 `~/.antigravity-hub-server/bin/agy-node`에서 `node:sqlite`를 지원하는 최상위 버전 Node 런타임을 탐색하며, 버전 세그먼트 앵커 필터링과 `set -e` 안전성을 강화했습니다.
+
 ### v2.16.13
 - **위안화(CNY) 통화 환산을 백그라운드 자동 실시간 환율로 전환 (오프라인 기본값 `6.7`, 환율 설정 UI 제거)**: [pricing.mjs](../lib/pricing.mjs)에 `createExchangeRateStore`를 추가해 위안화 표시 선택 시 `createProxyFetcher()`를 통해 무료 공개 USD-CNY 실시간 환율을 백그라운드에서 자동 조회(기본 `open.er-api.com`, 보조 `api.frankfurter.app`, 24시간 로컬 캐시, 오프라인 또는 오류 시 무음으로 `6.7` 대체)하며, 설정 및 요금 탭에서 수동 환율 입력란과 기준 환율 안내를 제거했습니다.
 - **Antigravity 2.35.2에서 응답 하단 작업 막대에 '턴 하단 통계'와 `...` 분기 버튼이 표시되지 않는 문제 수정 (closes #111)**: 단일 책임 헬퍼 `findResponseActionRow()`를 도입해 단일 턴 컨테이너 내에서 `[data-turn-content]` / `worked-for-collapsible` 바깥쪽 상위 요소까지 탐색하고 단일 버튼 툴팁 래퍼를 벗겨낸 뒤 속성, 아이콘 리가처, 연결된 툴팁, React fiber 메타데이터 순으로 단계별 폴백 탐지를 수행하며 `responseDoneCache` 캐시 적중도 복구했습니다.

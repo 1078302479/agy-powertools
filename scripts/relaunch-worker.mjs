@@ -18,6 +18,7 @@ const JOB_TTL_MS = 60_000;
 const TARGET_BASENAME_RE = /^antigravity\.exe$/i;
 const ALLOWED_ARG_PATTERNS = [
   /^--remote-debugging-port=0$/,
+  /^--wsl-distro=[A-Za-z0-9](?:[A-Za-z0-9._ -]{0,62}[A-Za-z0-9._-])?$/,
   /^--proxy-server=(?:https?|socks5):\/\/[^\x00-\x1f\x7f\s'"`\\;$|&<>]{1,256}$/,
   /^--proxy-bypass-list=[^\x00-\x1f\x7f'"`\\$|&<>]{1,512}$/
 ];
@@ -171,6 +172,9 @@ export function validateRelaunchJob(
       }
     }
   }
+  if (job.wslMode !== undefined && typeof job.wslMode !== 'boolean') {
+    return { valid: false, reason: 'invalid-wsl-mode' };
+  }
   if (typeof job.ackPath !== 'string' || !job.ackPath.trim()) {
     return { valid: false, reason: 'invalid-ack-path' };
   }
@@ -269,7 +273,7 @@ export function parseTasklistPids(stdout, { excludePids = new Set(), imageNames 
 
 // Strict unfiltered CSV parser: any error, localized diagnostic, empty output,
 // or truncated row fails closed instead of looking like "0 running processes".
-export function parseCredentialWriterPids(stdout, excludeOrSelfPid = new Set()) {
+export function parseCredentialWriterEntries(stdout, excludeOrSelfPid = new Set()) {
   const text = String(stdout || '').trim();
   if (!text) throw new Error('process-list-unavailable');
   let excludePids;
@@ -288,18 +292,94 @@ export function parseCredentialWriterPids(stdout, excludeOrSelfPid = new Set()) 
   }
   const pids = [];
   const seen = new Set();
+  const imageNames = [];
+  const pidsByImage = new Map();
   for (const rawLine of text.split(/\r?\n/)) {
     const line = rawLine.trim();
     const match = /^"([^"]+)","(\d+)","[^"]*","\d+","[^"]*"$/.exec(line);
     if (!match) throw new Error('process-list-unavailable');
+    const imageName = match[1];
     const pid = Number(match[2]);
-    if (!Number.isInteger(pid) || pid <= 0) throw new Error('process-list-unavailable');
-    if (pattern.test(match[1]) && !excludePids.has(pid) && !seen.has(pid)) {
+    if (!Number.isInteger(pid) || pid < 0) throw new Error('process-list-unavailable');
+    if (pid === 0) {
+      if (pattern.test(imageName)) throw new Error('process-list-unavailable');
+      continue;
+    }
+    if (pattern.test(imageName) && !excludePids.has(pid) && !seen.has(pid)) {
       seen.add(pid);
       pids.push(pid);
+      const lowerKey = imageName.toLowerCase();
+      let bucket = pidsByImage.get(lowerKey);
+      if (!bucket) {
+        bucket = { imageName, pids: [] };
+        pidsByImage.set(lowerKey, bucket);
+        imageNames.push(imageName);
+      }
+      bucket.pids.push(pid);
     }
   }
-  return pids;
+  return { pids, imageNames, pidsByImage };
+}
+
+export function parseCredentialWriterPids(stdout, excludeOrSelfPid = new Set()) {
+  return parseCredentialWriterEntries(stdout, excludeOrSelfPid).pids;
+}
+
+function updateWslEnvForProxy(env, job, { hasPluginProxySpec = false, clearedGodebug = false } = {}) {
+  if (!job?.wslMode) return;
+  const wslEnvKeys = Object.keys(env).filter(k => k.toUpperCase() === 'WSLENV');
+  const wslEnvKey = wslEnvKeys[0] || 'WSLENV';
+  const rawExisting = wslEnvKeys.map(k => String(env[k] || '')).filter(Boolean).join(':');
+  for (const extraKey of wslEnvKeys.slice(1)) delete env[extraKey];
+
+  const entries = [];
+  const seenNames = new Set();
+  for (const rawEntry of rawExisting.split(':')) {
+    const trimmed = rawEntry.trim();
+    if (!trimmed) continue;
+    const varName = trimmed.split('/')[0];
+    if (!varName || seenNames.has(varName)) continue;
+    seenNames.add(varName);
+    entries.push(trimmed);
+  }
+
+  let nextEntries = entries;
+  if (job.proxyEnabled) {
+    if (!job.forceHttp1 && clearedGodebug) {
+      nextEntries = nextEntries.filter(entry => entry.split('/')[0].toUpperCase() !== 'GODEBUG');
+    }
+    const presentNames = new Set(nextEntries.map(entry => entry.split('/')[0]));
+    if (job.proxyEnv && typeof job.proxyEnv === 'object') {
+      for (const [key, value] of Object.entries(job.proxyEnv)) {
+        if (typeof value !== 'string') continue;
+        if (!ALLOWED_PROXY_ENV_KEYS.has(key)) continue;
+        if (key === 'GODEBUG' && !job.forceHttp1) continue;
+        if (!presentNames.has(key)) {
+          presentNames.add(key);
+          nextEntries.push(`${key}/u`);
+        }
+      }
+    }
+  } else {
+    const hasRemainingUserGodebug = Object.keys(env).some(
+      k => k.toUpperCase() === 'GODEBUG' && Boolean(env[k])
+    );
+    nextEntries = nextEntries.filter(entry => {
+      const upper = entry.split('/')[0].toUpperCase();
+      if (upper === 'AGY_POWERTOOLS_PROXY_SPEC') return false;
+      if (hasPluginProxySpec) {
+        if (CLEAR_PROXY_ENV_UPPER.has(upper)) return false;
+        if (upper === 'GODEBUG' && !hasRemainingUserGodebug) return false;
+      }
+      return true;
+    });
+  }
+
+  if (nextEntries.length) {
+    env[wslEnvKey] = nextEntries.join(':');
+  } else if (wslEnvKeys.length) {
+    delete env[wslEnvKey];
+  }
 }
 
 export function buildCleanTargetEnv(baseEnv, job) {
@@ -313,6 +393,8 @@ export function buildCleanTargetEnv(baseEnv, job) {
   if (job?.profileDir) {
     env.ANTIGRAVITY_USER_DATA_DIR = job.profileDir;
   }
+  let hasPluginProxySpec = false;
+  let clearedGodebug = false;
   if (job?.proxyEnabled) {
     if (job.proxyEnv && typeof job.proxyEnv === 'object') {
       for (const [key, value] of Object.entries(job.proxyEnv)) {
@@ -323,11 +405,12 @@ export function buildCleanTargetEnv(baseEnv, job) {
       for (const key of Object.keys(env)) {
         if (key.toUpperCase() === 'GODEBUG' && env[key] === 'http2client=0') {
           delete env[key];
+          clearedGodebug = true;
         }
       }
     }
   } else {
-    const hasPluginProxySpec = Object.keys(env).some(
+    hasPluginProxySpec = Object.keys(env).some(
       key => key.toUpperCase() === 'AGY_POWERTOOLS_PROXY_SPEC' && Boolean(env[key])
     );
     if (hasPluginProxySpec) {
@@ -339,6 +422,7 @@ export function buildCleanTargetEnv(baseEnv, job) {
       }
     }
   }
+  updateWslEnvForProxy(env, job, { hasPluginProxySpec, clearedGodebug });
   return env;
 }
 
@@ -375,30 +459,49 @@ export function listWindowsCredentialWriters({
   runCommand = spawnSync,
   pattern = CREDENTIAL_WRITER_IMAGE_RE
 } = {}) {
-  const runTasklist = username => {
-    const args = username
-      ? ['/FI', `USERNAME eq ${username}`, '/FO', 'CSV', '/NH']
-      : ['/FO', 'CSV', '/NH'];
-    return runCommand('tasklist.exe', args, {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      windowsHide: true,
-      timeout: 8000
-    });
-  };
+  const excludeSet = excludePids instanceof Set ? excludePids : new Set(excludePids || []);
+  const execTasklist = args => runCommand('tasklist.exe', args, {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+    windowsHide: true,
+    timeout: 8000
+  });
+  // Step A: Unfiltered CSV query first (fast; never run USERNAME-only filter without IMAGENAME)
+  const res = execTasklist(['/FO', 'CSV', '/NH']);
+  if (!res || res.error || res.status !== 0) throw new Error('process-list-unavailable');
+
+  // Step B: Strict 5-column CSV parse (skips non-matching PID 0 like System Idle Process)
+  const { pids: unfilteredPids, imageNames, pidsByImage } = parseCredentialWriterEntries(res.stdout, {
+    excludePids: excludeSet,
+    pattern
+  });
+
+  // Step C: Fast path when no candidate writers are running
+  if (unfilteredPids.length === 0) return [];
+
+  // Step D: Narrow per matched imageName using both IMAGENAME and USERNAME filters
   const rawUser = typeof env?.USERNAME === 'string' ? env.USERNAME.trim() : '';
   const safeUser = SAFE_WINDOWS_USERNAME_RE.test(rawUser) ? rawUser : '';
-  if (safeUser) {
-    const filtered = runTasklist(safeUser);
-    if (!filtered?.error && filtered?.status === 0 && String(filtered.stdout || '').trim()) {
-      try {
-        return parseCredentialWriterPids(filtered.stdout, { excludePids, pattern });
-      } catch {}
+  if (!safeUser) return unfilteredPids;
+
+  const narrowed = [];
+  const seen = new Set();
+  for (const imgName of imageNames) {
+    const lowerImg = imgName.toLowerCase();
+    const fallbackPids = pidsByImage.get(lowerImg)?.pids || [];
+    const filtered = execTasklist(['/FI', `IMAGENAME eq ${imgName}`, '/FI', `USERNAME eq ${safeUser}`, '/FO', 'CSV', '/NH']);
+    const out = String(filtered?.stdout || '').trim();
+    const matchedPids = (!filtered || filtered.error || filtered.status !== 0 || !out)
+      ? fallbackPids
+      : parseTasklistPids(out, { excludePids: excludeSet, imageNames: [lowerImg] });
+    for (const pid of matchedPids) {
+      if (!seen.has(pid)) {
+        seen.add(pid);
+        narrowed.push(pid);
+      }
     }
   }
-  const res = runTasklist('');
-  if (!res || res.error || res.status !== 0) throw new Error('process-list-unavailable');
-  return parseCredentialWriterPids(res.stdout, { excludePids, pattern });
+  return narrowed;
 }
 
 function defaultListAntigravityPids(excludePids, env = process.env) {

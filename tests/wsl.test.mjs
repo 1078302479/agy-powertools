@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { createConnection, createServer } from 'node:net';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -26,6 +26,7 @@ import {
 } from '../lib/launcher.mjs';
 import { startNativeIntegration } from '../lib/native-host.mjs';
 import { pruneStaleRuntimeRecords } from '../lib/runtime-control.mjs';
+import { buildCleanTargetEnv, validateRelaunchJob } from '../scripts/relaunch-worker.mjs';
 
 test('WSL2 environment detection, WSLENV merging, path conversion, and CDP URL rewriting work accurately', () => {
   assert.equal(isWslEnvironment({ platform: 'win32', env: { WSL_DISTRO_NAME: 'Ubuntu' } }), false);
@@ -332,11 +333,139 @@ test('launcher delegates Windows shortcuts and relaunch properly in WSL2 without
     assert.equal(relaunched.launchMethod, 'wsl-node-worker');
     assert.equal(spawned.cmd, '/mnt/c/Program Files/nodejs/node.exe');
     assert.equal(/powershell/i.test(spawned.cmd), false);
+    assert.equal(spawned.args[0], 'C:\\Users\\dev\\AppData\\Local\\Temp\\agy-powertools-relaunch-worker.mjs');
     assert.equal(spawned.args[1], 'C:\\Users\\dev\\AppData\\Local\\Temp\\agy-powertools-relaunch-job.json');
+    assert.equal(spawned.opts.cwd, winTempDir);
+    assert.equal(existsSync(join(winTempDir, 'agy-powertools-relaunch-worker.mjs')), true);
     const wslJob = JSON.parse(readFileSync(join(winTempDir, 'agy-powertools-relaunch-job.json'), 'utf8'));
     assert.equal(wslJob.target, fakeExe);
     assert.equal(wslJob.nonce, relaunched.nonce);
-    assert.deepEqual(wslJob.args, ['--remote-debugging-port=0']);
+    assert.equal(wslJob.wslMode, true);
+    assert.deepEqual(wslJob.args, ['--remote-debugging-port=0', '--wsl-distro=Ubuntu-24.04']);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Issue #113: WSL2 proxy relaunch avoids 9P UNC worker stall, passes --wsl-distro, sets wslMode, and propagates WSLENV /u', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agy-wsl-113-'));
+  try {
+    const winTempDir = join(dir, 'win-temp');
+    mkdirSync(winTempDir, { recursive: true });
+    const fakeExe = 'C:\\Users\\dev\\AppData\\Local\\Programs\\antigravity\\Antigravity.exe';
+
+    // 1. Even when toWindowsPath would return a 9P UNC path (\\wsl.localhost\...), WSL2 copies worker to %TEMP% and sets cwd=winTemp.wslPath
+    let toWinCalls = 0;
+    let spawned = null;
+    const res = scheduleRelaunchWithDebugPort({
+      dataDir: dir,
+      home: dir,
+      platform: 'linux',
+      env: { WSL_DISTRO_NAME: 'Ubuntu-24.04' },
+      wsl: true,
+      proxy: { enabled: true, url: 'socks5h://127.0.0.1:7897', bypass: '192.168.0.0/16', forceHttp1: true },
+      resolveWslExe: () => ({ winPath: fakeExe, wslPath: '' }),
+      resolveWslTemp: () => ({ winPath: 'C:\\Users\\dev\\AppData\\Local\\Temp\\', wslPath: winTempDir }),
+      resolveWslNode: () => ({ command: '/mnt/c/Program Files/nodejs/node.exe', extraEnv: {} }),
+      toWindowsPath: p => {
+        toWinCalls++;
+        return `\\\\wsl.localhost\\Ubuntu-24.04${p}`;
+      },
+      spawnProcess(cmd, args, opts) {
+        spawned = { cmd, args, opts };
+        return { unref() {} };
+      }
+    });
+    assert.equal(res.scheduled, true);
+    assert.equal(res.proxyActive, true);
+    assert.equal(toWinCalls, 0, 'must copy worker to %TEMP% instead of invoking toWindowsPath on ext4 workerPath');
+    assert.equal(spawned.args[0], 'C:\\Users\\dev\\AppData\\Local\\Temp\\agy-powertools-relaunch-worker.mjs');
+    assert.equal(spawned.opts.cwd, winTempDir);
+    assert.equal(existsSync(join(winTempDir, 'agy-powertools-relaunch-worker.mjs')), true);
+
+    const job = JSON.parse(readFileSync(join(winTempDir, 'agy-powertools-relaunch-job.json'), 'utf8'));
+    assert.equal(job.wslMode, true);
+    assert.deepEqual(job.args, [
+      '--remote-debugging-port=0',
+      '--wsl-distro=Ubuntu-24.04',
+      '--proxy-server=socks5://127.0.0.1:7897',
+      '--proxy-bypass-list=localhost;127.0.0.1;[::1];192.168.0.0/16'
+    ]);
+    assert.deepEqual(validateRelaunchJob(job, { exists: () => true }), { valid: true });
+
+    // Worker builds target env with WSLENV /u entries for all proxy keys + GODEBUG
+    const targetEnv = buildCleanTargetEnv({ WSLENV: 'USER_KEEP/p' }, job);
+    assert.equal(
+      targetEnv.WSLENV,
+      'USER_KEEP/p:HTTP_PROXY/u:HTTPS_PROXY/u:ALL_PROXY/u:http_proxy/u:https_proxy/u:all_proxy/u:NO_PROXY/u:no_proxy/u:AGY_POWERTOOLS_PROXY_SPEC/u:GODEBUG/u'
+    );
+
+    // 2. Unsafe WSL_DISTRO_NAME is omitted cleanly from job.args
+    let unsafeSpawned = null;
+    scheduleRelaunchWithDebugPort({
+      dataDir: dir,
+      home: dir,
+      platform: 'linux',
+      env: { WSL_DISTRO_NAME: 'Ubuntu;calc.exe' },
+      wsl: true,
+      resolveWslExe: () => ({ winPath: fakeExe, wslPath: '' }),
+      resolveWslTemp: () => ({ winPath: 'C:\\Users\\dev\\AppData\\Local\\Temp', wslPath: winTempDir }),
+      resolveWslNode: () => ({ command: 'node.exe', extraEnv: {} }),
+      spawnProcess(cmd, args, opts) {
+        unsafeSpawned = { cmd, args, opts };
+        return { unref() {} };
+      }
+    });
+    const unsafeJob = JSON.parse(readFileSync(join(winTempDir, 'agy-powertools-relaunch-job.json'), 'utf8'));
+    assert.equal(unsafeJob.wslMode, true);
+    assert.deepEqual(unsafeJob.args, ['--remote-debugging-port=0']);
+    assert.equal(unsafeSpawned.opts.cwd, winTempDir);
+
+    // 3. Worker already under /mnt/<drive>/ uses toWindowsPath without copying
+    let mntSpawned = null;
+    let mntToWinCalled = 0;
+    scheduleRelaunchWithDebugPort({
+      dataDir: dir,
+      home: dir,
+      pluginDir: '/mnt/c/dev/agy-powertools',
+      platform: 'linux',
+      env: { WSL_DISTRO_NAME: 'Debian' },
+      wsl: true,
+      resolveWslExe: () => ({ winPath: fakeExe, wslPath: '' }),
+      resolveWslTemp: () => ({ winPath: 'C:\\Users\\dev\\AppData\\Local\\Temp', wslPath: winTempDir }),
+      resolveWslNode: () => ({ command: 'node.exe', extraEnv: {} }),
+      toWindowsPath: () => {
+        mntToWinCalled++;
+        return 'C:\\dev\\agy-powertools\\scripts\\relaunch-worker.mjs';
+      },
+      spawnProcess(cmd, args, opts) {
+        mntSpawned = { cmd, args, opts };
+        return { unref() {} };
+      }
+    });
+    assert.equal(mntToWinCalled, 1);
+    assert.equal(mntSpawned.args[0], 'C:\\dev\\agy-powertools\\scripts\\relaunch-worker.mjs');
+    assert.equal(mntSpawned.opts.cwd, winTempDir);
+
+    // 4. Missing winTemp falls back to toWindowsPath and omits cwd
+    let noTempSpawned = null;
+    scheduleRelaunchWithDebugPort({
+      dataDir: dir,
+      home: dir,
+      platform: 'linux',
+      env: { WSL_DISTRO_NAME: 'Ubuntu' },
+      wsl: true,
+      resolveWslExe: () => ({ winPath: fakeExe, wslPath: '' }),
+      resolveWslTemp: () => ({ winPath: '', wslPath: '' }),
+      resolveWslNode: () => ({ command: 'node.exe', extraEnv: {} }),
+      toWindowsPath: () => 'C:\\fallback\\relaunch-worker.mjs',
+      spawnProcess(cmd, args, opts) {
+        noTempSpawned = { cmd, args, opts };
+        return { unref() {} };
+      }
+    });
+    assert.equal(noTempSpawned.args[0], 'C:\\fallback\\relaunch-worker.mjs');
+    assert.equal(noTempSpawned.opts.cwd, undefined);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -2036,3 +2036,67 @@ test('scheduleRelaunchWithDebugPort forwards expectedHash, switchId, and canonic
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('scheduleRelaunchWithDebugPort keeps native Windows jobs free of wslMode/--wsl-distro and equips WSL2 jobs with wslMode, --wsl-distro, and %TEMP% worker copy (Issue #113)', async () => {
+  const { validateRelaunchJob } = await import('../scripts/relaunch-worker.mjs');
+  const root = mkdtempSync(join(tmpdir(), 'agy-relaunch-113-'));
+  try {
+    const dataDir = join(root, 'data');
+    const appDir = join(root, 'AppData', 'Local', 'Programs', 'antigravity');
+    const winTempDir = join(root, 'win-temp');
+    mkdirSync(dataDir, { recursive: true });
+    mkdirSync(appDir, { recursive: true });
+    mkdirSync(winTempDir, { recursive: true });
+    const winExe = join(appDir, 'Antigravity.exe');
+    writeFileSync(winExe, '');
+
+    // Native Windows omits wslMode and --wsl-distro even if WSL_DISTRO_NAME happens to exist in env
+    const winRes = scheduleRelaunchWithDebugPort({
+      dataDir,
+      home: root,
+      platform: 'win32',
+      env: { LOCALAPPDATA: join(root, 'AppData', 'Local'), WSL_DISTRO_NAME: 'Ubuntu-24.04' },
+      spawnProcess() { return { unref() {} }; }
+    });
+    const winJob = JSON.parse(readFileSync(winRes.jobPath, 'utf8'));
+    assert.equal(winJob.wslMode, undefined);
+    assert.deepEqual(winJob.args, ['--remote-debugging-port=0']);
+    assert.deepEqual(validateRelaunchJob(winJob, { jobPath: winRes.jobPath }), { valid: true });
+
+    // WSL2 reads saved proxy settings.json, adds --wsl-distro & wslMode: true, copies worker to %TEMP%, and sets cwd
+    writeFileSync(join(dataDir, 'settings.json'), JSON.stringify({
+      proxyEnabled: true,
+      proxyUrl: 'http://127.0.0.1:7897',
+      proxyBypass: '10.0.0.0/8',
+      proxyForceHttp1: false
+    }));
+    let wslSpawn = null;
+    const wslRes = scheduleRelaunchWithDebugPort({
+      dataDir,
+      home: root,
+      platform: 'linux',
+      env: { WSL_DISTRO_NAME: 'Ubuntu-24.04' },
+      wsl: true,
+      resolveWslExe: () => ({ winPath: 'C:\\Users\\dev\\AppData\\Local\\Programs\\antigravity\\Antigravity.exe', wslPath: '' }),
+      resolveWslTemp: () => ({ winPath: 'C:\\Users\\dev\\AppData\\Local\\Temp', wslPath: winTempDir }),
+      resolveWslNode: () => ({ command: '/mnt/c/Program Files/nodejs/node.exe', extraEnv: {} }),
+      spawnProcess(cmd, args, opts) { wslSpawn = { cmd, args, opts }; return { unref() {} }; }
+    });
+    assert.equal(wslRes.proxyActive, true);
+    assert.equal(wslSpawn.args[0], 'C:\\Users\\dev\\AppData\\Local\\Temp\\agy-powertools-relaunch-worker.mjs');
+    assert.equal(wslSpawn.opts.cwd, winTempDir);
+    const wslJob = JSON.parse(readFileSync(join(winTempDir, 'agy-powertools-relaunch-job.json'), 'utf8'));
+    assert.equal(wslJob.wslMode, true);
+    assert.equal(wslJob.forceHttp1, false);
+    assert.equal(wslJob.proxyEnv.GODEBUG, undefined);
+    assert.deepEqual(wslJob.args, [
+      '--remote-debugging-port=0',
+      '--wsl-distro=Ubuntu-24.04',
+      '--proxy-server=http://127.0.0.1:7897',
+      '--proxy-bypass-list=localhost;127.0.0.1;[::1];10.0.0.0/8'
+    ]);
+    assert.deepEqual(validateRelaunchJob(wslJob, { exists: () => true }), { valid: true });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

@@ -8,6 +8,7 @@ import { pathToFileURL } from 'node:url';
 import {
   validateRelaunchJob,
   parseTasklistPids,
+  parseCredentialWriterEntries,
   parseCredentialWriterPids,
   listWindowsImagePids,
   listWindowsCredentialWriters,
@@ -977,19 +978,33 @@ test('PR #102: relaunch-worker catches language_server_windows_x64.exe & agy.exe
     assert.throws(() => parseCredentialWriterPids(bad, 10), /process-list-unavailable/);
   }
 
-  // 2. listWindowsCredentialWriters scopes to current USERNAME first, falls back to unfiltered CSV, and fails closed on error
+  // 2. listWindowsCredentialWriters queries unfiltered CSV first, then narrows per matched IMAGENAME+USERNAME (never USERNAME-only), and fails closed on unfiltered error
   const scopedCalls = [];
   const scoped = listWindowsCredentialWriters({
     excludePids: new Set([10]),
     env: { USERNAME: 'Alice.Dev' },
     runCommand: (_cmd, args) => {
       scopedCalls.push(args);
+      if (args.includes('IMAGENAME eq language_server.exe')) {
+        return { status: 0, stdout: '"language_server.exe","11","Console","1","200 K"\r\n' };
+      }
+      if (args.includes('IMAGENAME eq language_server_windows_x64.exe')) {
+        return { status: 0, stdout: '"language_server_windows_x64.exe","12","Console","1","200 K"\r\n' };
+      }
+      if (args.includes('IMAGENAME eq agy.exe')) {
+        return { status: 0, stdout: '"agy.exe","13","Console","1","200 K"\r\n' };
+      }
       return { status: 0, stdout: rows.join('\r\n') };
     }
   });
   assert.deepEqual(scoped, [11, 12, 13]);
-  assert.equal(scopedCalls.length, 1);
-  assert.ok(scopedCalls[0].includes('USERNAME eq Alice.Dev'));
+  assert.deepEqual(scopedCalls[0], ['/FO', 'CSV', '/NH']);
+  assert.equal(scopedCalls.length, 4);
+  for (const callArgs of scopedCalls) {
+    if (callArgs.some(a => a.startsWith('USERNAME eq '))) {
+      assert.ok(callArgs.some(a => a.startsWith('IMAGENAME eq ')), 'USERNAME eq must never be passed without IMAGENAME eq');
+    }
+  }
 
   assert.throws(() => listWindowsCredentialWriters({
     env: { USERNAME: 'Alice.Dev' },
@@ -1134,6 +1149,277 @@ test('PR #102: relaunch-worker catches language_server_windows_x64.exe & agy.exe
     const cancelAck = JSON.parse(readFileSync(ackPath, 'utf8'));
     assert.equal(cancelAck.state, 'failed');
     assert.equal(cancelAck.failedSwitchId, switchId);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('Issue #120: parseCredentialWriterPids skips non-matching PID 0, and listWindowsCredentialWriters uses fast unfiltered scan + per-image USERNAME narrowing', () => {
+  const win11Csv = [
+    '"System Idle Process","0","Services","0","8 K"',
+    '"System","4","Services","0","140 K"',
+    '"Antigravity.exe","1001","Console","1","250,000 K"',
+    '"Antigravity.exe","1002","Console","2","210,000 K"',
+    '"language_server_windows_x64.exe","2001","Console","1","80,000 K"',
+    '"agy.exe","3001","Console","1","30,000 K"',
+    '"node.exe","4001","Console","1","45,000 K"'
+  ].join('\r\n');
+
+  // 1. Strict parser skips System Idle Process (PID 0) and extracts unique matched image names
+  const entries = parseCredentialWriterEntries(win11Csv);
+  assert.deepEqual(entries.pids, [1001, 1002, 2001, 3001]);
+  assert.deepEqual(entries.imageNames, ['Antigravity.exe', 'language_server_windows_x64.exe', 'agy.exe']);
+  assert.deepEqual(parseCredentialWriterPids(win11Csv, new Set([1002])), [1001, 2001, 3001]);
+
+  // Matching image name claiming PID 0 still fails closed
+  assert.throws(
+    () => parseCredentialWriterPids('"Antigravity.exe","0","Console","1","8 K"'),
+    /process-list-unavailable/
+  );
+  assert.throws(
+    () => parseCredentialWriterPids('"language_server.exe","0","Console","1","8 K"'),
+    /process-list-unavailable/
+  );
+
+  // 2. 0-writer fast path: returns [] in a single unfiltered tasklist call when no writers are running
+  const zeroCalls = [];
+  const zeroWriters = listWindowsCredentialWriters({
+    env: { USERNAME: 'Alice.Dev' },
+    runCommand: (_cmd, args) => {
+      zeroCalls.push(args);
+      return {
+        status: 0,
+        stdout: [
+          '"System Idle Process","0","Services","0","8 K"',
+          '"System","4","Services","0","140 K"',
+          '"node.exe","4001","Console","1","45,000 K"'
+        ].join('\r\n')
+      };
+    }
+  });
+  assert.deepEqual(zeroWriters, []);
+  assert.deepEqual(zeroCalls, [['/FO', 'CSV', '/NH']]);
+
+  // 3. Per-image USERNAME narrowing handles localized English/Chinese zero-match text and never sends USERNAME without IMAGENAME
+  const narrowCalls = [];
+  const narrowed = listWindowsCredentialWriters({
+    env: { USERNAME: 'Alice.Dev' },
+    runCommand: (_cmd, args) => {
+      narrowCalls.push(args);
+      if (args.includes('IMAGENAME eq Antigravity.exe')) {
+        return { status: 0, stdout: '"Antigravity.exe","1001","Console","1","250,000 K"\r\n' };
+      }
+      if (args.includes('IMAGENAME eq language_server_windows_x64.exe')) {
+        return { status: 0, stdout: 'INFO: No tasks are running which match the specified criteria.\r\n' };
+      }
+      if (args.includes('IMAGENAME eq agy.exe')) {
+        return { status: 0, stdout: '信息: 没有运行的任务匹配指定标准。\r\n' };
+      }
+      return { status: 0, stdout: win11Csv };
+    }
+  });
+  assert.deepEqual(narrowed, [1001]);
+  assert.equal(narrowCalls.length, 4);
+  assert.deepEqual(narrowCalls[0], ['/FO', 'CSV', '/NH']);
+  for (const callArgs of narrowCalls) {
+    const hasUser = callArgs.some(a => a.startsWith('USERNAME eq '));
+    const hasImage = callArgs.some(a => a.startsWith('IMAGENAME eq '));
+    if (hasUser) assert.equal(hasImage, true, `USERNAME filter without IMAGENAME filter: ${JSON.stringify(callArgs)}`);
+  }
+
+  // 4. Per-image query failure falls back safely to unfiltered PIDs for that image (never aborts or drops writers)
+  const fallbackCalls = [];
+  const fallbackWriters = listWindowsCredentialWriters({
+    env: { USERNAME: 'Alice.Dev' },
+    runCommand: (_cmd, args) => {
+      fallbackCalls.push(args);
+      if (args.includes('IMAGENAME eq Antigravity.exe')) {
+        return { status: 0, stdout: '"Antigravity.exe","1001","Console","1","250,000 K"\r\n' };
+      }
+      if (args.includes('IMAGENAME eq language_server_windows_x64.exe')) {
+        return { status: 1, stdout: '', error: new Error('ETIMEDOUT') };
+      }
+      if (args.includes('IMAGENAME eq agy.exe')) {
+        return { status: 0, stdout: '   ' };
+      }
+      return { status: 0, stdout: win11Csv };
+    }
+  });
+  assert.deepEqual(fallbackWriters, [1001, 2001, 3001]);
+  assert.equal(fallbackCalls.length, 4);
+
+  // 5. Missing or unsafe USERNAME skips per-image narrowing and returns unfiltered PIDs directly
+  const noUserCalls = [];
+  const noUserWriters = listWindowsCredentialWriters({
+    env: { USERNAME: 'bad;user' },
+    runCommand: (_cmd, args) => {
+      noUserCalls.push(args);
+      return { status: 0, stdout: win11Csv };
+    }
+  });
+  assert.deepEqual(noUserWriters, [1001, 1002, 2001, 3001]);
+  assert.deepEqual(noUserCalls, [['/FO', 'CSV', '/NH']]);
+});
+
+test('Issue #120: live Windows listWindowsCredentialWriters parses real tasklist.exe CSV without failing on PID 0 or stalling', { skip: process.platform !== 'win32' }, () => {
+  const t0 = Date.now();
+  const writers = listWindowsCredentialWriters();
+  const elapsedMs = Date.now() - t0;
+  assert.ok(Array.isArray(writers));
+  assert.ok(writers.every(pid => Number.isInteger(pid) && pid > 0));
+  assert.ok(elapsedMs < 8000, `listWindowsCredentialWriters took too long: ${elapsedMs}ms`);
+
+  // 0-writer fast path live on Windows
+  const none = listWindowsCredentialWriters({ pattern: /^agy_nonexistent_writer_probe_9999\.exe$/i });
+  assert.deepEqual(none, []);
+
+  // Per-image USERNAME narrowing with non-existent user yields [] cleanly on live Windows
+  const otherUser = listWindowsCredentialWriters({ env: { USERNAME: 'AgyNonExistentUser9999' } });
+  assert.deepEqual(otherUser, []);
+});
+
+test('Issue #113: validateRelaunchJob accepts safe --wsl-distro and boolean wslMode, and buildCleanTargetEnv manages WSLENV /u propagation & cleanup', () => {
+  const root = mkdtempSync(join(tmpdir(), 'agy-worker-113-'));
+  try {
+    const target = join(root, 'Antigravity.exe');
+    writeFileSync(target, '');
+    const jobPath = join(root, 'relaunch-job.json');
+    const ackPath = join(root, 'relaunch-ack.json');
+    const baseJob = {
+      format: 1,
+      nonce: '11311311-2222-3333-4444-555555555555',
+      requestedAt: Date.now(),
+      target,
+      args: ['--remote-debugging-port=0', '--wsl-distro=Ubuntu-24.04'],
+      proxyEnabled: true,
+      forceHttp1: true,
+      wslMode: true,
+      proxyEnv: {
+        HTTP_PROXY: 'http://127.0.0.1:7897',
+        HTTPS_PROXY: 'http://127.0.0.1:7897',
+        ALL_PROXY: 'http://127.0.0.1:7897',
+        http_proxy: 'http://127.0.0.1:7897',
+        https_proxy: 'http://127.0.0.1:7897',
+        all_proxy: 'http://127.0.0.1:7897',
+        NO_PROXY: 'localhost,127.0.0.1,::1',
+        no_proxy: 'localhost,127.0.0.1,::1',
+        AGY_POWERTOOLS_PROXY_SPEC: 'http://127.0.0.1:7897|localhost,127.0.0.1,::1|h1',
+        GODEBUG: 'http2client=0'
+      },
+      ackPath
+    };
+
+    assert.equal(validateRelaunchJob(baseJob, { jobPath }).valid, true);
+    assert.equal(validateRelaunchJob({ ...baseJob, args: ['--remote-debugging-port=0', '--wsl-distro=Arch Linux'] }, { jobPath }).valid, true);
+    assert.equal(validateRelaunchJob({ ...baseJob, args: ['--remote-debugging-port=0', '--wsl-distro=a'] }, { jobPath }).valid, true);
+    assert.equal(validateRelaunchJob({ ...baseJob, wslMode: false }, { jobPath }).valid, true);
+    assert.equal(validateRelaunchJob({ ...baseJob, wslMode: undefined }, { jobPath }).valid, true);
+
+    // Reject shell injection / malformed --wsl-distro values
+    for (const badDistroArg of [
+      '--wsl-distro=',
+      '--wsl-distro= Ubuntu',
+      '--wsl-distro=Ubuntu ',
+      '--wsl-distro=Ubuntu;calc.exe',
+      '--wsl-distro=Ubuntu&whoami',
+      '--wsl-distro=Ubuntu|id',
+      '--wsl-distro=../evil',
+      `--wsl-distro=${'a'.repeat(65)}`
+    ]) {
+      assert.equal(validateRelaunchJob({ ...baseJob, args: ['--remote-debugging-port=0', badDistroArg] }, { jobPath }).reason, 'disallowed-arg');
+    }
+
+    // Reject non-boolean wslMode
+    for (const badWslMode of ['true', 1, null, {}]) {
+      assert.equal(validateRelaunchJob({ ...baseJob, wslMode: badWslMode }, { jobPath }).reason, 'invalid-wsl-mode');
+    }
+
+    // WSLENV propagation with proxy enabled + forceHttp1: preserves user entries, deduplicates by var name before '/', handles case-insensitive WslEnv key
+    const wslProxyEnv = buildCleanTargetEnv(
+      { PATH: 'C:\\Windows', WslEnv: 'USER_VAR/p:HTTP_PROXY/p' },
+      baseJob
+    );
+    assert.equal(wslProxyEnv.WSLENV, undefined);
+    assert.equal(
+      wslProxyEnv.WslEnv,
+      'USER_VAR/p:HTTP_PROXY/p:HTTPS_PROXY/u:ALL_PROXY/u:http_proxy/u:https_proxy/u:all_proxy/u:NO_PROXY/u:no_proxy/u:AGY_POWERTOOLS_PROXY_SPEC/u:GODEBUG/u'
+    );
+
+    // proxyEnabled with forceHttp1=false clears managed GODEBUG and removes GODEBUG from WSLENV
+    const noH1Job = {
+      ...baseJob,
+      forceHttp1: false,
+      proxyEnv: {
+        HTTP_PROXY: 'http://127.0.0.1:7897',
+        http_proxy: 'http://127.0.0.1:7897',
+        AGY_POWERTOOLS_PROXY_SPEC: 'http://127.0.0.1:7897|localhost|auto'
+      }
+    };
+    const wslNoH1 = buildCleanTargetEnv(
+      { WSLENV: 'USER_VAR/u:GODEBUG/u', GODEBUG: 'http2client=0' },
+      noH1Job
+    );
+    assert.equal(wslNoH1.GODEBUG, undefined);
+    assert.equal(wslNoH1.WSLENV, 'USER_VAR/u:HTTP_PROXY/u:http_proxy/u:AGY_POWERTOOLS_PROXY_SPEC/u');
+
+    // proxyEnabled with forceHttp1=false preserves user's own GODEBUG & WSLENV entry
+    const wslUserGodebug = buildCleanTargetEnv(
+      { WSLENV: 'USER_VAR/u:GODEBUG/u', GODEBUG: 'gctrace=1' },
+      noH1Job
+    );
+    assert.equal(wslUserGodebug.GODEBUG, 'gctrace=1');
+    assert.equal(wslUserGodebug.WSLENV, 'USER_VAR/u:GODEBUG/u:HTTP_PROXY/u:http_proxy/u:AGY_POWERTOOLS_PROXY_SPEC/u');
+
+    // proxyEnabled=false with prior plugin proxy spec strips managed proxy keys + GODEBUG from WSLENV while preserving user entries
+    const wslDisabledKeepUser = buildCleanTargetEnv(
+      {
+        HTTP_PROXY: 'http://127.0.0.1:7897',
+        http_proxy: 'http://127.0.0.1:7897',
+        AGY_POWERTOOLS_PROXY_SPEC: 'spec',
+        GODEBUG: 'http2client=0',
+        WSLENV: 'USER_VAR/u:HTTP_PROXY/u:http_proxy/u:AGY_POWERTOOLS_PROXY_SPEC/u:GODEBUG/u'
+      },
+      { wslMode: true, proxyEnabled: false, forceHttp1: false, proxyEnv: null }
+    );
+    assert.equal(wslDisabledKeepUser.HTTP_PROXY, undefined);
+    assert.equal(wslDisabledKeepUser.AGY_POWERTOOLS_PROXY_SPEC, undefined);
+    assert.equal(wslDisabledKeepUser.GODEBUG, undefined);
+    assert.equal(wslDisabledKeepUser.WSLENV, 'USER_VAR/u');
+
+    // proxyEnabled=false deletes WSLENV completely when all entries were plugin-managed
+    const wslDisabledEmpty = buildCleanTargetEnv(
+      {
+        HTTP_PROXY: 'http://127.0.0.1:7897',
+        AGY_POWERTOOLS_PROXY_SPEC: 'spec',
+        GODEBUG: 'http2client=0',
+        WSLENV: 'HTTP_PROXY/u:AGY_POWERTOOLS_PROXY_SPEC/u:GODEBUG/u'
+      },
+      { wslMode: true, proxyEnabled: false, forceHttp1: false, proxyEnv: null }
+    );
+    assert.equal('WSLENV' in wslDisabledEmpty, false);
+
+    // proxyEnabled=false WITHOUT plugin proxy spec removes only AGY_POWERTOOLS_PROXY_SPEC from WSLENV and preserves user proxy
+    const wslDisabledUserProxy = buildCleanTargetEnv(
+      {
+        HTTP_PROXY: 'http://corp:8080',
+        WSLENV: 'HTTP_PROXY/u:AGY_POWERTOOLS_PROXY_SPEC/u'
+      },
+      { wslMode: true, proxyEnabled: false, forceHttp1: false, proxyEnv: null }
+    );
+    assert.equal(wslDisabledUserProxy.HTTP_PROXY, 'http://corp:8080');
+    assert.equal(wslDisabledUserProxy.WSLENV, 'HTTP_PROXY/u');
+
+    // Non-WSL mode leaves WSLENV completely untouched
+    const nonWslOn = buildCleanTargetEnv(
+      { WSLENV: 'KEEP_ONLY/u' },
+      { ...baseJob, wslMode: false }
+    );
+    assert.equal(nonWslOn.WSLENV, 'KEEP_ONLY/u');
+    const nonWslOff = buildCleanTargetEnv(
+      { AGY_POWERTOOLS_PROXY_SPEC: 'spec', WSLENV: 'HTTP_PROXY/u:AGY_POWERTOOLS_PROXY_SPEC/u' },
+      { proxyEnabled: false }
+    );
+    assert.equal(nonWslOff.WSLENV, 'HTTP_PROXY/u:AGY_POWERTOOLS_PROXY_SPEC/u');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
