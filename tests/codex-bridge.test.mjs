@@ -1,12 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
+import { setTimeout as delay } from 'node:timers/promises';
 import {
   buildCodexArgs,
   buildCodexEnv,
+  buildSpawnCommand,
   inspectCodexHealth,
   parseCodexJsonl,
   resolveCodexBinary,
@@ -15,20 +18,28 @@ import {
 import { collectPackage } from '../lib/package.mjs';
 
 function makeStubCodex(dir) {
-  const stubPath = join(dir, 'codex-stub.mjs');
-  writeFileSync(stubPath, `#!/usr/bin/env node
+  const scriptPath = join(dir, 'codex-stub.mjs');
+  writeFileSync(scriptPath, `#!/usr/bin/env node
 import { readFileSync, writeFileSync } from 'node:fs';
 const args = process.argv.slice(2);
 if (args.includes('--version')) {
   console.log('codex-cli 0.171.0-stub');
   process.exit(0);
 }
+if (args.includes('exit-early')) {
+  console.error('fixture exited early');
+  process.exit(42);
+}
 const prompt = readFileSync(0, 'utf8').trim();
+if (prompt.startsWith('hold:')) {
+  writeFileSync(prompt.slice(5) + '.pid', String(process.pid));
+  await new Promise(resolve => setTimeout(resolve, 30_000));
+}
 const outIdx = args.indexOf('-o');
 const outFile = outIdx >= 0 ? args[outIdx + 1] : '';
 const isResume = args[1] === 'resume';
 const isReview = args[1] === 'review';
-const sessionId = isResume ? args[2] : 'sess-stub-42';
+const sessionId = isResume ? args[args.indexOf('--') + 1] : 'sess-stub-42';
 console.log(JSON.stringify({ type: 'thread.started', thread_id: sessionId }));
 console.log(JSON.stringify({ type: 'item.completed', item: { type: 'file_change', changes: [{ path: 'lib/example.mjs', kind: 'update' }] } }));
 const reply = JSON.stringify({ mode: isReview ? 'review' : isResume ? 'resume' : 'run', args, prompt, proxy: process.env.HTTPS_PROXY || '' });
@@ -36,11 +47,17 @@ console.log(JSON.stringify({ type: 'item.completed', item: { type: 'agent_messag
 console.log(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 120, cached_input_tokens: 40, output_tokens: 30 } }));
 if (outFile) writeFileSync(outFile, reply, 'utf8');
 `, 'utf8');
-  chmodSync(stubPath, 0o755);
-  return stubPath;
+  if (process.platform === 'win32') {
+    const cmdPath = join(dir, 'codex stub.cmd');
+    const node = process.execPath.replace(/%/g, '%%');
+    writeFileSync(cmdPath, `@"${node}" "%~dp0codex-stub.mjs" %*\r\n`, 'utf8');
+    return cmdPath;
+  }
+  chmodSync(scriptPath, 0o755);
+  return scriptPath;
 }
 
-test('buildCodexArgs builds exact flags for run, resume, and review modes', () => {
+test('buildCodexArgs builds exact flags for run, resume, and review modes and rejects unsafe inputs', () => {
   const runArgs = buildCodexArgs({
     mode: 'run',
     cwd: '/tmp/repo',
@@ -64,7 +81,11 @@ test('buildCodexArgs builds exact flags for run, resume, and review modes', () =
     outputLastMessagePath: '/tmp/out.txt',
     hasPrompt: true
   });
-  assert.deepEqual(resumeArgs, ['exec', 'resume', 'sess-123', '--json', '-o', '/tmp/out.txt', '-']);
+  assert.deepEqual(resumeArgs, ['exec', 'resume', '--json', '-o', '/tmp/out.txt', '--', 'sess-123', '-']);
+
+  for (const sessionId of ['  --last', '-x', '\nsession', 'sess\x7fid', 'sess\u0085id']) {
+    assert.throws(() => buildCodexArgs({ mode: 'resume', sessionId }), /sessionId/);
+  }
 
   const reviewArgs = buildCodexArgs({
     mode: 'review',
@@ -72,7 +93,58 @@ test('buildCodexArgs builds exact flags for run, resume, and review modes', () =
     model: 'gpt-5-codex',
     hasPrompt: false
   });
-  assert.deepEqual(reviewArgs, ['exec', 'review', '--base', 'main', '-m', 'gpt-5-codex', '--json']);
+  assert.deepEqual(reviewArgs, ['exec', 'review', '-c', 'sandbox_mode="read-only"', '--base', 'main', '-m', 'gpt-5-codex', '--json']);
+
+  const customPromptReview = buildCodexArgs({ mode: 'review', hasPrompt: true });
+  assert.deepEqual(customPromptReview, ['exec', 'review', '-c', 'sandbox_mode="read-only"', '--json', '-']);
+  assert.deepEqual(buildCodexArgs({ mode: 'review' }), ['exec', 'review', '-c', 'sandbox_mode="read-only"', '--uncommitted', '--json']);
+  for (const target of [{ base: 'main' }, { commit: 'abc123' }, { uncommitted: true }]) {
+    assert.throws(() => buildCodexArgs({ mode: 'review', hasPrompt: true, ...target }), /cannot be combined/);
+  }
+});
+
+test('Windows discovery and buildSpawnCommand handle .cmd shims and .exe binaries safely', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agy-codex-win-'));
+  try {
+    const npmDir = join(dir, 'AppData', 'Roaming', 'npm');
+    mkdirSync(npmDir, { recursive: true });
+    const cmdFile = join(npmDir, 'codex.cmd');
+    writeFileSync(cmdFile, '@echo off\r\n', 'utf8');
+
+    const viaCommon = resolveCodexBinary({ platform: 'win32', env: { Path: '' }, home: dir });
+    assert.equal(viaCommon.found, true);
+    assert.equal(viaCommon.source, 'common');
+    assert.equal(viaCommon.path, cmdFile);
+
+    const viaPath = resolveCodexBinary({ platform: 'win32', env: { Path: `"${npmDir}";C:\\Windows` }, home: join(dir, 'other') });
+    assert.equal(viaPath.found, true);
+    assert.equal(viaPath.source, 'path');
+    assert.equal(viaPath.path, cmdFile);
+
+    const exeFile = join(npmDir, 'codex.exe');
+    writeFileSync(exeFile, '');
+    assert.deepEqual(resolveCodexBinary({ platform: 'win32', env: { Path: npmDir }, home: dir }),
+      { found: true, source: 'path', path: exeFile });
+
+    const args = ['--version', '', 'C:\\a & b\\', 'say "hello" | (world)! ^', '%PATH%'];
+    const exe = 'C:\\Tools\\codex.exe';
+    assert.deepEqual(buildSpawnCommand(exe, args, 'win32'), { command: exe, args, options: {} });
+    for (const extension of ['cmd', 'BAT']) {
+      const bin = 'C:\\Program Files (x86) & tools\\codex.' + extension;
+      assert.deepEqual(buildSpawnCommand(bin, args, 'win32'), {
+        command: process.env.ComSpec || 'cmd.exe',
+        args: ['/d', '/e:on', '/v:off', '/s', '/c',
+          '""' + bin + '" "--version" "" "C:\\a & b\\\\" "say ""hello"" | (world)! ^" "%%cd:~,%PATH%%cd:~,%""'],
+        options: { windowsVerbatimArguments: true, windowsHide: true }
+      });
+      for (const value of ['a\nb', 'a\rb', 'a\0b']) {
+        assert.throws(() => buildSpawnCommand(bin, [value], 'win32'), /line breaks/);
+      }
+    }
+    assert.throws(() => buildSpawnCommand('C:\\%PATH%\\codex.cmd', [], 'win32'), /shim path/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('buildCodexEnv inherits Powertools proxy settings safely', () => {
@@ -103,7 +175,7 @@ test('parseCodexJsonl extracts sessionId, message, filesChanged, usage, and erro
 });
 
 test('runCodexTask executes stub codex for run, resume, review and records run history', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'agy-codex-test-'));
+  const dir = mkdtempSync(join(tmpdir(), 'agy codex & test-'));
   try {
     const stub = makeStubCodex(dir);
     const settings = {
@@ -125,10 +197,14 @@ test('runCodexTask executes stub codex for run, resume, review and records run h
     assert.equal(health.version, 'codex-cli 0.171.0-stub');
     assert.equal(health.proxyInherited, true);
 
+    const model = 'model "with quotes" & (symbols) ^! %PATH%';
+    const addDir = join(dir, 'more folders') + '\\';
     const runRes = await runCodexTask({
       mode: 'run',
       prompt: 'Implement feature X',
       cwd: dir,
+      model,
+      addDirs: [addDir],
       settings,
       dataDir: dir
     });
@@ -140,6 +216,8 @@ test('runCodexTask executes stub codex for run, resume, review and records run h
     assert.equal(payload.mode, 'run');
     assert.equal(payload.prompt, 'Implement feature X');
     assert.equal(payload.proxy, 'http://127.0.0.1:7897');
+    assert.equal(payload.args[payload.args.indexOf('-m') + 1], model);
+    assert.equal(payload.args[payload.args.indexOf('--add-dir') + 1], addDir);
 
     const resumeRes = await runCodexTask({
       mode: 'resume',
@@ -156,18 +234,24 @@ test('runCodexTask executes stub codex for run, resume, review and records run h
     const reviewRes = await runCodexTask({
       mode: 'review',
       cwd: dir,
-      uncommitted: true,
+      prompt: 'Review parsing and error handling',
+      sandbox: 'danger-full-access',
       settings,
       dataDir: dir
     });
     assert.equal(reviewRes.ok, true);
-    assert.equal(JSON.parse(reviewRes.message).mode, 'review');
+    const reviewPayload = JSON.parse(reviewRes.message);
+    assert.equal(reviewPayload.mode, 'review');
+    assert.equal(reviewPayload.args.includes('sandbox_mode="read-only"'), true);
+    assert.equal(reviewPayload.prompt, 'Review parsing and error handling');
+    assert.equal(reviewPayload.args.includes('--uncommitted'), false);
 
     const historyFile = join(dir, 'codex-runs.json');
     assert.equal(existsSync(historyFile), true);
     const history = JSON.parse(readFileSync(historyFile, 'utf8'));
     assert.equal(history.length, 3);
     assert.equal(history[0].mode, 'review');
+    assert.equal(history[0].sandbox, 'read-only');
 
     const disabledRes = await runCodexTask({
       mode: 'run',
@@ -183,59 +267,130 @@ test('runCodexTask executes stub codex for run, resume, review and records run h
   }
 });
 
-test('codex-mcp.mjs speaks Stdio JSON-RPC 2.0 (initialize, tools/list, tools/call) and is included in package', async () => {
-  const bundle = collectPackage(resolve('.'));
-  const paths = new Set(bundle.files.map(f => f.path));
-  assert.equal(paths.has('mcp_config.json'), true);
-  assert.equal(paths.has('scripts/codex-mcp.mjs'), true);
-  assert.equal(paths.has('lib/codex-bridge.mjs'), true);
-  assert.equal(paths.has('skills/codex-cli/SKILL.md'), true);
+test('runCodexTask handles early stdin closure without losing the child error', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'agy-codex-early-exit-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const result = await runCodexTask({
+    prompt: 'x'.repeat(1024 * 1024),
+    model: 'exit-early',
+    cwd: dir,
+    settings: { codexPath: makeStubCodex(dir) },
+    dataDir: dir
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.exitCode, 42);
+  assert.match(result.error, /fixture exited early/);
+});
 
+function startMcp(t) {
   const dir = mkdtempSync(join(tmpdir(), 'agy-codex-mcp-'));
-  try {
-    const stub = makeStubCodex(dir);
-    const child = spawn(process.execPath, [resolve('scripts/codex-mcp.mjs')], {
-      env: { ...process.env, CODEX_BIN: stub },
-      stdio: ['pipe', 'pipe', 'pipe']
-    });
-
-    const responses = [];
-    let buf = '';
-    const waitForCount = count => new Promise((res, rej) => {
-      const timer = setTimeout(() => rej(new Error(`Timeout waiting for ${count} MCP responses; got ${responses.length}`)), 5000);
-      const check = () => {
-        if (responses.length >= count) { clearTimeout(timer); res(); }
-      };
-      child.stdout.on('data', chunk => {
-        buf += chunk.toString('utf8');
-        let idx;
-        while ((idx = buf.indexOf('\n')) >= 0) {
-          const line = buf.slice(0, idx).trim();
-          buf = buf.slice(idx + 1);
-          if (line) responses.push(JSON.parse(line));
-        }
-        check();
-      });
-      check();
-    });
-
-    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26' } }) + '\n');
-    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
-    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }) + '\n');
-    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'codex_doctor', arguments: {} } }) + '\n');
+  const child = spawn(process.execPath, [resolve('scripts/codex-mcp.mjs')], {
+    env: { ...process.env, HOME: dir, USERPROFILE: dir, CODEX_HOME: join(dir, '.codex'), CODEX_BIN: makeStubCodex(dir) },
+    stdio: ['pipe', 'pipe', 'pipe']
+  });
+  const closed = once(child, 'close');
+  t.after(async () => {
     child.stdin.end();
-
-    await waitForCount(3);
-    const initMsg = responses.find(r => r.id === 1);
-    const listMsg = responses.find(r => r.id === 2);
-    const docMsg = responses.find(r => r.id === 3);
-    assert.equal(initMsg.result.serverInfo.name, 'agy-codex');
-    assert.deepEqual(listMsg.result.tools.map(t => t.name), ['codex_doctor', 'codex_run', 'codex_resume', 'codex_review']);
-    assert.equal(docMsg.result.isError, false);
-    const doctorPayload = JSON.parse(docMsg.result.content[0].text);
-    assert.equal(doctorPayload.found, true);
-    assert.equal(doctorPayload.version, 'codex-cli 0.171.0-stub');
-  } finally {
+    await closed;
     rmSync(dir, { recursive: true, force: true });
+  });
+  const responses = new Map();
+  let buffer = '';
+  child.stdout.setEncoding('utf8').on('data', chunk => {
+    buffer += chunk;
+    let index;
+    while ((index = buffer.indexOf('\n')) >= 0) {
+      const response = JSON.parse(buffer.slice(0, index));
+      responses.set(response.id, response);
+      buffer = buffer.slice(index + 1);
+    }
+  });
+  child.stderr.resume();
+  return {
+    dir, child, responses, closed,
+    send: message => child.stdin.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n')
+  };
+}
+
+async function waitFor(check, description) {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    const result = check();
+    if (result) return result;
+    await delay(20);
   }
+  assert.fail('Timed out waiting for ' + description);
+}
+
+function processExited(pid) {
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (err) {
+    if (err.code !== 'ESRCH') throw err;
+    return true;
+  }
+}
+
+test('codex-mcp.mjs serves JSON-RPC tools and is included in the package', async t => {
+  const bundle = collectPackage(resolve('.'));
+  const paths = new Set(bundle.files.map(file => file.path));
+  for (const path of ['mcp_config.json', 'scripts/codex-mcp.mjs', 'lib/codex-bridge.mjs', 'skills/codex-cli/SKILL.md']) {
+    assert.equal(paths.has(path), true, path);
+  }
+
+  const { dir, responses, send } = startMcp(t);
+  send({ id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26' } });
+  send({ method: 'notifications/initialized' });
+  send({ id: 2, method: 'tools/list' });
+  send({ id: 3, method: 'tools/call', params: { name: 'codex_doctor', arguments: {} } });
+  const doctor = await waitFor(() => responses.get(3), 'codex_doctor');
+  assert.equal(responses.get(1).result.serverInfo.name, 'agy-codex');
+  assert.deepEqual(responses.get(2).result.tools.map(tool => tool.name), ['codex_doctor', 'codex_run', 'codex_resume', 'codex_review']);
+  assert.equal(doctor.result.isError, false);
+  const health = JSON.parse(doctor.result.content[0].text);
+  assert.equal(health.found, true);
+  assert.equal(health.version, 'codex-cli 0.171.0-stub');
+  assert.equal(health.codexHome, join(dir, '.codex'));
+
+  for (const [id, mode] of [[4, 'run'], [5, 'resume'], [6, 'review']]) {
+    const args = { cwd: dir, prompt: 'Test tool arguments' };
+    if (mode === 'resume') args.sessionId = 'sess-stub-42';
+    send({ id, method: 'tools/call', params: { name: 'codex_' + mode, arguments: args } });
+    const { result } = await waitFor(() => responses.get(id), mode);
+    assert.equal(result.isError, false, result.content[0].text);
+    const payload = JSON.parse(JSON.parse(result.content[0].text).message);
+    assert.equal(payload.mode, mode);
+    assert.equal(payload.prompt, args.prompt);
+
+    const invalidArgs = { ...args, settings: { codexEnabled: false } };
+    send({ id: id + 3, method: 'tools/call', params: { name: 'codex_' + mode, arguments: invalidArgs } });
+    const { error } = await waitFor(() => responses.get(id + 3), mode + ' argument rejection');
+    assert.equal(error?.code, -32602);
+  }
+});
+
+test('codex-mcp.mjs terminates active Codex children on cancellation and stdin EOF', async t => {
+  const { dir, child, closed, responses, send } = startMcp(t);
+  for (const [id, name] of [[1, 'cancel'], [2, 'eof']]) {
+    send({ id, method: 'tools/call', params: { name: 'codex_run', arguments: { cwd: dir, prompt: 'hold:' + name } } });
+  }
+  const waitForPid = name => {
+    const marker = join(dir, name + '.pid');
+    return waitFor(() => existsSync(marker) && Number(readFileSync(marker, 'utf8')), name + ' fixture to start');
+  };
+  const cancelledPid = await waitForPid('cancel');
+  const eofPid = await waitForPid('eof');
+
+  send({ method: 'notifications/cancelled', params: { requestId: 1 } });
+  await waitFor(() => processExited(cancelledPid), 'cancelled fixture to exit');
+  assert.equal(processExited(eofPid), false);
+  send({ id: 3, method: 'ping' });
+  await waitFor(() => responses.get(3), 'ping after cancellation');
+  assert.equal(responses.has(1), false);
+
+  child.stdin.end();
+  await waitFor(() => processExited(eofPid), 'fixture to exit after EOF');
+  assert.deepEqual(await closed, [0, null]);
+  assert.equal(responses.has(2), false);
 });

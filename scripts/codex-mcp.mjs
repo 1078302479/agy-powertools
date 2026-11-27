@@ -66,10 +66,10 @@ const TOOLS = [
       type: 'object',
       properties: {
         cwd: { type: 'string', description: 'Absolute path to the Git repository to review.' },
-        uncommitted: { type: 'boolean', description: 'Review staged, unstaged, and untracked changes (default true when base/commit are omitted).' },
+        uncommitted: { type: 'boolean', description: 'Review staged, unstaged, and untracked changes (the default without a target or custom prompt).' },
         base: { type: 'string', description: 'Optional base branch name to diff against.' },
         commit: { type: 'string', description: 'Optional commit SHA to review.' },
-        prompt: { type: 'string', description: 'Optional custom review focus or checklist.' },
+        prompt: { type: 'string', description: 'Custom review instructions. Cannot be combined with base, commit, or uncommitted: true.' },
         model: { type: 'string', description: 'Optional model override.' },
         timeoutSeconds: { type: 'integer', minimum: 10, maximum: 1800, description: 'Execution timeout in seconds (default 600).' }
       },
@@ -77,6 +77,13 @@ const TOOLS = [
     }
   }
 ];
+
+const taskModes = new Map([
+  ['codex_run', 'run'],
+  ['codex_resume', 'resume'],
+  ['codex_review', 'review']
+]);
+const activeTasks = new Map();
 
 function formatToolResult(payload, isError = false) {
   return {
@@ -98,7 +105,11 @@ function writeMessage(msg) {
 
 async function handleRequest(req) {
   const { id, method, params } = req || {};
-  if (!method) return;
+  if (typeof method !== 'string') return;
+  if (method === 'notifications/cancelled') {
+    activeTasks.get(params?.requestId)?.abort();
+    return;
+  }
   if (method.startsWith('notifications/')) return;
 
   try {
@@ -127,21 +138,36 @@ async function handleRequest(req) {
     }
 
     if (method === 'tools/call') {
+      if (id === undefined) return;
       const name = params?.name;
-      const args = params?.arguments && typeof params.arguments === 'object' ? params.arguments : {};
       let result;
       if (name === 'codex_doctor') {
         const health = inspectCodexHealth();
         result = formatToolResult(health, !health.found || !health.enabled);
-      } else if (name === 'codex_run') {
-        const out = await runCodexTask({ ...args, mode: 'run' });
-        result = formatToolResult(out, !out.ok);
-      } else if (name === 'codex_resume') {
-        const out = await runCodexTask({ ...args, mode: 'resume' });
-        result = formatToolResult(out, !out.ok);
-      } else if (name === 'codex_review') {
-        const out = await runCodexTask({ ...args, mode: 'review' });
-        result = formatToolResult(out, !out.ok);
+      } else if (taskModes.has(name)) {
+        if (activeTasks.has(id)) {
+          writeMessage({ jsonrpc: '2.0', id, error: { code: -32600, message: 'Request ID is already active' } });
+          return;
+        }
+        const properties = TOOLS.find(tool => tool.name === name).inputSchema.properties;
+        const args = params.arguments ?? {};
+        if (typeof args !== 'object' || Array.isArray(args) ||
+            Object.keys(args).some(key => !Object.hasOwn(properties, key))) {
+          writeMessage({ jsonrpc: '2.0', id, error: { code: -32602, message: 'Tool arguments must be an object containing only declared properties' } });
+          return;
+        }
+        const taskArgs = Object.fromEntries(Object.keys(properties)
+          .filter(key => Object.hasOwn(args, key))
+          .map(key => [key, args[key]]));
+        const controller = new AbortController();
+        activeTasks.set(id, controller);
+        try {
+          const out = await runCodexTask({ ...taskArgs, mode: taskModes.get(name), signal: controller.signal });
+          if (controller.signal.aborted) return;
+          result = formatToolResult(out, !out.ok);
+        } finally {
+          activeTasks.delete(id);
+        }
       } else {
         writeMessage({ jsonrpc: '2.0', id, error: { code: -32601, message: `Unknown tool: ${name}` } });
         return;
@@ -196,4 +222,6 @@ process.stdin.on('data', chunk => {
   buffer = Buffer.concat([buffer, chunk]);
   drainBuffer();
 });
-process.stdin.on('end', () => process.exit(0));
+process.stdin.on('end', () => {
+  for (const controller of activeTasks.values()) controller.abort();
+});
