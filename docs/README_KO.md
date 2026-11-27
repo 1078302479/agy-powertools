@@ -224,6 +224,18 @@ sh ./install.sh
 
 ## 변경 이력
 
+### v2.16.11
+- **SOCKS5 프록시 환경에서 사이드카 충돌 수정 및 프록시 재시작 안정성 강화 (#93, #64)**: SOCKS5/SOCKS5H 환경에서 Node `fetch` 충돌을 유발하는 `NODE_USE_ENV_PROXY`를 제거하고 [pricing.mjs](../lib/pricing.mjs)를 `createProxyFetcher()`로 통합했습니다. Windows 재시작 ACK 대기를 6초로 늘리고 실패 시 `lastRelaunchAt`을 초기화하며, 외부 프록시 설정 변경 시 자동 재시작, `configureLaunchers()` 비차단 실행, 4초 디버그 포트 폴링 중 24시간 재시작 차단 쿨다운 유지를 적용했습니다.
+- **다중 계정 전환 후 자격 증명 혼선 및 macOS 키링 접두사 디코딩 수정 (#97, #95)**: `refreshHash` 추출 및 충돌 보호를 추가하고, 계정 전환 재시작 시 현재 사용자 범위의 잔여 `language_server.exe`만 종료한 뒤 종료 후 동적 자격 증명 복원 및 `credential-user-scope` 정리를 수행합니다(권한 상승 프로세스나 일시적 복원 오류 시에도 IDE가 닫힌 상태로 멈추지 않도록 보호). 또한 `fromLsAddress` 검증과 `switchMismatch` 자가 복구 안내를 추가하고 JS와 Win32 C# 양측에서 macOS `go-keyring-base64:` 접두사를 일괄 해제합니다.
+- **Windows `.gemini` NTFS 정션 지원 및 보조 창 설치 배너 멈춤 수정 (#96, #100)**: [lifecycle.mjs](../lib/lifecycle.mjs)의 `assertOwnedPath`에서 `.gemini` 루트 수준 심볼릭 링크/정션만 허용하고 하위 경로 심볼릭 링크 차단은 유지했으며, 크로스 볼륨 `EXDEV` 복사 대체 경로와 정보(About) 페이지의 `update.install` 오류 상세 표시를 추가했습니다. 업데이트 상태가 `installing`에서 `idle`로 돌아올 때 보조 창의 설치 진행 배너가 멈추는 문제도 수정했습니다.
+- **사용자 지정 글꼴 굵기 적용 시 제목 가늘어짐 및 `body`의 `font-variation-settings` 틀어짐 수정**: [native-ui.js](../lib/native-ui.js)에 단조 증가 굵기 단계 `--agy-fw-*`를 도입해 호스트 Tailwind `--font-weight-*` 변수와 `body`의 `font-variation-settings: normal`을 재정의하고, 패널과 사이드바 모니터 스타일의 고정 굵기를 `--agy-fw-*`로 통합했습니다(사용자 지정 글꼴 굵기가 꺼져 있을 때는 기본 상태와 동일).
+- **Node 24 Windows 환경에서 바이너리 `.lnk` 바로 가기 스캔 시 힙 손상 충돌 수정**: [launcher.mjs](../lib/launcher.mjs)의 `.lnk` 사전 검사를 `utf16le.toLowerCase()` 대신 ASCII 및 짝수/홀수 오프셋 UTF-16LE를 지원하는 무할당 원시 바이트 스캐너(`containsFoldedBytes`)로 교체했습니다.
+- **`custom-i18n.json` 항목 길이 제한 상향 및 커뮤니티 PR 3건 통합 (#94, PR #98, PR #86, PR #83, `@mutezebra`, `@Nazumeki`, `@Hi-Jiajun` 감사)**:
+  - `custom-i18n.json` 항목당 텍스트 제한을 400자에서 2000자로 확대했습니다 (#94).
+  - 로컬 및 SSH 원격 창에서 `file://` URL 끝의 `:line[:col]` 이동을 지원하며, 경로 내 `#`, POSIX 실제 `:숫자` 파일명 및 잘못된 `:0` 인덱스를 안전하게 처리합니다 (PR #98).
+  - 중복 구분선이 없는 12px 밀착 설정 레이아웃을 적용하고, 사이드바 실행 중 빔과 설정 미리보기를 6색 대칭 광선으로 개선하여 라이트 모드 번짐 효과와 실시간 `quota` 색상 동기화를 다듬었습니다 (PR #86).
+  - 9개 언어 정적 UI 문자열 400개를 선별 통합하고 `controlOnlyLabels` 제목 보호 및 번체 중국어 번역 테이블 수정을 적용했으며, 개요 패널의 기본 `title`을 스코프 인식 테마 툴팁으로 업그레이드했습니다 (PR #83).
+
 ### v2.16.10
 - **독립 프록시 활성화 시 HTTPS 터널이 우회되어 업데이트 확인이 실패하는 문제 수정 (PR #92, #90, `@qimengdunjia` 감사)**: `agent: false` 대신 전용 `https.Agent`로 터널링된 TLS 소켓을 재사용하고 본문 수신 중 `AbortSignal` 및 18초 업데이트 RPC 타임아웃을 맞췄습니다.
 - **긴 작업의 도구 호출마다 발생하는 Windows IME 깜빡임 수정 (#89)**: `composerRingSig`를 하단 버튼에 실제 표시되는 항목으로만 축소하고 열린 팝오버는 실시간 상태를 읽도록 개선했습니다.

@@ -82,7 +82,9 @@ test('Traditional Chinese (zh-TW) uses Taiwan IT terminology, converts UI string
     assert.equal(store.get().language,'zh-TW');
   }finally{rmSync(dir,{recursive:true,force:true});}
   // Ensure no common simplified-only glyphs remain across UI source files after toZhTw
-  const simplifiedOnly=/[万与个为义于产仅从仓们价优会传体余侧关内写准减凑凭击划则刚创删务动区协单占却历压参发变号后听启周响唤围图圆场声处备头夹实审对导将尝尽层带帮并广库应开异强归当录径忆态总战执扩扬抢护报担拦择挂换据数断无旧时昵显暂机权条来栏树样档检汇没洁浅测浏滚满点热状独环现电监盘码确碍离积称稳筛签简类紧级线组细织终结给络绝统继续缓编缩网联脑范营补装观规视览触计订认让议记许设访证识诊试话询该详语误说请读调败账费资转轮软载较辅辑输边过运这进远违连迟适选遥邮采钟钥钮链销错键长闭问闲间阅队阶际险随隐静页顶项顺顿预频题额风馈驻验骤麦标彻]/;
+  assert.equal(toZhTw('智能体每次运行时应执行什么任务？'), '智能體每次執行時應執行什麼任務？');
+  assert.doesNotMatch(readFileSync('lib/zh-tw.mjs', 'utf8'), /'仍'\s*:\s*'仍'/);
+  const simplifiedOnly=/[万与个为义于产仅从仓们价优会传体余侧关内写准减凑凭击划则刚创删务动区协单占却历压参发变号后听启周响唤围图圆场声处备头夹实审对导将尝尽层带帮并广库应开异强归当录径忆态总战执扩扬抢护报担拦择挂换据数断无旧时昵显暂机权条来栏树样档检汇没洁浅测浏滚满点热状独环现电监盘码确碍离积称稳筛签简类紧级线组细织终结给络绝统继续缓编缩网联脑范营补装观规视览触计订认让议记许设访证识诊试话询该详语误说请读调败账费资转轮软载较辅辑输边过运这进远违连迟适选遥邮采钟钥钮链销错键长闭问闲间阅队阶际险随隐静页顶项顺顿预频题额风馈驻验骤麦标彻么释谈极扫经齐绪购买维铺迁滞册办学杠盖纯纲胶脚觉]/;
   for(const file of ['lib/native-i18n.js','lib/native-panels.js','lib/native-sidebar-monitor.js','lib/native-sidebar-drop.mjs','lib/native-ui.js','lib/sidecar-ui.mjs']){
     const converted=toZhTw(readFileSync(file,'utf8')).replace(/简体中文|批准/g,'');
     const leftover=converted.match(simplifiedOnly);
@@ -269,6 +271,35 @@ test('custom-i18n.json loads additive user translations safely and slash command
     // Array-of-pairs format is also supported
     writeFileSync(join(dir, 'custom-i18n.json'), JSON.stringify([['Array Custom Text', '数组词条']]));
     assert.deepEqual(loadCustomI18n(dir), [['Array Custom Text', '数组词条']]);
+
+    // Issue #94: long skill descriptions up to 2000 chars load and translate cleanly; entries > 2000 chars are rejected
+    const skillDesc1000 = ('Long skill description for custom-i18n limit verification. '.repeat(20)).slice(0, 1000);
+    const skillZh1000 = ('用于验证长技能描述自定义翻译上限的示例文本。'.repeat(50)).slice(0, 1000);
+    const exact2000Key = 'K'.repeat(2000);
+    const exact2000Val = 'V'.repeat(2000);
+    const over2000Key = 'X'.repeat(2001);
+    const over2000Val = 'Y'.repeat(2001);
+    writeFileSync(join(dir, 'custom-i18n.json'), JSON.stringify({
+      [skillDesc1000]: skillZh1000,
+      [exact2000Key]: exact2000Val,
+      [over2000Key]: '有效值但键超长',
+      'valid-key-over-val': over2000Val
+    }));
+    const longPairs = loadCustomI18n(dir);
+    assert.equal(longPairs.length, 2);
+    assert.deepEqual(longPairs[0], [skillDesc1000, skillZh1000]);
+    assert.deepEqual(longPairs[1], [exact2000Key, exact2000Val]);
+    const longCtx = vm.createContext({
+      document,
+      NodeFilter: { SHOW_TEXT: 4 },
+      MutationObserver: class { observe() {} disconnect() {} },
+      __agyToZhTw: toZhTw,
+      __agyCustomI18n: longPairs
+    });
+    vm.runInContext(readFileSync('lib/native-i18n.js', 'utf8'), longCtx);
+    assert.equal(longCtx.__agyI18n.t(skillDesc1000, 'zh-CN'), skillZh1000);
+    assert.equal(longCtx.__agyI18n.t(skillDesc1000, 'zh-TW'), toZhTw(skillZh1000));
+    assert.equal(longCtx.__agyI18n.t(over2000Key, 'zh-CN'), over2000Key);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -320,11 +351,19 @@ test('every pack covers the native catalog, static UI calls, and sidebar menus',
     const script = readFileSync('lib/'+file,'utf8');
     for (const match of script.matchAll(/(?:uiText|text)\(\s*(?:'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")\s*,\s*('(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")\s*\)/g)) keys.add(vm.runInNewContext(match[1]));
   }
+  const nativeKeys = new Set([...native.map(([key])=>key),...menuLabels]);
+  const basePatternRegexes = getLocalePack(packLanguages[0]).patterns.map(([pattern]) => pattern);
+  const mismatchToastEn = 'Account switch failed: logged in as another account. Please re-login the target account.';
+  const mismatchToastZh = '切号未生效：当前登录的仍是其他账号，已标记目标凭据失效，请重新登录目标账号。';
   const WORKED_RE = /^(?:Worked for\b|用时(?:\s|$)|用時(?:\s|$)|Durée\s*:|作業時間(?:\s|$)|작업 시간(?:\s|$)|Bearbeitungszeit(?:\s|$)|Tiempo de trabajo(?:\s|$)|Время работы(?:\s|$))/;
   const UPDATES_RE = /(?:[\u00b7\u2022\-]\s*)?(\d+)\s+(?:updates?\b|条进度|條進度|étapes?\b|件の更新|개 업데이트|Aktualisierung(?:en)?\b|actualizaci[oó]n(?:es)?\b|обновлени\S*)/i;
   for (const lang of packLanguages) {
     const pack = getLocalePack(lang);
+    for (const key of nativeKeys) if (key && !/[\u3400-\u9fff]/u.test(key)) assert.ok(Object.hasOwn(pack.entries, key) && pack.entries[key]?.trim(), `${lang} entries parity: ${key}`);
     for (const key of keys) if (key && !/[\u3400-\u9fff]/u.test(key)) assert.ok((pack.entries[key] || pack.uiEntries[key])?.trim(), `${lang}: ${key}`);
+    assert.ok(pack.uiEntries[mismatchToastEn]?.trim(), `${lang}: missing Issue #97 mismatch toast`);
+    assert.doesNotMatch(pack.uiEntries[mismatchToastEn], /[\u00b7\u2022\u2027\u30fb]/u, `${lang}: forbidden dot in Issue #97 toast`);
+    assert.deepEqual(pack.patterns.map(([pattern]) => pattern), basePatternRegexes, `${lang}: pattern parity`);
     for (const [pattern] of pack.patterns) assert.doesNotThrow(()=>new RegExp(pattern));
     assert.deepEqual(JSON.parse(JSON.stringify(pack)),pack);
     if (lang !== 'ja') assert.doesNotMatch(readFileSync(`lib/locales/${lang}.mjs`,'utf8'), /[\u4e00-\u9fff]/, `${lang}.mjs should not contain literal CJK`);
@@ -332,6 +371,7 @@ test('every pack covers the native catalog, static UI calls, and sidebar menus',
     const ctx = vm.createContext({ document: doc, NodeFilter: { SHOW_TEXT: 4 }, MutationObserver: class { observe(){} disconnect(){} }, __agyLocalePack: pack });
     vm.runInContext(source, ctx);
     const t = ctx.__agyI18n.t;
+    assert.equal(ctx.__agyI18n.uiText(mismatchToastZh, mismatchToastEn, lang), pack.uiEntries[mismatchToastEn]);
     for (const sample of ['Subagent running', 'Waiting for approval', 'Retrying', 'Thinking', 'Waiting for model', 'Context just compacted; exact provider tokens will update on your next message.', 'Just compacted; exact usage updates on next message', `Coordinator \u00b7 3 of 5 done`, 'read #12']) {
       assert.doesNotMatch(t(sample, lang), /(?::\s*$|\(\s*\)|#\s*\)|\$[0-9])/, `${lang} dangling template on ${sample}`);
     }
@@ -525,4 +565,171 @@ test('disabled integration serves the selected pack and scoped overrides through
       assert.deepEqual(reply.custom,[['Example',expected]]);
     }
   } finally {await stop?.();globalThis.fetch=fetchBefore;rmSync(dataDir,{recursive:true,force:true});}
+});
+
+test('PR #83 selective absorption protects conversation titles, scopes risky single-word controls, and syncs structured patterns across all 9 languages', () => {
+  const source = readFileSync('lib/native-i18n.js', 'utf8');
+  // Do NOT include PR #84 premature overlay selectors
+  assert.equal(source.includes('data-agy-translate-root'), false);
+  assert.equal(source.includes('data-agy-translated'), false);
+
+  const riskyControls = ['Narrow', 'Wide', 'Fill', 'Find', 'Skip', 'Create', 'Ready', 'Unknown', 'Preview', 'Send', 'Fork', 'Folders'];
+  const matchesSelector = (sel, area) => {
+    if (!area) return false;
+    for (const rawPart of sel.split(',')) {
+      const part = rawPart.trim();
+      if (part === area) return true;
+      if (area.startsWith('testid:') && part.startsWith('[data-testid*="terminal"]')) {
+        const tid = area.slice('testid:'.length);
+        let ok = tid.includes('terminal');
+        if (ok && part.includes(':not(')) {
+          for (const nm of part.matchAll(/:not\(\[data-testid="([^"]+)"\]\)/g)) {
+            if (tid === nm[1]) { ok = false; break; }
+          }
+        }
+        if (ok) return true;
+      }
+    }
+    return false;
+  };
+  const makeNode = (text, area) => ({
+    nodeValue: text,
+    isConnected: true,
+    parentElement: { closest: sel => matchesSelector(sel, area) ? {} : null }
+  });
+  const makeEl = (initialAttrs, area) => {
+    const attrs = new Map(Object.entries(initialAttrs));
+    return {
+      isConnected: true,
+      closest: sel => matchesSelector(sel, area) ? {} : null,
+      getAttribute: key => attrs.get(key) ?? null,
+      setAttribute: (key, value) => attrs.set(key, value),
+      hasAttribute: key => attrs.has(key),
+      removeAttribute: key => attrs.delete(key)
+    };
+  };
+
+  const controlBtnNodes = riskyControls.map(label => makeNode(label, 'button'));
+  const radioNode = makeNode('Wide', '[role="radio"]');
+  const tabNode = makeNode('Preview', '[role="tab"]');
+  const plainTitleNodes = riskyControls.map(label => makeNode(label, ''));
+  const userConversationTitles = [
+    'Updated README',
+    'Reading the codebase',
+    'Analyzed auth bug',
+    'Editing package.json',
+    'Listing endpoints',
+    'Searching logs',
+    'Sort Projects'
+  ];
+  const userTitleNodes = userConversationTitles.map(title => makeNode(title, ''));
+  const termChromeNode = makeNode('Terminal', 'testid:overview-panel-row-terminal');
+  const termOutputNode = makeNode('Terminal', 'testid:terminal-output');
+  const xtermNode = makeNode('Terminal', '.xterm');
+  const allNodes = [...controlBtnNodes, radioNode, tabNode, ...plainTitleNodes, ...userTitleNodes, termChromeNode, termOutputNode, xtermNode];
+
+  const btnAttrEl = makeEl({ title: 'Send' }, 'button');
+  const plainAttrEl = makeEl({ title: 'Preview' }, '');
+  const allAttrEls = [btnAttrEl, plainAttrEl];
+
+  const document = {
+    nodeType: 9,
+    createTreeWalker() {
+      let i = 0;
+      return { nextNode: () => allNodes[i++] || null };
+    },
+    querySelectorAll: selector => selector.includes('[title]') ? allAttrEls : []
+  };
+  const ctx = vm.createContext({
+    document,
+    NodeFilter: { SHOW_TEXT: 4 },
+    MutationObserver: class { observe() {} disconnect() {} },
+    __agyToZhTw: toZhTw
+  });
+  vm.runInContext(source, ctx);
+  const t = ctx.__agyI18n.t;
+
+  // First-entry-wins reverse zh -> en mappings remain canonical
+  assert.equal(t('重试', 'en'), 'Retry');
+  assert.equal(t('有帮助', 'en'), 'Good response');
+  assert.equal(t('发送消息', 'en'), 'Send message');
+  assert.equal(t('已完成', 'en'), 'Completed');
+  assert.equal(t('当前会话', 'en'), 'Current conversation');
+
+  // zh-CN & zh-TW checks for absorbed PR #83 strings & 什么 -> 什麼 fix
+  assert.equal(t('What should the agent do on each run?', 'zh-CN'), '智能体每次运行时应执行什么任务？');
+  assert.equal(t('What should the agent do on each run?', 'zh-TW'), '智能體每次執行時應執行什麼任務？');
+  assert.equal(t('Explored files', 'zh-CN'), '探索文件');
+  assert.equal(t('Agent Hooks Configuration', 'zh-TW'), '智能體鉤子配置');
+
+  const preserves = ['Pull Requests', '14m ago', 'Turbo', 'Dracula', 'Low', 'Medium', 'High', 'Extra High'];
+  const structuredSamples = [
+    'Your plan: Google AI Ultra',
+    'Thinking for 9s',
+    'Thinking for 1m 25s',
+    'Thought for 2m 15s',
+    'Show 3 earlier steps',
+    '5 results',
+    'Leaving on Nov 30.',
+    'The original Gemini 4 model for advanced workflows. Leaving on Nov 30.',
+    'Worked for 49s \u00b7 126 steps',
+    'Explored 3 files',
+    'Waiting for 2 timers',
+    '2 subagents running'
+  ];
+
+  for (const lang of SUPPORTED_LANGUAGES) {
+    ctx.__agyLocalePack = getLocalePack(lang);
+    ctx.__agyLocalization.apply(lang, false);
+
+    // Preserved tokens stay untouched across all 9 languages
+    for (const token of preserves) assert.equal(t(token, lang), token, `${lang}: preserve ${token}`);
+
+    // Structured dynamic patterns translate cleanly across all 9 languages with no forbidden dots or placeholders
+    for (const sample of structuredSamples) {
+      const rendered = t(sample, lang);
+      assert.doesNotMatch(rendered, /\$\d/, `${lang}: raw placeholder in ${rendered}`);
+      if (lang !== 'en') {
+        assert.doesNotMatch(rendered, /[\u00b7\u2022\u2027\u30fb]/u, `${lang}: dot in ${rendered}`);
+        assert.notEqual(rendered, sample, `${lang}: untranslated ${sample}`);
+      }
+    }
+
+    // Risky single-word controls translate inside control contexts and stay untouched in sidebar/title contexts
+    for (let i = 0; i < riskyControls.length; i++) {
+      const label = riskyControls[i];
+      assert.equal(controlBtnNodes[i].nodeValue, t(label, lang), `${lang}: button ${label}`);
+      assert.equal(plainTitleNodes[i].nodeValue, label, `${lang}: non-control ${label} must stay unchanged`);
+    }
+    assert.equal(radioNode.nodeValue, t('Wide', lang), `${lang}: radio Wide`);
+    assert.equal(tabNode.nodeValue, t('Preview', lang), `${lang}: tab Preview`);
+    assert.equal(btnAttrEl.getAttribute('title'), t('Send', lang), `${lang}: button title Send`);
+    assert.equal(plainAttrEl.getAttribute('title'), 'Preview', `${lang}: non-control title Preview`);
+
+    // User conversation titles remain completely untouched
+    for (let i = 0; i < userConversationTitles.length; i++) {
+      assert.equal(userTitleNodes[i].nodeValue, userConversationTitles[i], `${lang}: title ${userConversationTitles[i]}`);
+      if (userConversationTitles[i] !== 'Sort Projects') {
+        assert.equal(t(userConversationTitles[i], lang), userConversationTitles[i], `${lang}: t(${userConversationTitles[i]})`);
+      }
+    }
+
+    // Terminal chrome row translates while terminal output / xterm stay protected
+    assert.equal(termChromeNode.nodeValue, t('Terminal', lang), `${lang}: terminal chrome row`);
+    assert.equal(termOutputNode.nodeValue, 'Terminal', `${lang}: terminal output protected`);
+    assert.equal(xtermNode.nodeValue, 'Terminal', `${lang}: xterm protected`);
+
+    // P2 #5: tAttr respects attrExcluded, menuOnlyLabels, and controlOnlyLabels (protects Overview rows)
+    const tAttr = ctx.__agyI18n.tAttr;
+    assert.equal(typeof tAttr, 'function');
+    const plainOverviewRow = makeEl({}, '');
+    for (const protectedName of ['Preview', 'Folders', 'Project', 'Send', 'Ready']) {
+      assert.equal(tAttr(plainOverviewRow, protectedName, lang), protectedName, `${lang}: tAttr must protect Overview row ${protectedName}`);
+    }
+    assert.equal(tAttr(makeEl({}, 'button'), 'Send', lang), t('Send', lang), `${lang}: tAttr translates button Send`);
+    assert.equal(tAttr(makeEl({}, '[role="menu"]'), 'Project', lang), t('Project', lang), `${lang}: tAttr translates menu Project`);
+    assert.equal(tAttr(makeEl({}, 'code'), 'Modified Files', lang), 'Modified Files', `${lang}: tAttr skips attrExcluded code`);
+    assert.equal(tAttr(plainOverviewRow, 'Modified Files', lang), t('Modified Files', lang), `${lang}: tAttr translates normal Overview label`);
+  }
+  ctx.__agyLocalization.dispose();
 });

@@ -36,6 +36,8 @@ const PROXY_URL_VALUE_RE = /^(?:https?|socks5h?):\/\/[^\x00-\x1f\x7f\s'"`\\;$|&<
 const NO_PROXY_VALUE_RE = /^[^\x00-\x1f\x7f'"`\\$|&<>]{0,512}$/;
 const PROXY_SPEC_VALUE_RE = /^[^\x00-\x1f\x7f'"`\\$&<>]{1,768}$/;
 const SAFE_EMAIL_RE = /^[^\s@"'`\\;|$<>]{1,120}@[^\s@"'`\\;|$<>]{1,120}\.[^\s@"'`\\;|$<>]{1,63}$/;
+const SAFE_ACCOUNT_ID_RE = /^[a-z0-9_-]{1,64}$/i;
+const CLEAR_SCOPE_BASENAME_RE = /^credential-user-scope$/i;
 const SCRUB_ENV_EXACT = new Set([
   'ELECTRON_RUN_AS_NODE',
   'NODE_OPTIONS',
@@ -166,17 +168,49 @@ export function validateRelaunchJob(
       return { valid: false, reason: 'invalid-onboarding-storage' };
     }
   }
+  if (job.credentialSwitch !== undefined && job.credentialSwitch !== null) {
+    const cs = job.credentialSwitch;
+    if (typeof cs !== 'object' || Array.isArray(cs)) {
+      return { valid: false, reason: 'invalid-credential-switch' };
+    }
+    for (const key of Object.keys(cs)) {
+      if (key !== 'accountId' && key !== 'expectedEmail') {
+        return { valid: false, reason: 'invalid-credential-switch' };
+      }
+    }
+    if (typeof cs.accountId !== 'string' || !SAFE_ACCOUNT_ID_RE.test(cs.accountId)) {
+      return { valid: false, reason: 'invalid-credential-switch-account' };
+    }
+    if (typeof cs.expectedEmail !== 'string' || !SAFE_EMAIL_RE.test(cs.expectedEmail.trim())) {
+      return { valid: false, reason: 'invalid-credential-switch-email' };
+    }
+  }
+  if (job.clearScopePath !== undefined && job.clearScopePath !== null && job.clearScopePath !== '') {
+    if (
+      typeof job.clearScopePath !== 'string' ||
+      job.clearScopePath.length > 512 ||
+      /[\x00-\x1f\x7f]/.test(job.clearScopePath) ||
+      !CLEAR_SCOPE_BASENAME_RE.test(win32.basename(job.clearScopePath))
+    ) {
+      return { valid: false, reason: 'invalid-clear-scope-path' };
+    }
+  }
   return { valid: true };
 }
 
-export function parseTasklistPids(stdout, { excludePids = new Set() } = {}) {
+export function parseTasklistPids(stdout, { excludePids = new Set(), imageNames = ['antigravity.exe'] } = {}) {
+  const allowed = new Set(
+    (Array.isArray(imageNames) ? imageNames : [imageNames])
+      .map(name => String(name || '').trim().toLowerCase())
+      .filter(Boolean)
+  );
   const pids = [];
   const seen = new Set();
   for (const rawLine of String(stdout || '').split(/\r?\n/)) {
     const line = rawLine.trim();
-    const match = line.match(/^"antigravity\.exe","(\d+)"/i);
-    if (!match) continue;
-    const pid = Number(match[1]);
+    const match = line.match(/^"([^"]+)","(\d+)"/);
+    if (!match || !allowed.has(match[1].toLowerCase())) continue;
+    const pid = Number(match[2]);
     if (!Number.isInteger(pid) || pid <= 0 || excludePids.has(pid) || seen.has(pid)) continue;
     seen.add(pid);
     pids.push(pid);
@@ -221,15 +255,39 @@ export function buildCleanTargetEnv(baseEnv, job) {
   return env;
 }
 
-function defaultListAntigravityPids(excludePids) {
-  const res = spawnSync('tasklist.exe', ['/FI', 'IMAGENAME eq Antigravity.exe', '/FO', 'CSV', '/NH'], {
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'ignore'],
-    windowsHide: true,
-    timeout: 8000
-  });
-  if (res.error || res.status !== 0) return [];
-  return parseTasklistPids(res.stdout, { excludePids });
+const SAFE_WINDOWS_USERNAME_RE = /^[\w .-]{1,64}$/;
+
+export function listWindowsImagePids(imageName, { excludePids = new Set(), env = process.env, runCommand = spawnSync } = {}) {
+  const runTasklist = username => {
+    const args = ['/FI', `IMAGENAME eq ${imageName}`];
+    if (username) args.push('/FI', `USERNAME eq ${username}`);
+    args.push('/FO', 'CSV', '/NH');
+    return runCommand('tasklist.exe', args, {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
+      timeout: 8000
+    });
+  };
+  const rawUser = typeof env?.USERNAME === 'string' ? env.USERNAME.trim() : '';
+  const safeUser = SAFE_WINDOWS_USERNAME_RE.test(rawUser) ? rawUser : '';
+  if (safeUser) {
+    const filtered = runTasklist(safeUser);
+    if (!filtered?.error && filtered?.status === 0 && String(filtered.stdout || '').trim()) {
+      return parseTasklistPids(filtered.stdout, { excludePids, imageNames: [imageName.toLowerCase()] });
+    }
+  }
+  const res = runTasklist('');
+  if (!res || res.error || res.status !== 0) return [];
+  return parseTasklistPids(res.stdout, { excludePids, imageNames: [imageName.toLowerCase()] });
+}
+
+function defaultListAntigravityPids(excludePids, env = process.env) {
+  return listWindowsImagePids('Antigravity.exe', { excludePids, env });
+}
+
+function defaultListLanguageServerPids(excludePids, env = process.env) {
+  return listWindowsImagePids('language_server.exe', { excludePids, env });
 }
 
 function defaultGracefulClosePids(pids) {
@@ -283,11 +341,14 @@ export async function runRelaunchJob(jobPath, deps = {}) {
   }
 
   const excludePids = new Set([process.pid, process.ppid].filter(n => Number.isInteger(n) && n > 0));
-  const listTargetPids = deps.listTargetPids || (() => defaultListAntigravityPids(excludePids));
+  const baseEnv = deps.env || process.env;
+  const listTargetPids = deps.listTargetPids || (() => defaultListAntigravityPids(excludePids, baseEnv));
+  const listLanguageServerPids = deps.listLanguageServerPids
+    || (deps.listTargetPids ? (() => []) : (() => defaultListLanguageServerPids(excludePids, baseEnv)));
   const gracefulClosePid = deps.gracefulClosePid || defaultGracefulClosePid;
   const forceKillPid = deps.forceKillPid || defaultForceKillPid;
   const spawnProcess = deps.spawnProcess || spawn;
-  const baseEnv = deps.env || process.env;
+  const restoreCredential = deps.restoreCredential || null;
   const settleMs = deps.settleMs ?? 350;
   const gracefulTimeoutMs = deps.gracefulTimeoutMs ?? 3000;
   const forceTimeoutMs = deps.forceTimeoutMs ?? 6000;
@@ -302,6 +363,24 @@ export async function runRelaunchJob(jobPath, deps = {}) {
       mkdirSync(dirname(job.logPath), { recursive: true });
       appendFileSync(job.logPath, `${formatTimestamp()} ${message}\n`, 'utf8');
     } catch {}
+  };
+
+  const finishFailed = reason => {
+    try {
+      atomicWriteJson(job.ackPath, {
+        nonce: job.nonce,
+        pid: process.pid,
+        childPid: null,
+        state: 'launched',
+        ok: false,
+        reason,
+        at: Date.now()
+      });
+    } catch {}
+    try {
+      if (existsSync(jobPath)) unlinkSync(jobPath);
+    } catch {}
+    return { ok: false, childPid: null, verified: false, reason };
   };
 
   // 1. Immediately write ACK JSON atomically so the caller confirms AV/EDR did not block launch
@@ -336,7 +415,7 @@ export async function runRelaunchJob(jobPath, deps = {}) {
     }
   }
 
-  // 5. Escalate any lingering non-self PIDs via Node built-in process.kill (TerminateProcess)
+  // 5. Escalate any lingering non-self Antigravity.exe PIDs via Node built-in process.kill (TerminateProcess)
   const remainingPids = listTargetPids().filter(pid => !excludePids.has(pid));
   if (remainingPids.length) {
     appendLog(`force kill pids=${remainingPids.join(',')}`);
@@ -350,10 +429,96 @@ export async function runRelaunchJob(jobPath, deps = {}) {
     }
   }
 
+  // 5b. Terminate sibling language_server.exe instances so stale OAuth TokenSources cannot write into gemini:antigravity after exit
+  const initialLsPids = listLanguageServerPids().filter(pid => !excludePids.has(pid));
+  if (initialLsPids.length) {
+    appendLog(`graceful close language_server pids=${initialLsPids.join(',')}`);
+    if (deps.gracefulClosePid) {
+      for (const pid of initialLsPids) gracefulClosePid(pid);
+    } else {
+      defaultGracefulClosePids(initialLsPids);
+    }
+    const lsGracefulDeadline = Date.now() + Math.min(gracefulTimeoutMs, 1500);
+    while (Date.now() < lsGracefulDeadline) {
+      if (listLanguageServerPids().filter(pid => !excludePids.has(pid)).length === 0) break;
+      await sleep(pollMs);
+    }
+    const remainingLsPids = listLanguageServerPids().filter(pid => !excludePids.has(pid));
+    if (remainingLsPids.length) {
+      appendLog(`force kill language_server pids=${remainingLsPids.join(',')}`);
+      for (const pid of remainingLsPids) {
+        forceKillPid(pid);
+      }
+      const lsForceDeadline = Date.now() + forceTimeoutMs;
+      while (Date.now() < lsForceDeadline) {
+        if (listLanguageServerPids().filter(pid => !excludePids.has(pid)).length === 0) break;
+        await sleep(pollMs);
+      }
+    }
+  }
+
+  // 5c. Only abort launching if Antigravity.exe itself survived force-kill (single-instance lock collision).
+  // If Antigravity.exe already exited and only an unrelated/elevated language_server.exe survived, never strand the IDE closed.
+  const stuckAppPids = listTargetPids().filter(pid => !excludePids.has(pid));
+  const stuckLsPids = listLanguageServerPids().filter(pid => !excludePids.has(pid));
+  if (stuckAppPids.length) {
+    appendLog(`elevated-process-running app=${stuckAppPids.join(',')} ls=${stuckLsPids.join(',')}`);
+    return finishFailed('elevated-process-running');
+  }
+  let restoreFailed = false;
+  let restoreFailReason = '';
+  if (stuckLsPids.length) {
+    appendLog(`warn: elevated language_server running ls=${stuckLsPids.join(',')}; Antigravity exited so launch will continue`);
+    if (job.credentialSwitch) {
+      restoreFailed = true;
+      restoreFailReason = 'elevated-process-running';
+      appendLog('restore err: skipped credential switch because elevated language_server is still running');
+    }
+  }
+
   await sleep(postExitSettleMs);
 
-  // 6. Post-exit atomic app_storage.json onboarding sync in pure Node.js
-  if (job.onboardingSync?.appStoragePath && exists(job.onboardingSync.appStoragePath)) {
+  // 6a. Post-exit deferred credential switch (dynamic import keeps WSL standalone worker copy self-contained)
+  if (job.credentialSwitch && !restoreFailed) {
+    let restoreRes = null;
+    try {
+      if (restoreCredential) {
+        restoreRes = await restoreCredential(job.credentialSwitch);
+      } else {
+        const { createCredentialVault } = await import('../lib/credential-vault.mjs');
+        const vault = createCredentialVault({ env: baseEnv });
+        restoreRes = vault.restoreToActive(job.credentialSwitch.accountId, {
+          expectedEmail: job.credentialSwitch.expectedEmail
+        });
+      }
+    } catch (err) {
+      restoreRes = { ok: false, error: err?.message || String(err) };
+    }
+    if (!restoreRes?.ok) {
+      if (restoreRes?.mismatch) {
+        appendLog(`credential switch failed reason=credential-mismatch err=${restoreRes?.error || 'unknown'}`);
+        return finishFailed('credential-mismatch');
+      }
+      restoreFailed = true;
+      restoreFailReason = 'credential-switch-failed';
+      appendLog(`restore err: ${restoreRes?.error || 'unknown'}; continuing launch to avoid stranding IDE`);
+    } else {
+      appendLog(`credential switch ok accountId=${job.credentialSwitch.accountId}`);
+    }
+  }
+
+  // 6b. Post-exit credential-user-scope cleanup so Electron starts with the newly restored account scope
+  if (!restoreFailed && job.clearScopePath && exists(job.clearScopePath)) {
+    try {
+      unlinkSync(job.clearScopePath);
+      appendLog('cleared credential-user-scope');
+    } catch (err) {
+      appendLog(`clear scope err: ${err?.message || err}`);
+    }
+  }
+
+  // 6c. Post-exit atomic app_storage.json onboarding sync in pure Node.js
+  if (!restoreFailed && job.onboardingSync?.appStoragePath && exists(job.onboardingSync.appStoragePath)) {
     const storagePath = job.onboardingSync.appStoragePath;
     try {
       const raw = readFileSync(storagePath, 'utf8');
@@ -415,16 +580,22 @@ export async function runRelaunchJob(jobPath, deps = {}) {
       childPid: child?.pid || null,
       state: 'launched',
       ok: verified,
+      ...(restoreFailed ? { restoreFailed: true, ...(restoreFailReason ? { reason: restoreFailReason } : {}) } : {}),
       at: Date.now()
     });
   } catch {}
-  appendLog(`done childPid=${child?.pid || 0} verified=${verified}${spawnError ? ` err=${spawnError.message}` : ''}`);
+  appendLog(`done childPid=${child?.pid || 0} verified=${verified}${restoreFailed ? ` restoreFailed=true reason=${restoreFailReason}` : ''}${spawnError ? ` err=${spawnError.message}` : ''}`);
 
   try {
     if (existsSync(jobPath)) unlinkSync(jobPath);
   } catch {}
 
-  return { ok: verified, childPid: child?.pid || null, verified };
+  return {
+    ok: verified,
+    childPid: child?.pid || null,
+    verified,
+    ...(restoreFailed ? { restoreFailed: true, ...(restoreFailReason ? { reason: restoreFailReason } : {}) } : {})
+  };
 }
 
 function isSameModulePath(a, b) {

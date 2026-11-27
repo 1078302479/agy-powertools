@@ -224,6 +224,18 @@ sh ./install.sh
 
 ## 更新日誌
 
+### v2.16.11
+- **修正 SOCKS5 代理下伴生程序當機與重啟穩定性（#93，#64）**：移除會使 Node `fetch` 在 SOCKS5 環境下異常的 `NODE_USE_ENV_PROXY`，[pricing.mjs](../lib/pricing.mjs) 統一改走 `createProxyFetcher()`；Windows 重啟 ACK 等待延長至 6 秒並於失敗時清理 `lastRelaunchAt`，支援外部代理設定變更時自動重啟，捷徑修補改為非阻塞執行，且 4 秒除錯連接埠輪詢不再誤清 24 小時重啟熔斷狀態。
+- **徹底修正多帳號切換後串號/帳號錯位與 macOS 憑證前綴相容性（#97，#95）**：新增 `refreshHash` 去重與碰撞保護，切號重啟僅在目前使用者作用域內結束殘留 `language_server.exe`，並於退出後動態回填目標憑證及清理 `credential-user-scope`（遇提權程序或暫時性異常絕不使客戶端停在關閉狀態），補充 `fromLsAddress` 校驗與 `switchMismatch` 自癒提示；JS 與 Win32 C# 端統一解包 macOS `go-keyring-base64:` 前綴。
+- **修正 Windows `.gemini` 聯接點更新失敗與伴生輔助頁更新狀態卡死（#96，#100）**：[lifecycle.mjs](../lib/lifecycle.mjs) 僅放行 `.gemini` 根目錄 NTFS Junction/符號連結並保留子路徑安全檢查、補充跨磁區 `EXDEV` 回退，於「關於」頁透出安裝錯誤詳情；修正伴生輔助頁在更新狀態從 `installing` 回到 `idle` 後停留在「正在安裝並啟動新版本…」的問題。
+- **修正自訂字重下部分標題變細與字寬偏移**：在 [native-ui.js](../lib/native-ui.js) 建立單調遞增字重階梯 `--agy-fw-*`，同步覆寫宿主 Tailwind `--font-weight-*` 與 `body` 的 `font-variation-settings: normal`，並將面板與側邊欄監控樣式的硬編碼字重統一接入 `--agy-fw-*`（關閉自訂字重時維持原預設零變動）。
+- **修正 Node 24 Windows 下掃描二進位 `.lnk` 捷徑導致的堆積損毀當機**：將 [launcher.mjs](../lib/launcher.mjs) 的 `.lnk` 預檢由 `utf16le.toLowerCase()` 改為零配置純位元組掃描（`containsFoldedBytes`，相容 ASCII 與奇偶偏移 UTF-16LE）。
+- **放寬 `custom-i18n.json` 詞條長度上限並整合三項社群貢獻（#94，整合 PR #98 / PR #86 / PR #83，感謝 `@mutezebra`、`@Nazumeki`、`@Hi-Jiajun`）**：
+  - 將自訂詞典單筆文字上限由 400 字元提升至 2000 字元（#94）。
+  - 支援將 `file://` 連結末尾 `:line[:col]` 透傳至客戶端編輯器與 SSH 遠端視窗，並妥善處理路徑含 `#`、POSIX 真實 `:數字` 檔名與無效 `:0` 邊界（PR #98）。
+  - 設定頁統一為 12px 貼邊排版並移除重複分隔線，側邊欄執行中狀態與設定預覽升級為 6 色對稱流光並調校淺色模式羽化效果，同時即時同步 `quota` 配色（PR #86）。
+  - 精選整合 400 條九語種靜態 UI 詞條並新增 `controlOnlyLabels` 標題保護，修正繁體中文詞表；概覽面板原生 `title` 升級為作用域感知的自訂主題浮動提示（PR #83）。
+
 ### v2.16.10
 - **修正獨立代理下 HTTPS 通道被略過導致檢查更新失敗（PR #92，closes #90，感謝 `@qimengdunjia`）**：改用綁定 `tlsSocket` 的獨立 `https.Agent` 取代 `agent: false`，保留讀取回應期間的中止訊號處理並將更新相關 RPC 逾時對齊至 18 秒。
 - **修正長任務每次工具呼叫重繪輸入框底列造成的 Windows IME 閃爍（#89）**：精簡 `composerRingSig` 至底列可見欄位，並讓展開的上下文與會話統計彈窗即時讀取最新狀態。

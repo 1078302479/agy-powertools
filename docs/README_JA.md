@@ -224,6 +224,18 @@ sh ./install.sh
 
 ## 変更履歴
 
+### v2.16.11
+- **SOCKS5 プロキシ環境でのサイドカークラッシュ修正およびプロキシ再起動の安定性強化 (#93, #64)**: SOCKS5 および SOCKS5H 環境で Node `fetch` がクラッシュする要因となる `NODE_USE_ENV_PROXY` を削除し、[pricing.mjs](../lib/pricing.mjs) を `createProxyFetcher()` へ統一しました。Windows 再起動 ACK 待機を 6 秒へ延長して失敗時に `lastRelaunchAt` をクリアし、外部プロキシ設定変更時の自動再起動、`configureLaunchers()` の非ブロッキング化、および 4 秒ごとのデバッグポートポーリングで 24 時間再起動クールダウンが誤消去されないようにしました。
+- **マルチアカウント切り替え後の認証情報混線および macOS キーリング接頭辞デコードを修正 (#97, #95)**: `refreshHash` の抽出と衝突保護を追加し、切り替え再起動時に現在ユーザー範囲の残留 `language_server.exe` のみを終了してから終了後に動的認証復元と `credential-user-scope` クリーンアップを実行するよう改善しました（昇格プロセスや一時エラーでクライアントが閉じたままにならないよう保護）。さらに `fromLsAddress` 検証と `switchMismatch` 自己修復フィードバックを追加し、JS と Win32 C# の双方で macOS の `go-keyring-base64:` 接頭辞を統一的に展開するようにしました。
+- **Windows `.gemini` NTFS ジャンクション対応および補助ペインのインストール表示固着を修正 (#96, #100)**: [lifecycle.mjs](../lib/lifecycle.mjs) の `assertOwnedPath` で `.gemini` ルート直下のシンボリックリンクとジャンクションのみ許可しつつ内部シンボリックリンクの厳格な拒否を維持し、クロスボリューム `EXDEV` コピーフォールバックと About ページでの `update.install` エラー詳細表示を追加しました。また、更新状態が `installing` から `idle` に戻った際に補助ペインのインストール中バナーが固着する不具合を修正しました。
+- **カスタムフォント太さ有効時の見出し細りおよび `body` の `font-variation-settings` ずれを修正**: [native-ui.js](../lib/native-ui.js) に単調増加の太さスケール `--agy-fw-*` を導入してホストの Tailwind `--font-weight-*` 変数と `body` の `font-variation-settings: normal` を上書きし、パネルおよびサイドバー監視スタイルの固定太さを `--agy-fw-*` へ統合しました（カスタム太さ無効時は従来の既定から変更なし）。
+- **Node 24 Windows 環境でバイナリ `.lnk` ショートカット走査時に発生するヒープ破損クラッシュを修正**: [launcher.mjs](../lib/launcher.mjs) の `.lnk` 事前検査を `utf16le.toLowerCase()` から、ASCII および偶奇オフセットの UTF-16LE に対応するゼロ割り当ての生バイト走査（`containsFoldedBytes`）へ置き換えました。
+- **`custom-i18n.json` の文字数上限引き上げおよびコミュニティ PR 3 件を統合（#94、PR #98、PR #86、PR #83、`@mutezebra` 氏、`@Nazumeki` 氏、`@Hi-Jiajun` 氏に感謝）**:
+  - `custom-i18n.json` の 1 エントリあたりの上限を 400 文字から 2000 文字へ拡大しました (#94)。
+  - ローカルおよび SSH リモートウィンドウで `file://` URL 末尾の `:line[:col]` ジャンプに対応し、`#` を含むパス、POSIX の実在する `:数字` ファイル名、および無効な `:0` 指定を適切に処理します (PR #98)。
+  - 設定画面を重複区切り線なしの 12px フラッシュ配置へ統一し、サイドバー実行中ビームと設定プレビューを 6 色対称グローへ強化してライトモードのぼかしと `quota` 配色のリアルタイム同期を調整しました (PR #86)。
+  - 9 言語の静的 UI 文言 400 件を選別統合し、`controlOnlyLabels` タイトル保護および繁体字中国語テーブル修正を追加するとともに、概要パネルのネイティブ `title` をスコープ認識型のテーマツールチップへ昇格しました (PR #83)。
+
 ### v2.16.10
 - **独立プロキシ有効時に HTTPS トンネルが迂回され更新確認が失敗する不具合を修正（PR #92、#90、`@qimengdunjia` 氏に感謝）**: `agent: false` の代わりに専用の `https.Agent` を用いてトンネル済み TLS ソケットを再利用し、本文受信中の `AbortSignal` と 18 秒の更新 RPC タイムアウトを整備しました。
 - **長時間タスクのツール呼び出しごとに発生する Windows IME ちらつきを修正 (#89)**: `composerRingSig` をボタン表示項目のみに絞り込み、開いているポップオーバーはライブ状態を参照するようにしました。

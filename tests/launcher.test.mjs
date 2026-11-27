@@ -745,6 +745,39 @@ test('parseFileUriAnchor, discoverOpenWithApps, and openFileWithApp detect insta
   assert.deepEqual(parseFileUriAnchor('file:///repo/a.js#L18C7-L25'), { line: 18, column: 7 });
   assert.deepEqual(parseFileUriAnchor('file:///repo/a.js#L9:3'), { line: 9, column: 3 });
   assert.deepEqual(parseFileUriAnchor('file:///repo/README.md#overview'), { line: null, column: null });
+  // PR #98: trailing :line[:col] suffixes and %3A-encoded suffixes
+  assert.deepEqual(parseFileUriAnchor('file:///repo/get_search_suggest.go:371'), { line: 371, column: null });
+  assert.deepEqual(parseFileUriAnchor('file:///repo/get_search_suggest.go:2386-2446'), { line: 2386, column: null });
+  assert.deepEqual(parseFileUriAnchor('file:///repo/get_search_suggest.go:371:12'), { line: 371, column: 12 });
+  assert.deepEqual(parseFileUriAnchor('file:///repo/get_search_suggest.go:10:2-20:5'), { line: 10, column: 2 });
+  assert.deepEqual(parseFileUriAnchor('file:///repo/get_search_suggest.go%3A371'), { line: 371, column: null });
+  assert.equal(resolveLocalFilePath('file:///repo/get_search_suggest.go:371', { platform: 'darwin' }), '/repo/get_search_suggest.go');
+  assert.equal(resolveLocalFilePath('file:///repo/get_search_suggest.go:2386-2446', { platform: 'darwin' }), '/repo/get_search_suggest.go');
+  assert.equal(resolveLocalFilePath('file:///repo/get_search_suggest.go:371:12', { platform: 'darwin' }), '/repo/get_search_suggest.go');
+  assert.equal(resolveLocalFilePath('file:///C:/repo/a.go:371:8', { platform: 'win32' }), 'C:\\repo\\a.go');
+  // Edge Case 1: '#' in directory names & :line + #heading & #L precedence
+  assert.equal(resolveLocalFilePath('file:///dir/project-C#/app.go:42:3', { platform: 'linux' }), '/dir/project-C#/app.go');
+  assert.deepEqual(parseFileUriAnchor('file:///dir/project-C#/app.go:42:3'), { line: 42, column: 3 });
+  assert.equal(resolveLocalFilePath('file:///dir/project-C#%2Fapp.go:42:3', { platform: 'linux' }), '/dir/project-C#/app.go');
+  assert.deepEqual(parseFileUriAnchor('file:///dir/project-C#%2Fapp.go:42:3'), { line: 42, column: 3 });
+  assert.equal(resolveLocalFilePath('file:///dir/README.md:10#heading', { platform: 'linux' }), '/dir/README.md');
+  assert.deepEqual(parseFileUriAnchor('file:///dir/README.md:10#heading'), { line: 10, column: null });
+  assert.equal(resolveLocalFilePath('file:///dir/project-C#/README.md:10#heading', { platform: 'linux' }), '/dir/project-C#/README.md');
+  assert.deepEqual(parseFileUriAnchor('file:///dir/project-C#/README.md:10#heading'), { line: 10, column: null });
+  assert.deepEqual(parseFileUriAnchor('file:///dir/app.go:5#L10'), { line: 10, column: null });
+  // Edge Case 3: invalid :0 / col === 0 / endLine === 0 / endCol === 0 is NOT stripped, and #L anchor skips colon stripping
+  assert.equal(resolveLocalFilePath('file:///dir/app.go:0', { platform: 'linux' }), '/dir/app.go:0');
+  assert.equal(resolveLocalFilePath('file:///dir/app.go:0:4', { platform: 'linux' }), '/dir/app.go:0:4');
+  assert.equal(resolveLocalFilePath('file:///dir/log:12:00', { platform: 'linux' }), '/dir/log:12:00');
+  assert.equal(resolveLocalFilePath('file:///dir/file:12-0', { platform: 'linux' }), '/dir/file:12-0');
+  assert.equal(resolveLocalFilePath('file:///dir/file:12:1-15:0', { platform: 'linux' }), '/dir/file:12:1-15:0');
+  assert.equal(resolveLocalFilePath('file:///dir/server:8080#L10', { platform: 'linux' }), '/dir/server:8080');
+  assert.deepEqual(parseFileUriAnchor('file:///dir/app.go:0'), { line: null, column: null });
+  assert.deepEqual(parseFileUriAnchor('file:///dir/app.go:0:4'), { line: null, column: null });
+  assert.deepEqual(parseFileUriAnchor('file:///dir/log:12:00'), { line: null, column: null });
+  assert.deepEqual(parseFileUriAnchor('file:///dir/file:12-0'), { line: null, column: null });
+  assert.deepEqual(parseFileUriAnchor('file:///dir/file:12:1-15:0'), { line: null, column: null });
+  assert.deepEqual(parseFileUriAnchor('file:///dir/server:8080#L10'), { line: 10, column: null });
 
   const wslResolved = resolveLocalFilePath('file://wsl.localhost/Ubuntu/home/dev/app.ts#L12', { platform: 'linux' });
   assert.equal(wslResolved, '/home/dev/app.ts');
@@ -796,6 +829,84 @@ test('parseFileUriAnchor, discoverOpenWithApps, and openFileWithApp detect insta
     assert.equal(resZed.appId, 'zed');
     assert.deepEqual(calls[1].args, [`${posixFile}:27:4`]);
 
+    const golandBin = join(posixBin, 'goland');
+    const resGoland = await openFileWithApp('file:///workspace/main.mjs:371:12', 'goland', {
+      platform: 'linux',
+      env: { PATH: posixBin },
+      home: '/mock/home',
+      exists: p => linuxExists(p) || p === golandBin,
+      readdir: () => [],
+      stat: () => ({ isDirectory: () => false }),
+      spawnProcess: fakeSpawn
+    });
+    assert.equal(resGoland.appId, 'goland');
+    assert.equal(resGoland.path, posixFile);
+    assert.equal(resGoland.line, 371);
+    assert.equal(resGoland.column, 12);
+    assert.deepEqual(calls[2].args, ['--line', '371', '--column', '12', posixFile]);
+
+    // Edge Case 2: POSIX filename legitimately containing :digit (e.g. /workspace/backup-12:30) is preserved untouched and colon anchor suppressed
+    const literalColonFile = '/workspace/backup-12:30';
+    const literalRes = await openFileWithApp('file:///workspace/backup-12:30', 'goland', {
+      platform: 'linux',
+      env: { PATH: posixBin },
+      home: '/mock/home',
+      exists: p => p === literalColonFile || p === golandBin,
+      readdir: () => [],
+      stat: () => ({ isDirectory: () => false }),
+      spawnProcess: fakeSpawn
+    });
+    assert.equal(literalRes.path, literalColonFile);
+    assert.equal(literalRes.line, null);
+    assert.equal(literalRes.column, null);
+    assert.deepEqual(calls[3].args, [literalColonFile]);
+
+    // Hash anchor #L7 still works on a literal :digit filename
+    const literalHashRes = await openFileWithApp('file:///workspace/backup-12:30#L7', 'goland', {
+      platform: 'linux',
+      env: { PATH: posixBin },
+      home: '/mock/home',
+      exists: p => p === literalColonFile || p === golandBin,
+      readdir: () => [],
+      stat: () => ({ isDirectory: () => false }),
+      spawnProcess: fakeSpawn
+    });
+    assert.equal(literalHashRes.path, literalColonFile);
+    assert.equal(literalHashRes.line, 7);
+    assert.deepEqual(calls[4].args, ['--line', '7', literalColonFile]);
+
+    // FS-aware openLocalFile, copyLocalFile, and readLocalFileForAttach preserve literal :digit filenames on POSIX
+    const openLiteral = await openLocalFile('file:///workspace/backup-12:30', {
+      action: 'open',
+      platform: 'linux',
+      exists: p => p === literalColonFile,
+      stat: () => ({ isDirectory: () => false }),
+      spawnProcess: fakeSpawn
+    });
+    assert.equal(openLiteral.path, literalColonFile);
+    const attachLiteral = await readLocalFileForAttach('file:///workspace/backup-12:30', {
+      platform: 'linux',
+      exists: p => p === literalColonFile,
+      stat: () => ({ isDirectory: () => false, size: 12 })
+    });
+    assert.equal(attachLiteral.path, literalColonFile);
+    const copyCalls = [];
+    const copyLiteral = await copyLocalFile('file:///workspace/backup-12:30', {
+      platform: 'darwin',
+      exists: p => p === literalColonFile,
+      spawnProcess: (cmd, args, opts) => {
+        const child = new EventEmitter();
+        child.stderr = new EventEmitter();
+        child.kill = () => {};
+        copyCalls.push({ cmd, args, env: opts.env });
+        queueMicrotask(() => child.emit('close', 0));
+        return child;
+      },
+      env: {}
+    });
+    assert.equal(copyLiteral.path, literalColonFile);
+    assert.equal(copyCalls[0].env.AGY_CLIPBOARD_PATH, literalColonFile);
+
     await openFileWithApp(uriWithLine, 'kitty', {
       platform: 'linux',
       env: { PATH: posixBin },
@@ -805,7 +916,7 @@ test('parseFileUriAnchor, discoverOpenWithApps, and openFileWithApp detect insta
       stat: () => ({ isDirectory: () => false }),
       spawnProcess: fakeSpawn
     });
-    assert.equal(calls[2].opts.cwd, '/workspace');
+    assert.equal(calls[6].opts.cwd, '/workspace');
 
     await assert.rejects(
       () => openFileWithApp(uriWithLine, 'windsurf', {
@@ -983,6 +1094,7 @@ test('relaunch scripts escalate lingering POSIX processes to SIGKILL, resolve Li
     });
     const macScript = macSpawned[0].args[1];
     assert.ok(macScript.includes('kill -KILL $pids'));
+    assert.ok(macScript.includes('Contents/Resources/bin/language_server'));
     assert.ok(macScript.includes('if [ -n "$AGY_POWERTOOLS_PROXY_SPEC" ]; then unset HTTP_PROXY'));
     if (process.platform !== 'win32') {
       assert.equal(spawnSync('sh', ['-n', '-c', macScript], { encoding: 'utf8' }).status, 0);
@@ -1259,6 +1371,117 @@ test('cold-start proxy probe and missing-debug-port macOS check coordinate so co
     assert.equal(lowProxyRes.relaunched, false);
     assert.equal(lowProxyRes.reason, 'already-attempted-session');
     assert.equal(calls3, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('shouldAutoRelaunchProxy handles unmanaged external proxy conflicts, ready hooks cross-clear cooldowns, and Windows relaunch writes credentialSwitch/clearScopePath (Issues #93 & #97)', async () => {
+  const { createColdStartRelaunchCoordinator, shouldAutoRelaunchProxy, recordDebugPortReady, recordProxyReady } = await import('../lib/launcher.mjs');
+  const root = mkdtempSync(join(tmpdir(), 'agy-93-97-'));
+  try {
+    const dataDir = join(root, 'data');
+    mkdirSync(dataDir, { recursive: true });
+    const env = { ANTIGRAVITY_LS_ADDRESS: '127.0.0.1:59001' };
+
+    // Issue #93: external OS proxy conflict (config-changed + runtimeProxyManaged: false) triggers auto-relaunch,
+    // whereas managed Powertools config-changed (runtimeProxyManaged: true or omitted) does not
+    assert.equal(shouldAutoRelaunchProxy({
+      dataDir, platform: 'win32', env, enabled: true, proxyEnabled: true, proxyUrl: 'http://127.0.0.1:7897',
+      runtimeProxyReason: 'config-changed', runtimeProxyManaged: false, now: 5_000_000
+    }).relaunch, true);
+    assert.equal(shouldAutoRelaunchProxy({
+      dataDir, platform: 'win32', env, enabled: true, proxyEnabled: true, proxyUrl: 'http://127.0.0.1:7897',
+      runtimeProxyReason: 'config-changed', runtimeProxyManaged: true, now: 5_000_000
+    }).relaunch, false);
+    assert.equal(shouldAutoRelaunchProxy({
+      dataDir, platform: 'win32', env, enabled: true, proxyEnabled: true, proxyUrl: 'http://127.0.0.1:7897',
+      runtimeProxyReason: 'config-changed', now: 5_000_000
+    }).relaunch, false);
+
+    // P0 #1: createColdStartRelaunchCoordinator().attemptProxy forwards runtimeProxyManaged (and managedByPowertools alias)
+    const coordDir = join(root, 'coord-data');
+    mkdirSync(coordDir, { recursive: true });
+    const fakeWinExe = join(root, 'AppData', 'Local', 'Programs', 'antigravity', 'Antigravity.exe');
+    mkdirSync(join(root, 'AppData', 'Local', 'Programs', 'antigravity'), { recursive: true });
+    writeFileSync(fakeWinExe, '');
+    const coordEnv = { ANTIGRAVITY_LS_ADDRESS: '127.0.0.1:59099', LOCALAPPDATA: join(root, 'AppData', 'Local') };
+    let coordRelaunches = 0;
+    const coordManaged = createColdStartRelaunchCoordinator({
+      dataDir: coordDir,
+      home: root,
+      platform: 'win32',
+      env: coordEnv,
+      now: () => 5_100_000,
+      checkPort: async () => ({ ok: true }),
+      relaunch: () => { coordRelaunches++; return { scheduled: true }; }
+    });
+    const skippedManaged = await coordManaged.attemptProxy({
+      enabled: true,
+      proxyEnabled: true,
+      proxyUrl: 'http://127.0.0.1:7897',
+      runtimeProxyReason: 'config-changed',
+      runtimeProxyManaged: true
+    });
+    assert.equal(skippedManaged.relaunched, false);
+    assert.equal(coordRelaunches, 0);
+    const triggeredUnmanaged = await coordManaged.attemptProxy({
+      enabled: true,
+      proxyEnabled: true,
+      proxyUrl: 'http://127.0.0.1:7897',
+      runtimeProxyReason: 'config-changed',
+      runtimeProxyManaged: false
+    });
+    assert.equal(triggeredUnmanaged.relaunched, true);
+    assert.equal(coordRelaunches, 1);
+
+    // P1 #3: recordDebugPortReady({ preserveBlocked: true }) clears cooldowns without wiping lastRelaunchBlockedAt
+    const stateFile = join(dataDir, 'relaunch-state.json');
+    writeFileSync(stateFile, JSON.stringify({
+      lastProxyAutoRelaunchAt: 12345,
+      lastAutoRelaunchAt: 67890,
+      lastRelaunchAt: 54321,
+      lastRelaunchBlockedAt: 999000,
+      lastRelaunchBlockedReason: 'relaunch-blocked'
+    }));
+    recordDebugPortReady({ dataDir, preserveBlocked: true });
+    const afterPreserve = JSON.parse(readFileSync(stateFile, 'utf8'));
+    assert.equal(afterPreserve.lastProxyAutoRelaunchAt, 0);
+    assert.equal(afterPreserve.lastAutoRelaunchAt, 0);
+    assert.equal(afterPreserve.lastRelaunchAt, 0);
+    assert.equal(afterPreserve.lastRelaunchBlockedAt, 999000);
+    assert.equal(afterPreserve.lastRelaunchBlockedReason, 'relaunch-blocked');
+
+    // recordDebugPortReady (default preserveBlocked: false) clears BOTH cooldowns and lastRelaunchBlockedAt; recordProxyReady does the same
+    writeFileSync(stateFile, JSON.stringify({ lastProxyAutoRelaunchAt: 12345, lastAutoRelaunchAt: 67890, lastRelaunchBlockedAt: 999 }));
+    recordDebugPortReady({ dataDir });
+    const afterDebug = JSON.parse(readFileSync(stateFile, 'utf8'));
+    assert.equal(afterDebug.lastProxyAutoRelaunchAt, 0);
+    assert.equal(afterDebug.lastAutoRelaunchAt, 0);
+    assert.equal(afterDebug.lastRelaunchBlockedAt, 0);
+
+    writeFileSync(stateFile, JSON.stringify({ lastProxyAutoRelaunchAt: 12345, lastAutoRelaunchAt: 67890, lastRelaunchBlockedAt: 999 }));
+    recordProxyReady({ dataDir });
+    const afterProxy = JSON.parse(readFileSync(stateFile, 'utf8'));
+    assert.equal(afterProxy.lastProxyAutoRelaunchAt, 0);
+    assert.equal(afterProxy.lastAutoRelaunchAt, 0);
+    assert.equal(afterProxy.lastRelaunchBlockedAt, 0);
+
+    // Issue #97: scheduleRelaunchWithDebugPort writes sanitized credentialSwitch & clearScopePath into relaunch-job.json
+    const winExe = fakeWinExe;
+    const scopePath = join(root, 'AppData', 'Roaming', 'Antigravity', 'credential-user-scope');
+    const res = scheduleRelaunchWithDebugPort({
+      dataDir,
+      home: root,
+      platform: 'win32',
+      env: { LOCALAPPDATA: join(root, 'AppData', 'Local') },
+      credentialSwitch: { accountId: 'acct-b', expectedEmail: 'beta@example.com' },
+      clearScopePath: scopePath,
+      spawnProcess: () => ({ unref() {} })
+    });
+    const job = JSON.parse(readFileSync(res.jobPath, 'utf8'));
+    assert.deepEqual(job.credentialSwitch, { accountId: 'acct-b', expectedEmail: 'beta@example.com' });
+    assert.equal(job.clearScopePath, scopePath);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

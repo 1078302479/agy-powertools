@@ -1,14 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,existsSync,readdirSync,rmSync,symlinkSync} from 'node:fs';
-import {join,resolve} from 'node:path';
+import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,existsSync,readdirSync,rmSync,symlinkSync,unlinkSync,lstatSync} from 'node:fs';
+import {join,resolve,parse as parsePath} from 'node:path';
 import {tmpdir} from 'node:os';
 import {spawn} from 'node:child_process';
 import {pathToFileURL} from 'node:url';
 import {collectPackage,writePackage,encodePackage,decodePackage,validatePackage,sha256,releaseName} from '../lib/package.mjs';
-import {installationPaths,installPlugin,uninstallPlugin,atomicJson} from '../lib/lifecycle.mjs';
+import {installationPaths,installPlugin,uninstallPlugin,atomicJson,assertOwnedPath} from '../lib/lifecycle.mjs';
 import {runUpdateJob,updateStatus,startUpdate} from '../lib/update-manager.mjs';
 import {serveRuntime,stopRuntimes,waitForRuntime,runtimeRecords} from '../lib/runtime-control.mjs';
+import {createPricingStore} from '../lib/pricing.mjs';
 
 const original=collectPackage(resolve('.')),stop=async()=>{};
 test('发布包排除本地字体验证记录和效果图目录', () => {
@@ -228,4 +229,149 @@ test('release includes locale modules, static Windows relaunch scripts, and omit
   assert.ok(names.has('scripts/relaunch-worker.mjs'));
   assert.ok(names.has('scripts/relaunch-antigravity.cmd'));
   assert.ok(![...names].some(name=>/^docs\/README_/.test(name)));
+});
+
+test('Issue #96: top-level .gemini symlink/junction supports install, in-app update, and uninstall while still rejecting dangling or inner links', async () => {
+  const linkType = process.platform === 'win32' ? 'junction' : 'dir';
+  const root = mkdtempSync(join(tmpdir(), 'agy-gemini-link-'));
+  const home = join(root, 'home');
+  const targetGemini = join(root, 'shared-gemini');
+  mkdirSync(home, { recursive: true });
+  mkdirSync(join(targetGemini, 'config'), { recursive: true });
+  const paths = installationPaths(home);
+  symlinkSync(targetGemini, paths.root, linkType);
+  atomicJson(paths.config, { plugins: { other: { enabled: true } }, userSettings: { language: 'zh-CN' } });
+
+  try {
+    // installationPaths keeps logical paths.root without rewriting via realpathSync
+    assert.equal(paths.root, join(resolve(home), '.gemini'));
+    assert.equal(lstatSync(paths.root).isSymbolicLink(), true);
+
+    // 1. Fresh install through .gemini junction/symlink succeeds
+    const installed = await installPlugin({ bundle: older, home, stop });
+    assert.equal(installed.version, older.version);
+    assert.equal(JSON.parse(readFileSync(join(paths.installed, 'plugin.json'), 'utf8')).version, older.version);
+    assert.equal(JSON.parse(readFileSync(join(targetGemini, 'config', 'plugins', 'agy-powertools', 'plugin.json'), 'utf8')).version, older.version);
+
+    // 2. In-app update (runUpdateJob) through .gemini junction/symlink succeeds
+    const bytes = encodePackage(newer);
+    const job = join(paths.data, 'jobs', 'link-update');
+    mkdirSync(job, { recursive: true });
+    const plan = {
+      format: 1,
+      home,
+      version: newer.version,
+      job,
+      asset: {
+        name: releaseName(newer.version),
+        url: 'https://github.com/test/project/releases/download/v2.14.0/package.bundle.gz',
+        sha256: sha256(bytes)
+      }
+    };
+    await runUpdateJob(plan, {
+      fetcher: async () => new Response(bytes),
+      verify: async ({ paths: p, version }) => {
+        assert.equal(JSON.parse(readFileSync(join(p.installed, 'plugin.json'), 'utf8')).version, version);
+      }
+    });
+    assert.equal(updateStatus(home).status, 'completed');
+    assert.equal(JSON.parse(readFileSync(join(paths.installed, 'plugin.json'), 'utf8')).version, newer.version);
+
+    // 3. Symlink/junction INSIDE paths.installed is STILL strictly rejected (including runUpdateJob jobs dir)
+    const innerExternal = join(root, 'inner-external');
+    mkdirSync(innerExternal, { recursive: true });
+    const jobsDir = join(paths.data, 'jobs');
+    if (existsSync(jobsDir)) rmSync(jobsDir, { recursive: true, force: true });
+    symlinkSync(innerExternal, jobsDir, linkType);
+    try {
+      await assert.rejects(() => runUpdateJob({ ...plan, job: join(jobsDir, 'escape-job') }, { fetcher: async () => new Response(bytes), verify: async () => {} }), /符号链接/);
+    } finally {
+      unlinkSync(jobsDir);
+    }
+    const innerLink = join(paths.installed, 'evil-link');
+    symlinkSync(innerExternal, innerLink, linkType);
+    assert.throws(() => assertOwnedPath(paths.root, join(innerLink, 'file.txt'), { allowRootLink: true }), /符号链接/);
+    await assert.rejects(() => installPlugin({ bundle: original, home, stop }), /符号链接/);
+    unlinkSync(innerLink);
+
+    // Strict default (allowRootLink: false) still rejects root symlink
+    assert.throws(() => assertOwnedPath(paths.root, paths.installed), /符号链接/);
+
+    // 4. Uninstall through .gemini junction/symlink succeeds and leaves the junction intact
+    const removed = await uninstallPlugin({ home, purge: true, stop });
+    assert.equal(removed.removed, true);
+    assert.equal(existsSync(paths.installed), false);
+    assert.equal(existsSync(paths.data), false);
+    assert.equal(lstatSync(paths.root).isSymbolicLink(), true);
+    assert.deepEqual(JSON.parse(readFileSync(paths.config, 'utf8')).plugins.other, { enabled: true });
+
+    // 5. Symlink/junction at paths.installed itself is rejected even with .gemini as a junction/symlink
+    mkdirSync(join(targetGemini, 'config', 'plugins'), { recursive: true });
+    symlinkSync(innerExternal, paths.installed, linkType);
+    await assert.rejects(() => installPlugin({ bundle: original, home, stop }), /符号链接/);
+    assert.deepEqual(readdirSync(innerExternal), []);
+    unlinkSync(paths.installed);
+
+    // 6. Dangling .gemini link is rejected
+    const danglingHome = join(root, 'dangling-home');
+    mkdirSync(danglingHome, { recursive: true });
+    const danglingPaths = installationPaths(danglingHome);
+    const missingTarget = join(root, 'does-not-exist');
+    symlinkSync(missingTarget, danglingPaths.root, linkType);
+    assert.throws(() => assertOwnedPath(danglingPaths.root, danglingPaths.installed, { allowRootLink: true }), /符号链接/);
+    await assert.rejects(() => installPlugin({ bundle: original, home: danglingHome, stop }), /符号链接/);
+    unlinkSync(danglingPaths.root);
+
+    // 7. .gemini pointing to filesystem root is rejected
+    const fsRootHome = join(root, 'fsroot-home');
+    mkdirSync(fsRootHome, { recursive: true });
+    const fsRootPaths = installationPaths(fsRootHome);
+    const fsRoot = parsePath(resolve(root)).root;
+    symlinkSync(fsRoot, fsRootPaths.root, linkType);
+    try {
+      assert.throws(() => assertOwnedPath(fsRootPaths.root, fsRootPaths.installed, { allowRootLink: true }), /根目录/);
+    } finally {
+      unlinkSync(fsRootPaths.root);
+    }
+  } finally {
+    try { unlinkSync(paths.root); } catch {}
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('Issue #93: sidecar.json and update-manager omit NODE_USE_ENV_PROXY=1 and pricing store supports proxy-aware injectable fetcher', async () => {
+  const sidecarCfg = JSON.parse(readFileSync(resolve('sidecars/inspector/sidecar.json'), 'utf8'));
+  assert.equal(sidecarCfg.env?.NODE_USE_ENV_PROXY, undefined);
+  const umSrc = readFileSync(resolve('lib/update-manager.mjs'), 'utf8');
+  assert.equal(/NODE_USE_ENV_PROXY\s*:\s*['"]1['"]/.test(umSrc), false);
+
+  const dir = mkdtempSync(join(tmpdir(), 'agy-pricing-fetch-'));
+  try {
+    const requested = [];
+    const store = createPricingStore(dir, {
+      fetcher: async (url, opts) => {
+        requested.push({ url, opts });
+        if (String(url).includes('aistudio.google.com')) {
+          return {
+            ok: true,
+            status: 200,
+            async text() {
+              return '## Gemini 4 Neon {% id="gemini-4-neon" %}\n{% tab title="Standard" %}\n* Input price\n* $3.50\n---\n* Output price\n* $16.00\n---\n* Context caching price\n* $0.20\n---\n{% /tab %}';
+            }
+          };
+        }
+        return { ok: true, status: 200, async text() { return ''; } };
+      }
+    });
+    const refreshed = await store.refresh();
+    assert.equal(refreshed.status, 'live');
+    assert.equal(requested.length, 2);
+    assert.equal(requested[0].opts.timeoutMs, 10000);
+    assert.equal(requested[1].opts.timeoutMs, 8000);
+    const neon = refreshed.rates.find(r => r.model === 'gemini-4-neon');
+    assert.equal(neon.input, 3.5);
+    assert.equal(neon.output, 16);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

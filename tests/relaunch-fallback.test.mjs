@@ -175,7 +175,7 @@ function createSidecarDomSandbox(html, { fetchImpl }) {
     return el;
   };
   for (const id of [
-    'dot', 'title', 'desc', 'compat-box', 'primary-actions', 'relaunch-btn',
+    'dot', 'state-text', 'title', 'desc', 'compat-box', 'primary-actions', 'relaunch-btn',
     'copy-cmd-btn', 'copy-diag-btn', 'cmd-box', 'mac-auto-relaunch-row', 'mac-auto-relaunch-title',
     'mac-auto-relaunch-desc', 'mac-auto-relaunch-toggle', 'feedback', 'update-box',
     'check-update-btn', 'install-update-btn', 'download-link', 'update-feedback', 'update-notes'
@@ -741,4 +741,137 @@ test('native-host proxy.relaunch returns fail-closed manualRestartRequired with 
     globalThis.fetch = fetchBefore;
     rmSync(dataDir, { recursive: true, force: true });
   }
+});
+
+test('Issue #100: Aux Pane resets update progress on installing -> idle, updates version badge, stops 900ms poll, and preserves manual check feedback across idle polls', async () => {
+  // Case 1: installing -> idle via /api/status poll after new sidecar boots
+  let statusPayload = {
+    version: '2.18.0',
+    healthy: true,
+    enabled: true,
+    language: 'zh-CN',
+    update: { status: 'idle' }
+  };
+  let updateStatusPayload = { status: 'installing', version: '2.18.1' };
+  let checkResponse = {
+    status: 'available',
+    version: '2.18.1',
+    canInstall: true,
+    releaseUrl: 'https://github.com/WhiteBr1ck/agy-powertools/releases/tag/v2.18.1',
+    notes: 'Fix Aux Pane stuck progress'
+  };
+  const sb = createSidecarDomSandbox(renderAuxPaneHtml({ version: '2.18.0', language: 'zh-CN' }), {
+    fetchImpl: async url => {
+      if (String(url).startsWith('/api/status')) return { ok: true, json: async () => statusPayload };
+      if (String(url).startsWith('/api/update/check')) return { ok: true, json: async () => checkResponse };
+      if (String(url).startsWith('/api/update/install')) return { ok: true, json: async () => ({ status: 'preparing', version: '2.18.1' }) };
+      if (String(url).startsWith('/api/update/status')) return { ok: true, json: async () => updateStatusPayload };
+      return { ok: true, json: async () => ({}) };
+    }
+  });
+  await new Promise(r => setImmediate(r));
+
+  const stateText = sb.elements.get('state-text');
+  const checkBtn = sb.elements.get('check-update-btn');
+  const installBtn = sb.elements.get('install-update-btn');
+  const downloadLink = sb.elements.get('download-link');
+  const updateFeedback = sb.elements.get('update-feedback');
+  const updateNotes = sb.elements.get('update-notes');
+  const statusPoll = sb.intervals.find(i => i.ms === 3000);
+  assert.ok(statusPoll);
+
+  await checkBtn.trigger('click');
+  await new Promise(r => setImmediate(r));
+  assert.equal(installBtn.hidden, false);
+  assert.equal(updateFeedback.hidden, false);
+  assert.ok(updateFeedback.textContent.includes('2.18.1'));
+
+  await installBtn.trigger('click');
+  await new Promise(r => setImmediate(r));
+  const updatePoll = sb.intervals.find(i => i.ms === 900);
+  assert.ok(updatePoll, 'Expected 900ms update poll timer');
+  assert.equal(updatePoll.cleared, false);
+  assert.equal(checkBtn.disabled, true);
+  assert.equal(installBtn.disabled, true);
+
+  // Move to installing state
+  await updatePoll.fn();
+  assert.equal(updateFeedback.hidden, false);
+  assert.equal(updateFeedback.textContent, '正在安装并启动新版本…');
+  assert.equal(checkBtn.disabled, true);
+
+  // New sidecar v2.18.1 comes online and reports idle via /api/status
+  statusPayload = {
+    version: '2.18.1',
+    healthy: true,
+    enabled: true,
+    language: 'zh-CN',
+    update: { status: 'idle' }
+  };
+  await statusPoll.fn();
+
+  assert.equal(stateText.textContent, 'Agy Powertools 2.18.1', 'Version badge must reflect new sidecar version');
+  assert.equal(updatePoll.cleared, true, '900ms update poll timer must stop on installing -> idle');
+  assert.equal(checkBtn.disabled, false, 'Check update button must re-enable after installing -> idle');
+  assert.equal(installBtn.hidden, true, 'Stale install button must hide once on latest version');
+  assert.equal(downloadLink.hidden, true);
+  assert.equal(updateNotes.hidden, true);
+  assert.equal(updateFeedback.hidden, true, 'Progress feedback must clear and hide on installing -> idle');
+  assert.equal(updateFeedback.textContent, '');
+
+  // Manual check returning upToDate MUST NOT be wiped by subsequent idle status polls
+  checkResponse = { status: 'current', version: '2.18.1' };
+  await checkBtn.trigger('click');
+  await new Promise(r => setImmediate(r));
+  assert.equal(updateFeedback.hidden, false);
+  assert.equal(updateFeedback.textContent, '已是最新版本');
+
+  await statusPoll.fn();
+  assert.equal(updateFeedback.hidden, false, 'Idle status poll must not wipe manual upToDate feedback');
+  assert.equal(updateFeedback.textContent, '已是最新版本');
+
+  // Case 2: installing -> idle arriving via 900ms /api/update/status poll first also resets and triggers /api/status refresh
+  let statusPayload2 = {
+    version: '2.18.0',
+    healthy: true,
+    enabled: true,
+    language: 'en',
+    update: { status: 'idle' }
+  };
+  let updateStatusPayload2 = { status: 'installing', version: '2.18.2' };
+  const sb2 = createSidecarDomSandbox(renderAuxPaneHtml({ version: '2.18.0', language: 'en' }), {
+    fetchImpl: async url => {
+      if (String(url).startsWith('/api/status')) return { ok: true, json: async () => statusPayload2 };
+      if (String(url).startsWith('/api/update/check')) {
+        return {
+          ok: true,
+          json: async () => ({ status: 'available', version: '2.18.2', canInstall: true })
+        };
+      }
+      if (String(url).startsWith('/api/update/install')) return { ok: true, json: async () => ({ status: 'installing', version: '2.18.2' }) };
+      if (String(url).startsWith('/api/update/status')) return { ok: true, json: async () => updateStatusPayload2 };
+      return { ok: true, json: async () => ({}) };
+    }
+  });
+  await new Promise(r => setImmediate(r));
+  await sb2.elements.get('check-update-btn').trigger('click');
+  await new Promise(r => setImmediate(r));
+  await sb2.elements.get('install-update-btn').trigger('click');
+  await new Promise(r => setImmediate(r));
+  const updatePoll2 = sb2.intervals.find(i => i.ms === 900);
+  assert.ok(updatePoll2);
+  assert.equal(sb2.elements.get('check-update-btn').disabled, true);
+
+  // New sidecar answers /api/update/status with idle before 3s /api/status fires
+  statusPayload2 = { ...statusPayload2, version: '2.18.2', update: { status: 'idle' } };
+  updateStatusPayload2 = { status: 'idle' };
+  await updatePoll2.fn();
+  await new Promise(r => setImmediate(r));
+
+  assert.equal(updatePoll2.cleared, true);
+  assert.equal(sb2.elements.get('check-update-btn').disabled, false);
+  assert.equal(sb2.elements.get('install-update-btn').hidden, true);
+  assert.equal(sb2.elements.get('update-feedback').hidden, true);
+  assert.equal(sb2.elements.get('update-feedback').textContent, '');
+  assert.equal(sb2.elements.get('state-text').textContent, 'Agy Powertools 2.18.2');
 });

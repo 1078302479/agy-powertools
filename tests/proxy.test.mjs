@@ -63,6 +63,13 @@ test('normalizeProxyUrl, normalizeProxyBypass, and chromiumProxyArgs sanitize sa
   assert.equal(normalizeProxyBypass('192.168.0.0/16; .internal.local, localhost'), 'localhost,127.0.0.1,::1,192.168.0.0/16,.internal.local');
   assert.equal(isValidProxyBypass('localhost,127.0.0.1,::1'), true);
   assert.equal(isValidProxyBypass('localhost"$(whoami)'), false);
+  // Combined bypass string after prepending loopback entries must stay <= 480 chars (Issue #93)
+  const overLimitBypass = Array.from({ length: 17 }, (_, i) => `internal-host-${String(i).padStart(2, '0')}.corp.local`).join(',');
+  assert.ok(overLimitBypass.length <= 512 && `${DEFAULT_PROXY_BYPASS},${overLimitBypass}`.length > 480);
+  assert.equal(normalizeProxyBypass(overLimitBypass), null);
+  assert.equal(isValidProxyBypass(overLimitBypass), false);
+  const okBypass = Array.from({ length: 15 }, (_, i) => `svc-${String(i).padStart(2, '0')}.corp.local`).join(',');
+  assert.ok(normalizeProxyBypass(okBypass).length <= 480);
 
   const spec = proxySpecFromSettings({
     proxyEnabled: true,
@@ -92,6 +99,25 @@ test('inspectProxyRuntime classifies disabled, not-applied, active, config-chang
   const cold = inspectProxyRuntime({ proxyEnabled: true, proxyUrl: 'http://127.0.0.1:7897', proxyBypass: DEFAULT_PROXY_BYPASS, proxyForceHttp1: false }, {});
   assert.equal(cold.reason, 'not-applied');
   assert.equal(cold.mismatch, true);
+  assert.equal(cold.managedByPowertools, false);
+
+  // External HTTP_PROXY matching proxyUrl WITHOUT AGY_POWERTOOLS_PROXY_SPEC is still 'not-applied' because Chromium missed --proxy-server (Issue #93)
+  const externalSame = inspectProxyRuntime(
+    { proxyEnabled: true, proxyUrl: 'http://127.0.0.1:7897', proxyBypass: DEFAULT_PROXY_BYPASS, proxyForceHttp1: false },
+    { HTTP_PROXY: 'http://127.0.0.1:7897' }
+  );
+  assert.equal(externalSame.reason, 'not-applied');
+  assert.equal(externalSame.mismatch, true);
+  assert.equal(externalSame.managedByPowertools, false);
+
+  // External OS proxy conflicting with configured Powertools proxy reports 'config-changed' with managedByPowertools: false (Issue #93)
+  const externalConflict = inspectProxyRuntime(
+    { proxyEnabled: true, proxyUrl: 'http://127.0.0.1:7897', proxyBypass: DEFAULT_PROXY_BYPASS, proxyForceHttp1: false },
+    { HTTPS_PROXY: 'http://127.0.0.1:7890' }
+  );
+  assert.equal(externalConflict.reason, 'config-changed');
+  assert.equal(externalConflict.mismatch, true);
+  assert.equal(externalConflict.managedByPowertools, false);
 
   // Active managed session matches exactly
   const spec = proxySpecFromSettings({ proxyEnabled: true, proxyUrl: 'http://127.0.0.1:7897', proxyBypass: DEFAULT_PROXY_BYPASS, proxyForceHttp1: true });
@@ -101,6 +127,7 @@ test('inspectProxyRuntime classifies disabled, not-applied, active, config-chang
   );
   assert.equal(active.reason, 'active');
   assert.equal(active.mismatch, false);
+  assert.equal(active.managedByPowertools, true);
 
   // User changes proxy port or HTTP/1.1 toggle
   const changed = inspectProxyRuntime(

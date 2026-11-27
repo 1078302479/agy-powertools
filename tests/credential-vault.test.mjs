@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { runInNewContext } from 'node:vm';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   ACTIVE_TARGET,
   ACTIVE_USERNAME,
@@ -9,6 +10,8 @@ import {
   buildMacKeychainWriteScript,
   createCredentialVault,
   extractCredentialEmail,
+  extractCredentialMeta,
+  extractCredentialRefreshHash,
   vaultTargetFor
 } from '../lib/credential-vault.mjs';
 
@@ -197,13 +200,25 @@ test('Windows PowerShell WIN32_SCRIPT compiles Add-Type and extracts id_token_em
   });
   const wslEnvelope = JSON.stringify({
     v: 1,
-    token: Buffer.from(JSON.stringify({ id_token_email: 'Beta@Example.com' }), 'utf8').toString('base64'),
+    token: Buffer.from(JSON.stringify({ id_token_email: 'Beta@Example.com', token: { refresh_token: 'rt-beta-123' } }), 'utf8').toString('base64'),
     scope: null
   });
+  const goKeyringSingle = `go-keyring-base64:${Buffer.from(JSON.stringify({
+    id_token_email: 'Mac@Example.com',
+    token: { refresh_token: 'rt-mac-001' }
+  }), 'utf8').toString('base64')}`;
+  const goKeyringDouble = `go-keyring-base64:${Buffer.from(goKeyringSingle, 'utf8').toString('base64')}`;
+  const goKeyringTriple = `go-keyring-base64:${Buffer.from(goKeyringDouble, 'utf8').toString('base64')}`;
+  const expectedRfA = createHash('sha256').update('rt-a').digest('hex').slice(0, 12);
+  const expectedRfBeta = createHash('sha256').update('rt-beta-123').digest('hex').slice(0, 12);
+  const expectedRfMac = createHash('sha256').update('rt-mac-001').digest('hex').slice(0, 12);
   const verifyScript = [
     addTypeBlock,
-    '$cases = @($env:AGY_TEST_C1, $env:AGY_TEST_C2, $env:AGY_TEST_C3, $env:AGY_TEST_C4)',
-    '$out = foreach ($c in $cases) { [AgyWinCred]::ExtractEmail([System.Text.Encoding]::UTF8.GetBytes($c)) }',
+    '$cases = @($env:AGY_TEST_C1, $env:AGY_TEST_C2, $env:AGY_TEST_C3, $env:AGY_TEST_C4, $env:AGY_TEST_C5, $env:AGY_TEST_C6, $env:AGY_TEST_C7, $env:AGY_TEST_C8)',
+    '$out = foreach ($c in $cases) {',
+    '  $b = [System.Text.Encoding]::UTF8.GetBytes($c)',
+    '  ([AgyWinCred]::ExtractEmail($b)) + ":" + ([AgyWinCred]::ExtractRefreshHash($b))',
+    '}',
     'Write-Output ($out -join "|")'
   ].join('\n');
   const res = spawnSync(
@@ -218,13 +233,83 @@ test('Windows PowerShell WIN32_SCRIPT compiles Add-Type and extracts id_token_em
         AGY_TEST_C1: directPayload,
         AGY_TEST_C2: decoyPayload,
         AGY_TEST_C3: wslEnvelope,
-        AGY_TEST_C4: 'opaque-non-json-token'
+        AGY_TEST_C4: 'opaque-non-json-token',
+        AGY_TEST_C5: goKeyringSingle,
+        AGY_TEST_C6: goKeyringDouble,
+        AGY_TEST_C7: goKeyringTriple,
+        AGY_TEST_C8: 'go-keyring-base64:!!!not-base64!!!'
       }
     }
   );
   assert.equal(res.status, 0, res.stderr || res.error?.message || 'powershell failed');
   const line = String(res.stdout || '').trim().split(/\r?\n/).filter(Boolean).at(-1) || '';
-  assert.equal(line, 'alpha@example.com|real@example.com|beta@example.com|');
+  assert.equal(
+    line,
+    `alpha@example.com:${expectedRfA}|real@example.com:|beta@example.com:${expectedRfBeta}|:|mac@example.com:${expectedRfMac}|mac@example.com:${expectedRfMac}|:|:`
+  );
+});
+
+test('extractCredentialMeta unwraps go-keyring-base64: with depth <= 2, computes refreshHash, and blocks mismatched macOS writes (Issues #95 & #97)', () => {
+  const rawJson = JSON.stringify({
+    id_token_email: 'MacUser@Example.com',
+    token: { access_token: 'at-1', refresh_token: '  rt-mac-secret-1  ' }
+  });
+  const topLevelRtJson = JSON.stringify({
+    id_token_email: 'Top@Example.com',
+    refresh_token: 'rt-top-secret'
+  });
+  const expectedRfMac = createHash('sha256').update('rt-mac-secret-1').digest('hex').slice(0, 12);
+  const expectedRfTop = createHash('sha256').update('rt-top-secret').digest('hex').slice(0, 12);
+
+  const wrapped1 = `go-keyring-base64:${Buffer.from(rawJson, 'utf8').toString('base64')}`;
+  const wrapped2 = `go-keyring-base64:${Buffer.from(wrapped1, 'utf8').toString('base64')}`;
+  const wrapped3 = `go-keyring-base64:${Buffer.from(wrapped2, 'utf8').toString('base64')}`;
+
+  assert.equal(extractCredentialEmail(wrapped1), 'macuser@example.com');
+  assert.equal(extractCredentialRefreshHash(wrapped1), expectedRfMac);
+  assert.deepEqual(extractCredentialMeta(wrapped1), { email: 'macuser@example.com', refreshHash: expectedRfMac });
+  assert.deepEqual(extractCredentialMeta(Buffer.from(wrapped2, 'utf8')), { email: 'macuser@example.com', refreshHash: expectedRfMac });
+  assert.deepEqual(extractCredentialMeta(topLevelRtJson), { email: 'top@example.com', refreshHash: expectedRfTop });
+  // Depth > 2 and malformed payloads fail closed cleanly
+  assert.deepEqual(extractCredentialMeta(wrapped3), { email: '', refreshHash: '' });
+  assert.deepEqual(extractCredentialMeta('go-keyring-base64:'), { email: '', refreshHash: '' });
+  assert.deepEqual(extractCredentialMeta('go-keyring-base64:!!!invalid!!!'), { email: '', refreshHash: '' });
+  assert.deepEqual(extractCredentialMeta(`go-keyring-base64:${Buffer.from('not-json', 'utf8').toString('base64')}`), { email: '', refreshHash: '' });
+
+  // macOS vault inspectActive, inspectSaved, saveActiveTo, and restoreToActive unwrap go-keyring-base64:
+  const ops = [];
+  const macVault = createCredentialVault({
+    platform: 'darwin',
+    runSpawn(_cmd, args) {
+      ops.push(args[0]);
+      if (args.includes('-w')) return { status: 0, stdout: Buffer.from(wrapped1 + '\n', 'utf8') };
+      return { status: 0, stdout: '' };
+    }
+  });
+  const act = macVault.inspectActive();
+  assert.equal(act.exists, true);
+  assert.equal(act.email, 'macuser@example.com');
+  assert.equal(act.refreshHash, expectedRfMac);
+  const saved = macVault.inspectSaved('acct-mac');
+  assert.equal(saved.email, 'macuser@example.com');
+  assert.equal(saved.refreshHash, expectedRfMac);
+
+  const blockedSave = macVault.saveActiveTo('acct-other', { expectedEmail: 'other@example.com' });
+  assert.equal(blockedSave.ok, false);
+  assert.equal(blockedSave.mismatch, true);
+  assert.equal(blockedSave.actualEmail, 'macuser@example.com');
+  assert.equal(ops.includes('-i'), false);
+
+  const blockedRestore = macVault.restoreToActive('acct-other', { expectedEmail: 'other@example.com' });
+  assert.equal(blockedRestore.ok, false);
+  assert.equal(blockedRestore.mismatch, true);
+  assert.equal(ops.includes('-i'), false);
+
+  const okSave = macVault.saveActiveTo('acct-mac', { expectedEmail: 'macuser@example.com' });
+  assert.equal(okSave.ok, true);
+  assert.equal(okSave.email, 'macuser@example.com');
+  assert.equal(okSave.refreshHash, expectedRfMac);
+  assert.equal(ops.includes('-i'), true);
 });
 
 test('macOS credential vault keeps secrets out of argv across small, medium (2.6KB), and >4KB OAuth payloads and round-trips cleanly (Issue #75)', () => {

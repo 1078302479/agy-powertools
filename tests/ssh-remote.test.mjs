@@ -127,6 +127,27 @@ test('resolveSshWindowConfig and resolveRemotePosixPath resolve metadata and POS
     assert.equal(resolveRemotePosixPath('file:///data/project-C#%2Fsrc%2Fapp.cs%23L10-L20'), '/data/project-C#/src/app.cs');
     assert.equal(resolveRemotePosixPath('file:///data/project-C#/README.md#overview'), '/data/project-C#/README.md');
     assert.equal(resolveRemotePosixPath('file://localhost/home/user/test.txt?foo=bar'), '/home/user/test.txt');
+    // PR #98 parity: trailing :line[:col] / range / %3A-encoded suffixes, skipping :0, handling # dirs, and preserving #L10 precedence
+    assert.equal(resolveRemotePosixPath('file:///data/projects/get_search_suggest.go:371'), '/data/projects/get_search_suggest.go');
+    assert.equal(resolveRemotePosixPath('file:///data/projects/get_search_suggest.go:371:12'), '/data/projects/get_search_suggest.go');
+    assert.equal(resolveRemotePosixPath('file:///data/projects/get_search_suggest.go:2386-2446'), '/data/projects/get_search_suggest.go');
+    assert.equal(resolveRemotePosixPath('file:///data/projects/get_search_suggest.go:371:12-380:4'), '/data/projects/get_search_suggest.go');
+    assert.equal(resolveRemotePosixPath('file:///data/projects/get_search_suggest.go%3A371'), '/data/projects/get_search_suggest.go');
+    assert.equal(resolveRemotePosixPath('file:///data/projects/get_search_suggest.go%3a371%3A12-380%3a4'), '/data/projects/get_search_suggest.go');
+    assert.equal(resolveRemotePosixPath('file:///data/projects/app.go:42?foo=bar'), '/data/projects/app.go');
+    assert.equal(resolveRemotePosixPath('file:///data/project-C#/src/app.cs:42:5'), '/data/project-C#/src/app.cs');
+    assert.equal(resolveRemotePosixPath('file:///data/project-C#%2Fsrc%2Fapp.cs:42'), '/data/project-C#/src/app.cs');
+    assert.equal(resolveRemotePosixPath('file:///data/projects/file:0'), '/data/projects/file:0');
+    assert.equal(resolveRemotePosixPath('file:///data/projects/file:0:12'), '/data/projects/file:0:12');
+    assert.equal(resolveRemotePosixPath('file:///data/projects/file:12:0'), '/data/projects/file:12:0');
+    assert.equal(resolveRemotePosixPath('file:///data/projects/log:12:00'), '/data/projects/log:12:00');
+    assert.equal(resolveRemotePosixPath('file:///data/projects/file:12-0'), '/data/projects/file:12-0');
+    assert.equal(resolveRemotePosixPath('file:///data/projects/:42'), '/data/projects/:42');
+    assert.equal(resolveRemotePosixPath('file:///data/dir:42/app.go'), '/data/dir:42/app.go');
+    assert.equal(resolveRemotePosixPath('file:///data/projects/server:8080#L10'), '/data/projects/server:8080');
+    assert.equal(resolveRemotePosixPath('file:///data/project-C#/src/server:8080#L10'), '/data/project-C#/src/server:8080');
+    assert.equal(resolveRemotePosixPath('file:///data/projects/README.md:10#heading'), '/data/projects/README.md');
+    assert.equal(resolveRemotePosixPath('file:///data/project-C#/README.md:10#heading'), '/data/project-C#/README.md');
     assert.throws(() => resolveRemotePosixPath('file://remote-host/etc/passwd'));
     assert.throws(() => resolveRemotePosixPath('https://example.com/a'));
     assert.throws(() => resolveRemotePosixPath('file:///a%00b'));

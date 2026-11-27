@@ -224,6 +224,18 @@ sh ./install.sh
 
 ## 更新日志
 
+### v2.16.11
+- **修复 SOCKS5 代理下伴生进程崩溃与重启稳定性（#93，#64）**：移除会令 Node `fetch` 在 SOCKS5 环境下异常的 `NODE_USE_ENV_PROXY`，[pricing.mjs](lib/pricing.mjs) 统一走 `createProxyFetcher()`；Windows 重启 ACK 等待延长至 6 秒并在失败时清理 `lastRelaunchAt`，支持外部代理配置变更自动重启，快捷方式修补改为非阻塞执行，且 4 秒调试端口轮询不再误清 24 小时重启熔断状态。
+- **根治多账号切换后串号/账号错位与 macOS 凭据前缀兼容（#97，#95）**：新增 `refreshHash` 去重与碰撞保护，切号重启仅在当前用户作用域内结束残留 `language_server.exe` 并在退出后动态回填目标凭据与清理 `credential-user-scope`（遇提权进程或临时异常绝不令客户端停在关闭态），补充 `fromLsAddress` 校验与 `switchMismatch` 自愈提示；JS 与 Win32 C# 侧统一解包 macOS `go-keyring-base64:` 前缀。
+- **修复 Windows `.gemini` 联接点更新失败与伴生页更新状态卡死（#96，#100）**：[lifecycle.mjs](lib/lifecycle.mjs) 仅放行 `.gemini` 根目录 NTFS Junction/符号链接并保留子路径安全检查、补充跨卷 `EXDEV` 回退，在“关于”页透出安装报错详情；修复伴生页在更新状态从 `installing` 回到 `idle` 后停留在“正在安装并启动新版本…”的问题。
+- **修复自定义字重下部分标题变细与字宽漂移**：在 [native-ui.js](lib/native-ui.js) 建立单调递增字重阶梯 `--agy-fw-*` 同步覆写宿主 Tailwind `--font-weight-*` 与 `body` 的 `font-variation-settings: normal`，并将面板与侧栏监控样式硬编码字重统一接入 `--agy-fw-*`（关闭自定义字重时保持原默认零变化）。
+- **修复 Node 24 Windows 下扫描二进制 `.lnk` 快捷方式导致的堆损坏崩溃**：将 [launcher.mjs](lib/launcher.mjs) 的 `.lnk` 预检由 `utf16le.toLowerCase()` 改为零分配纯字节扫描（兼容 ASCII 与奇偶偏移 UTF-16LE）。
+- **放宽 `custom-i18n.json` 词条长度上限并吸收三项社区贡献（#94，吸收 PR #98 / PR #86 / PR #83，感谢 `@mutezebra`、`@Nazumeki`、`@Hi-Jiajun`）**：
+  - 将自定义词典单条文本上限由 400 字符提升至 2000 字符（#94）。
+  - 支持将 `file://` 链接末尾 `:line[:col]` 透传至客户端编辑器与 SSH 远端，并处理路径含 `#`、POSIX 真实 `:数字` 文件名与 `:0` 边界（PR #98）。
+  - 设置页统一为 12px 贴边布局并去除重复分割线，侧栏运行态与设置预览升级为 6 色对称流光并调优浅色模式羽化，同时实时同步 `quota` 配色（PR #86）。
+  - 精选吸收 400 条九语种静态 UI 词条并新增 `controlOnlyLabels` 标题保护，修正繁中词表；Overview 面板原生 `title` 升级为作用域感知的自定义主题浮窗（PR #83）。
+
 ### v2.16.10
 - **修复独立代理下 HTTPS 隧道被跳过导致检查更新失败（PR #92，closes #90，感谢 `@qimengdunjia`）**：将 [proxy.mjs](lib/proxy.mjs) 中 `httpsGetThroughProxy` 由 `agent: false` 改为复用绑定 `tlsSocket` 的独立 `https.Agent({ keepAlive: false })`，同步保持响应体流式读取期间的 `AbortSignal` 中止有效与非 HTTPS 跳转防回退，并将 `update.check`、`update.autoCheck`、`update.install` 的前端 RPC 超时对齐至 18 秒。
 - **修复长任务每次工具调用重绘输入框底栏引发的 Windows IME 悬浮窗闪烁（#89）**：将 `composerRingSig` 精简为仅跟踪底栏按钮可见字段（按开关条件门控），同时让展开的上下文窗口与会话统计浮窗直接读取实时状态，既消除无谓重绘又保持弹窗数据实时刷新。

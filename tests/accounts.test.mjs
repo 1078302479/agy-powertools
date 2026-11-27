@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import vm from 'node:vm';
@@ -1954,4 +1954,225 @@ test('Sidebar badge, QuickPopover info dot, and About toggles reflect discovered
   );
   assert.equal(dismissedUi.find(dismissedUi.renderSidebar(), 'agy-sidebar-update-badge'), null);
   assert.equal(dismissedUi.find(dismissedUi.renderQuickPopover(), 'agy-quick-trigger-badge'), null);
+});
+
+test('createAccountsStore blocks chimera refreshHash collisions, self-heals switchMismatch via fromLsAddress, and defers Windows restore to relaunch-worker (Issue #97)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agy-accounts-97-'));
+  let clock = 1_796_000_000_000;
+  const makeToken = (email, access, refresh) => JSON.stringify({
+    token: { access_token: access, refresh_token: refresh },
+    auth_method: 'consumer',
+    id_token_email: email
+  });
+  const parseMeta = raw => {
+    try {
+      const obj = JSON.parse(raw);
+      return {
+        email: String(obj.id_token_email || '').trim().toLowerCase(),
+        refreshHash: obj.token?.refresh_token ? `rf_${obj.token.refresh_token}` : ''
+      };
+    } catch {
+      return { email: '', refreshHash: '' };
+    }
+  };
+  const slots = new Map([['gemini:antigravity', makeToken('alpha@example.com', 'at-a1', 'rt-alpha')]]);
+  let restoreCalls = 0;
+  const makeVault = ({ backend = 'darwin-keychain' } = {}) => ({
+    supported: true,
+    backend,
+    slots,
+    probe: () => ({ supported: true, backend, reason: '' }),
+    has: t => slots.has(t),
+    inspect(t) {
+      if (!slots.has(t)) return { exists: false, hash: '' };
+      const raw = slots.get(t);
+      const { email, refreshHash } = parseMeta(raw);
+      return { exists: true, hash: `H_${raw}`, ...(email ? { email } : {}), ...(refreshHash ? { refreshHash } : {}) };
+    },
+    copy(from, to, { expectedEmail = '' } = {}) {
+      if (!slots.has(from)) return { ok: false, error: 'missing source' };
+      const raw = slots.get(from);
+      const { email, refreshHash } = parseMeta(raw);
+      const expected = String(expectedEmail || '').trim().toLowerCase();
+      if (expected && email && email !== expected) {
+        return { ok: false, mismatch: true, actualEmail: email, expectedEmail: expected, error: 'mismatch' };
+      }
+      slots.set(to, raw);
+      return { ok: true, bytes: raw.length, hash: `H_${raw}`, ...(email ? { email } : {}), ...(refreshHash ? { refreshHash } : {}) };
+    },
+    remove: t => { slots.delete(t); return { ok: true }; },
+    saveActiveTo(id, opts) { return this.copy('gemini:antigravity', `agy-powertools:account:${id}`, opts); },
+    restoreToActive(id, opts) { restoreCalls++; return this.copy(`agy-powertools:account:${id}`, 'gemini:antigravity', opts); },
+    hasSaved(id) { return this.has(`agy-powertools:account:${id}`); },
+    inspectSaved(id) { return this.inspect(`agy-powertools:account:${id}`); },
+    inspectActive() { return this.inspect('gemini:antigravity'); },
+    removeSaved(id) { return this.remove(`agy-powertools:account:${id}`); }
+  });
+
+  try {
+    // 1. Chimera detection in syncActive, completeAdd, switchAccount, and refreshCredentials + snapshot stripping
+    const env = { ANTIGRAVITY_LS_ADDRESS: '127.0.0.1:41001' };
+    const vault = makeVault({ backend: 'darwin-keychain' });
+    const store = createAccountsStore(dir, {
+      now: () => clock,
+      vault,
+      env,
+      appStoragePath: join(dir, 'app_storage.json'),
+      relaunch: () => ({ scheduled: true })
+    });
+
+    const s1 = store.syncActive({ email: 'alpha@example.com', name: 'Alpha' });
+    const alphaId = s1.activeId;
+    // Internal hash fields MUST be stripped from snapshotResponse()
+    assert.equal('credHash' in s1.accounts[0], false);
+    assert.equal('refreshHash' in s1.accounts[0], false);
+    assert.equal('invalidCredHash' in s1.accounts[0], false);
+    assert.equal('invalidRefreshHash' in s1.accounts[0], false);
+
+    // Chimera #1 in syncActive: UI claims beta, active token has beta email BUT alpha's refresh_token
+    slots.set('gemini:antigravity', makeToken('beta@example.com', 'at-chimera', 'rt-alpha'));
+    const chimeraSync = store.syncActive({ email: 'beta@example.com', name: 'Beta' });
+    assert.deepEqual(chimeraSync.credentialMismatch, { uiEmail: 'beta@example.com', credentialEmail: 'alpha@example.com' });
+    assert.equal(chimeraSync.accounts.length, 1);
+
+    // Restore alpha cleanly, then test completeAdd chimera guards
+    slots.set('gemini:antigravity', makeToken('alpha@example.com', 'at-a1', 'rt-alpha'));
+    const prep = store.prepareAdd({ pendingAlias: 'Beta' });
+    assert.equal(prep.prevRefreshHash, 'rf_rt-alpha');
+
+    // Chimera #2 in completeAdd: refresh_token changed to rt-new, but id_token_email still alpha while UI says beta
+    slots.set('gemini:antigravity', makeToken('alpha@example.com', 'at-b1', 'rt-new'));
+    assert.throws(
+      () => store.completeAdd({ email: 'beta@example.com', prevEmail: 'alpha@example.com', prevCredHash: prep.prevCredHash, prevRefreshHash: prep.prevRefreshHash }),
+      /混合登录凭据/
+    );
+
+    // Chimera #3 in completeAdd: id_token_email says beta, but refresh_token is still rt-alpha
+    slots.set('gemini:antigravity', makeToken('beta@example.com', 'at-b2', 'rt-alpha'));
+    assert.throws(
+      () => store.completeAdd({ email: 'beta@example.com', prevEmail: 'alpha@example.com', prevCredHash: prep.prevCredHash, prevRefreshHash: prep.prevRefreshHash }),
+      /刷新令牌/
+    );
+
+    // Clean beta login succeeds
+    slots.set('gemini:antigravity', makeToken('beta@example.com', 'at-b3', 'rt-beta'));
+    const added = store.completeAdd({ email: 'beta@example.com', prevEmail: 'alpha@example.com', prevCredHash: prep.prevCredHash, prevRefreshHash: prep.prevRefreshHash });
+    assert.equal(added.ok, true);
+    const betaId = added.activeId;
+    assert.notEqual(betaId, alphaId);
+
+    // Pre-restart poll with SAME lsAddress returns pendingSwitchIgnored: true
+    const preRestart = store.syncActive({ email: 'alpha@example.com', name: 'Alpha' });
+    assert.equal(preRestart.pendingSwitchIgnored, true);
+    assert.equal(preRestart.activeId, betaId);
+
+    // Post-restart into WRONG account (DIFFERENT lsAddress!) self-heals immediately:
+    // clears pendingSwitch, invalidates beta slot with invalidCredHash/invalidRefreshHash, aligns activeId to alpha without overwriting alpha's vault slot
+    const alphaBefore = slots.get(`agy-powertools:account:${alphaId}`);
+    slots.set('gemini:antigravity', makeToken('alpha@example.com', 'at-a-restarted', 'rt-alpha'));
+    env.ANTIGRAVITY_LS_ADDRESS = '127.0.0.1:41002';
+    const mismatched = store.syncActive({ email: 'alpha@example.com', name: 'Alpha' });
+    assert.deepEqual(mismatched.switchMismatch, { expectedEmail: 'beta@example.com', actualEmail: 'alpha@example.com' });
+    assert.equal(mismatched.activeId, alphaId);
+    assert.equal(mismatched.accounts.find(a => a.id === betaId).hasCredential, false);
+    assert.equal('invalidCredHash' in mismatched.accounts.find(a => a.id === betaId), false);
+    assert.equal('invalidRefreshHash' in mismatched.accounts.find(a => a.id === betaId), false);
+    assert.equal(slots.get(`agy-powertools:account:${alphaId}`), alphaBefore);
+
+    // refreshCredentials MUST NOT falsely flip the poisoned beta slot back to hasCredential: true
+    const afterRefresh = store.refreshCredentials();
+    assert.equal(afterRefresh.accounts.find(a => a.id === betaId).hasCredential, false);
+    assert.throws(() => store.switchAccount(betaId), /失效|串号|重新登录/);
+
+    // Re-logging beta with a genuinely fresh refresh_token clears invalid markers and restores valid credential
+    slots.set('gemini:antigravity', makeToken('beta@example.com', 'at-b4', 'rt-beta-fresh'));
+    const recovered = store.syncActive({ email: 'beta@example.com', name: 'Beta' });
+    assert.equal(recovered.accounts.find(a => a.id === betaId).hasCredential, true);
+
+    // Different access_token (different credHash) but SAME refresh_token (same refreshHash) on alpha slot is caught by refreshCredentials & switchAccount
+    slots.set(`agy-powertools:account:${alphaId}`, makeToken('alpha@example.com', 'at-different', 'rt-beta-fresh'));
+    const dupRf = store.refreshCredentials({ accountId: alphaId });
+    assert.equal(dupRf.valid, 0);
+    assert.equal(dupRf.invalid, 1);
+    assert.equal(dupRf.account.hasCredential, false);
+    assert.throws(() => store.switchAccount(alphaId), /重复|重新登录/);
+
+    // 2. Native Windows switchAccount defers restoreToActive to relaunch-worker, and falls back in-place + clears scope file when manualRestartRequired
+    const winDir = join(dir, 'win-store');
+    mkdirSync(winDir, { recursive: true });
+    const winScopePath = join(winDir, 'credential-user-scope');
+    writeFileSync(winScopePath, 'old-scope');
+    slots.set('gemini:antigravity', makeToken('alpha@example.com', 'at-wa1', 'rt-wa'));
+    const winVault = makeVault({ backend: 'win32-credman' });
+    const winRelaunchOpts = [];
+    let nextRelaunchRes = { scheduled: true };
+    const winStore = createAccountsStore(winDir, {
+      now: () => clock,
+      vault: winVault,
+      platform: 'win32',
+      env: { ANTIGRAVITY_LS_ADDRESS: '127.0.0.1:42001' },
+      appStoragePath: join(winDir, 'app_storage.json'),
+      scopePath: winScopePath,
+      relaunch: async opts => {
+        winRelaunchOpts.push(opts);
+        return nextRelaunchRes;
+      }
+    });
+    const ws1 = winStore.syncActive({ email: 'alpha@example.com', name: 'Alpha' });
+    const wAlphaId = ws1.activeId;
+    slots.set('gemini:antigravity', makeToken('beta@example.com', 'at-wb1', 'rt-wb'));
+    const ws2 = winStore.syncActive({ email: 'beta@example.com', name: 'Beta' });
+    const wBetaId = ws2.activeId;
+
+    restoreCalls = 0;
+    const swDeferred = await winStore.switchAccount(wAlphaId, { triggerRelaunch: true });
+    assert.equal(swDeferred.ok, true);
+    assert.equal(swDeferred.relaunching, true);
+    assert.equal(restoreCalls, 0, 'native Windows relaunch must defer restoreToActive to relaunch-worker');
+    assert.deepEqual(winRelaunchOpts.at(-1).credentialSwitch, { accountId: wAlphaId, expectedEmail: 'alpha@example.com' });
+    assert.equal(winRelaunchOpts.at(-1).clearScopePath, winScopePath);
+    assert.equal(existsSync(winScopePath), true, 'scope file stays untouched until worker post-exit when relaunch succeeds');
+
+    // Simulate manualRestartRequired fallback -> restores active credential in-place AND deletes credential-user-scope
+    slots.set('gemini:antigravity', makeToken('alpha@example.com', 'at-wa1', 'rt-wa'));
+    winStore.syncActive({ email: 'alpha@example.com', name: 'Alpha' });
+    nextRelaunchRes = { scheduled: false, manualRestartRequired: true, reason: 'relaunch-blocked' };
+    restoreCalls = 0;
+    const swFallback = await winStore.switchAccount(wBetaId, { triggerRelaunch: true });
+    assert.equal(swFallback.ok, true);
+    assert.equal(swFallback.manualRestartRequired, true);
+    assert.equal(restoreCalls, 1, 'fallback on manualRestartRequired must restore active credential in-place');
+    assert.equal(parseMeta(slots.get('gemini:antigravity')).email, 'beta@example.com');
+    assert.equal(existsSync(winScopePath), false, 'fallback must remove credential-user-scope');
+
+    // 3. P2 #8: publicAccount strips internal hash fields across ALL single-account & pickAutoSwitch RPC responses
+    const assertPublicOnly = (acct, label) => {
+      assert.ok(acct && typeof acct === 'object', `${label}: expected account object`);
+      for (const field of ['credHash', 'refreshHash', 'invalidCredHash', 'invalidRefreshHash']) {
+        assert.equal(field in acct, false, `${label}: leaked internal field ${field}`);
+      }
+    };
+    assertPublicOnly(swFallback.account, 'switchAccount');
+    const renamed = store.renameAccount(alphaId, 'Work');
+    assertPublicOnly(renamed.account, 'renameAccount');
+    const disabled = store.setDisabled(alphaId, true);
+    assertPublicOnly(disabled.account, 'setDisabled');
+    store.setDisabled(alphaId, false);
+    const refreshedSingle = store.refreshCredentials({ accountId: betaId });
+    assertPublicOnly(refreshedSingle.account, 'refreshCredentials');
+    const unchangedSwitch = store.switchAccount(betaId);
+    assertPublicOnly(unchangedSwitch.account, 'switchAccount(unchanged)');
+    const prepNoop = store.prepareAdd();
+    const noopAdd = store.completeAdd({
+      email: 'beta@example.com',
+      prevEmail: 'beta@example.com',
+      prevCredHash: prepNoop.prevCredHash,
+      prevRefreshHash: prepNoop.prevRefreshHash
+    });
+    assertPublicOnly(noopAdd.account, 'completeAdd(noop)');
+    const autoPick = store.pickAutoSwitch('gemini');
+    for (const cand of autoPick.candidates) assertPublicOnly(cand, 'pickAutoSwitch');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

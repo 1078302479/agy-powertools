@@ -37,45 +37,84 @@ if (isDirectRun) {
   // Cold-start proxy auto-relaunch (non-TUN mode): runs locally before renderer/network mount,
   // with short retries if the local proxy client is still starting up on boot.
   const proxyRetryTimers = [];
+  let deferredProxyAfterDebugPort = false;
+  let bootProxyLastReason = '';
+  const needsBootProxyRelaunch = runtime =>
+    Boolean(runtime?.configured && (runtime.reason === 'not-applied' || (!runtime.managedByPowertools && runtime.reason === 'config-changed')));
+  const attemptBootProxy = async (attempt = 0) => {
+    if (remoteSsh || relaunchCoordinator.isScheduled()) return;
+    const cur = settings.get();
+    const runtime = inspectProxyRuntime(cur, process.env);
+    if (cur.enabled === false || !needsBootProxyRelaunch(runtime)) return;
+    const res = await relaunchCoordinator.attemptProxy({
+      enabled: cur.enabled !== false,
+      proxyEnabled: cur.proxyEnabled,
+      proxyUrl: cur.proxyUrl,
+      runtimeProxyReason: runtime.reason,
+      runtimeProxyManaged: runtime.managedByPowertools
+    }).catch(() => null);
+    if (res?.reason && res.reason !== 'probe-in-flight') bootProxyLastReason = res.reason;
+    if (res?.reason === 'proxy-unreachable' && attempt < 2 && !relaunchCoordinator.isScheduled()) {
+      const t = setTimeout(() => { void attemptBootProxy(attempt + 1); }, attempt === 0 ? 4000 : 10000);
+      t.unref?.();
+      proxyRetryTimers.push(t);
+    }
+  };
+  const scheduleHealLaunchers = () => {
+    if (shortcutsHealed) return;
+    shortcutsHealed = true;
+    const run = () => {
+      if (relaunchCoordinator.isScheduled()) return;
+      if (relaunchCoordinator.isProxyProbeInFlight()) {
+        const waitTimer = setTimeout(run, 250);
+        waitTimer.unref?.();
+        return;
+      }
+      try { configureLaunchers({ home: paths.home, dataDir: paths.data }); } catch {}
+    };
+    const t = setTimeout(run, 0);
+    t.unref?.();
+  };
   if (!remoteSsh) {
     const bootSettings = settings.get();
     const bootProxy = inspectProxyRuntime(bootSettings, process.env);
     if (bootProxy.reason === 'active') {
       try { recordProxyReady({ dataDir: paths.data }); } catch {}
-    } else if (bootSettings.enabled !== false && bootProxy.configured && bootProxy.reason === 'not-applied') {
-      const attemptBootProxy = async (attempt = 0) => {
-        const cur = settings.get();
-        const runtime = inspectProxyRuntime(cur, process.env);
-        if (cur.enabled === false || !runtime.configured || runtime.reason !== 'not-applied') return;
-        const res = await relaunchCoordinator.attemptProxy({
-          enabled: cur.enabled !== false,
-          proxyEnabled: cur.proxyEnabled,
-          proxyUrl: cur.proxyUrl,
-          runtimeProxyReason: runtime.reason
-        }).catch(() => null);
-        if (res?.reason === 'proxy-unreachable' && attempt < 2 && !relaunchCoordinator.isScheduled()) {
-          const t = setTimeout(() => { void attemptBootProxy(attempt + 1); }, attempt === 0 ? 4000 : 10000);
-          t.unref?.();
-          proxyRetryTimers.push(t);
-        }
-      };
+    } else if (bootSettings.enabled !== false && needsBootProxyRelaunch(bootProxy)) {
       void attemptBootProxy(0);
     }
   }
   const stop = startNativeIntegration({
     parseSessionData,
     onDebugPortReady() {
+      const wasConnected = everConnectedDebugPort;
       everConnectedDebugPort = true;
       missingPortPolls = 0;
-      try { recordDebugPortReady({ dataDir: paths.data }); } catch {}
+      const cur = !remoteSsh ? settings.get() : null;
+      const runtime = cur ? inspectProxyRuntime(cur, process.env) : null;
+      const needsProxy = Boolean(runtime && needsBootProxyRelaunch(runtime));
+      if (!wasConnected) {
+        try { recordDebugPortReady({ dataDir: paths.data, preserveBlocked: needsProxy }); } catch {}
+      }
+      if (
+        !remoteSsh &&
+        !deferredProxyAfterDebugPort &&
+        !relaunchCoordinator.isScheduled() &&
+        bootProxyLastReason !== 'relaunch-blocked' &&
+        bootProxyLastReason !== 'circuit-open' &&
+        cur?.enabled !== false &&
+        needsProxy
+      ) {
+        deferredProxyAfterDebugPort = true;
+        const t = setTimeout(() => { void attemptBootProxy(0); }, 0);
+        t.unref?.();
+        proxyRetryTimers.push(t);
+      }
     },
     onMissingDebugPort() {
       if (remoteSsh || everConnectedDebugPort) return;
       missingPortPolls++;
-      if (!shortcutsHealed) {
-        shortcutsHealed = true;
-        try { configureLaunchers({ home: paths.home, dataDir: paths.data }); } catch {}
-      }
+      scheduleHealLaunchers();
       const current = settings.get();
       if (current.enabled !== false) {
         if (process.platform === 'darwin' && current.macAutoRelaunch !== false) {

@@ -8,6 +8,7 @@ import { pathToFileURL } from 'node:url';
 import {
   validateRelaunchJob,
   parseTasklistPids,
+  listWindowsImagePids,
   buildCleanTargetEnv,
   runRelaunchJob
 } from '../scripts/relaunch-worker.mjs';
@@ -103,6 +104,29 @@ test('validateRelaunchJob enforces strict allowlists to prevent LOLBin abuse', (
       ...validJob,
       onboardingSync: { email: 'alice@example.com', isGcpTos: true, appStoragePath: join(root, 'other.json') }
     }, { jobPath, now: () => now }).reason, 'invalid-onboarding-storage');
+
+    // Accept valid credentialSwitch & clearScopePath and reject unsafe/secret variants (Issue #97)
+    assert.equal(validateRelaunchJob({
+      ...validJob,
+      credentialSwitch: { accountId: 'acct-123_ab', expectedEmail: 'bob@example.com' },
+      clearScopePath: join(root, 'Antigravity', 'credential-user-scope')
+    }, { jobPath, now: () => now }).valid, true);
+    assert.equal(validateRelaunchJob({
+      ...validJob,
+      credentialSwitch: { accountId: '../evil', expectedEmail: 'bob@example.com' }
+    }, { jobPath, now: () => now }).reason, 'invalid-credential-switch-account');
+    assert.equal(validateRelaunchJob({
+      ...validJob,
+      credentialSwitch: { accountId: 'acct-1', expectedEmail: 'not-an-email' }
+    }, { jobPath, now: () => now }).reason, 'invalid-credential-switch-email');
+    assert.equal(validateRelaunchJob({
+      ...validJob,
+      credentialSwitch: { accountId: 'acct-1', expectedEmail: 'bob@example.com', refreshToken: 'secret' }
+    }, { jobPath, now: () => now }).reason, 'invalid-credential-switch');
+    assert.equal(validateRelaunchJob({
+      ...validJob,
+      clearScopePath: join(root, 'other-file')
+    }, { jobPath, now: () => now }).reason, 'invalid-clear-scope-path');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -412,7 +436,8 @@ test('verifyRelaunchStarted confirms valid ACK, fails closed on timeout with las
     assert.equal(okRes.manualRestartRequired, false);
     assert.equal(okRes.workerPid, 99123);
 
-    // 2. Mismatched nonce or missing ACK times out -> deletes stale job JSON, records lastRelaunchBlockedAt, returns manualRestartRequired
+    // 2. Mismatched nonce or missing ACK times out -> deletes stale job JSON, clears lastRelaunchAt, records lastRelaunchBlockedAt, returns manualRestartRequired
+    writeFileSync(join(dataDir, 'relaunch-state.json'), JSON.stringify({ lastRelaunchAt: 1_759_999_999_000 }));
     writeFileSync(jobPath, '{"format":1}');
     writeFileSync(ackPath, JSON.stringify({ nonce: 'wrong-nonce-value-1234', pid: 111 }));
     const blockedNow = 1_760_000_000_000;
@@ -427,6 +452,7 @@ test('verifyRelaunchStarted confirms valid ACK, fails closed on timeout with las
     assert.equal(existsSync(jobPath), false);
     const savedState = JSON.parse(readFileSync(join(dataDir, 'relaunch-state.json'), 'utf8'));
     assert.equal(savedState.lastRelaunchBlockedAt, blockedNow);
+    assert.equal(savedState.lastRelaunchAt, 0);
 
     // 3. maybeAutoRelaunchProxy respects lastRelaunchBlockedAt for 24h and resumes once cleared by recordProxyReady / recordDebugPortReady
     const fakeExe = join(root, 'Programs', 'antigravity', 'Antigravity.exe');
@@ -544,6 +570,391 @@ test('pure-Node .lnk pre-filter skips PowerShell completely for already-patched 
     assert.equal(psCalls.length, 1);
     assert.deepEqual(psCalls[0].list, [unpatchedLnk]);
     assert.deepEqual(res2.updated, [unpatchedLnk]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('relaunch-worker stops sibling language_server.exe, runs post-exit credentialSwitch & clearScopePath, and fails closed on elevated processes or restore failure (Issue #97)', async () => {
+  const lsCsv = [
+    '"language_server.exe","61001","Console","1","50,000 K"',
+    '"Antigravity.exe","61002","Console","1","100,000 K"'
+  ].join('\r\n');
+  assert.deepEqual(parseTasklistPids(lsCsv, { imageNames: ['language_server.exe'] }), [61001]);
+
+  // P1 #4: listWindowsImagePids scopes tasklist to current USERNAME and falls back only on non-zero/empty failure
+  const tasklistCalls = [];
+  const scopedPids = listWindowsImagePids('language_server.exe', {
+    env: { USERNAME: 'Alice.Dev' },
+    runCommand: (_cmd, args) => {
+      tasklistCalls.push(args);
+      return { status: 0, stdout: '"language_server.exe","62001","Console","1","40,000 K"\r\n' };
+    }
+  });
+  assert.deepEqual(scopedPids, [62001]);
+  assert.equal(tasklistCalls.length, 1);
+  assert.ok(tasklistCalls[0].includes('USERNAME eq Alice.Dev'));
+
+  const noMatchCalls = [];
+  const noMatchPids = listWindowsImagePids('language_server.exe', {
+    env: { USERNAME: 'Alice.Dev' },
+    runCommand: (_cmd, args) => {
+      noMatchCalls.push(args);
+      return { status: 0, stdout: 'INFO: No tasks are running which match the specified criteria.\r\n' };
+    }
+  });
+  assert.deepEqual(noMatchPids, []);
+  assert.equal(noMatchCalls.length, 1, 'status=0 non-empty no-tasks output must NOT fall back to other users');
+
+  const fallbackCalls = [];
+  const fallbackPids = listWindowsImagePids('Antigravity.exe', {
+    env: { USERNAME: 'Alice.Dev' },
+    runCommand: (_cmd, args) => {
+      fallbackCalls.push(args);
+      if (args.includes('USERNAME eq Alice.Dev')) return { status: 1, stdout: '' };
+      return { status: 0, stdout: '"Antigravity.exe","63001","Console","1","90,000 K"\r\n' };
+    }
+  });
+  assert.deepEqual(fallbackPids, [63001]);
+  assert.equal(fallbackCalls.length, 2);
+  assert.equal(fallbackCalls[1].some(a => a.startsWith('USERNAME eq')), false);
+
+  const root = mkdtempSync(join(tmpdir(), 'agy-worker-97-'));
+  try {
+    const target = join(root, 'Antigravity.exe');
+    writeFileSync(target, '');
+
+    // 1. Happy path: Antigravity.exe + language_server.exe exit -> credentialSwitch runs -> clearScopePath deleted -> spawn
+    const jobPath1 = join(root, 'job1.json');
+    const ackPath1 = join(root, 'ack1.json');
+    const logPath1 = join(root, 'log1.log');
+    const scopePath1 = join(root, 'credential-user-scope');
+    writeFileSync(scopePath1, 'stale-scope');
+    const nonce1 = '12345678-1234-1234-1234-1234567890ab';
+    writeFileSync(jobPath1, JSON.stringify({
+      format: 1,
+      nonce: nonce1,
+      requestedAt: Date.now(),
+      target,
+      args: ['--remote-debugging-port=0'],
+      proxyEnabled: false,
+      forceHttp1: false,
+      proxyEnv: null,
+      onboardingSync: null,
+      credentialSwitch: { accountId: 'acct-beta', expectedEmail: 'beta@example.com' },
+      clearScopePath: scopePath1,
+      ackPath: ackPath1,
+      logPath: logPath1
+    }));
+
+    const events = [];
+    let appAlive = true;
+    let lsAlive = true;
+    const res1 = await runRelaunchJob(jobPath1, {
+      listTargetPids: () => (appAlive ? [71001] : []),
+      listLanguageServerPids: () => (lsAlive ? [72001] : []),
+      gracefulClosePid: pid => {
+        events.push(`graceful:${pid}`);
+        if (pid === 71001) appAlive = false;
+      },
+      forceKillPid: pid => {
+        events.push(`force:${pid}`);
+        if (pid === 72001) lsAlive = false;
+      },
+      restoreCredential: async cs => {
+        assert.equal(appAlive, false, 'Antigravity.exe must exit before credentialSwitch');
+        assert.equal(lsAlive, false, 'language_server.exe must exit before credentialSwitch');
+        events.push(`restore:${cs.accountId}:${cs.expectedEmail}`);
+        return { ok: true };
+      },
+      spawnProcess: () => {
+        assert.equal(existsSync(scopePath1), false, 'credential-user-scope must be deleted before spawn');
+        events.push('spawn');
+        return { pid: process.pid, on() {}, unref() {} };
+      },
+      settleMs: 5,
+      gracefulTimeoutMs: 40,
+      forceTimeoutMs: 40,
+      postExitSettleMs: 5,
+      verifyDelayMs: 5,
+      pollMs: 10
+    });
+    assert.equal(res1.ok, true);
+    assert.deepEqual(events, [
+      'graceful:71001',
+      'graceful:72001',
+      'force:72001',
+      'restore:acct-beta:beta@example.com',
+      'spawn'
+    ]);
+    assert.equal(existsSync(scopePath1), false);
+
+    // 2a. Elevated / unkillable Antigravity.exe survives force kill -> fail closed with elevated-process-running
+    const jobPath2 = join(root, 'job2.json');
+    const ackPath2 = join(root, 'ack2.json');
+    const scopePath2 = join(root, 'sub', 'credential-user-scope');
+    mkdirSync(join(root, 'sub'), { recursive: true });
+    writeFileSync(scopePath2, 'keep-on-abort');
+    const nonce2 = '22345678-1234-1234-1234-1234567890ab';
+    writeFileSync(jobPath2, JSON.stringify({
+      format: 1,
+      nonce: nonce2,
+      requestedAt: Date.now(),
+      target,
+      args: ['--remote-debugging-port=0'],
+      proxyEnabled: false,
+      forceHttp1: false,
+      proxyEnv: null,
+      onboardingSync: null,
+      credentialSwitch: { accountId: 'acct-beta', expectedEmail: 'beta@example.com' },
+      clearScopePath: scopePath2,
+      ackPath: ackPath2
+    }));
+
+    let restoreCalled2 = 0;
+    let spawnCalled2 = 0;
+    const res2 = await runRelaunchJob(jobPath2, {
+      listTargetPids: () => [79999],
+      listLanguageServerPids: () => [],
+      gracefulClosePid: () => {},
+      forceKillPid: () => {},
+      restoreCredential: async () => { restoreCalled2++; return { ok: true }; },
+      spawnProcess: () => { spawnCalled2++; return { pid: process.pid, on() {}, unref() {} }; },
+      settleMs: 5,
+      gracefulTimeoutMs: 25,
+      forceTimeoutMs: 25,
+      postExitSettleMs: 5,
+      verifyDelayMs: 5,
+      pollMs: 10
+    });
+    assert.equal(res2.ok, false);
+    assert.equal(res2.reason, 'elevated-process-running');
+    assert.equal(restoreCalled2, 0);
+    assert.equal(spawnCalled2, 0);
+    assert.equal(existsSync(scopePath2), true);
+    const ack2 = JSON.parse(readFileSync(ackPath2, 'utf8'));
+    assert.equal(ack2.state, 'launched');
+    assert.equal(ack2.ok, false);
+    assert.equal(ack2.reason, 'elevated-process-running');
+
+    // 2b. Antigravity.exe exited, only an elevated language_server.exe survived on non-account-switch relaunch -> logs warning and STILL spawns cleanly
+    const jobPath2b = join(root, 'job2b.json');
+    const ackPath2b = join(root, 'ack2b.json');
+    const logPath2b = join(root, 'log2b.log');
+    const nonce2b = '2b345678-1234-1234-1234-1234567890ab';
+    writeFileSync(jobPath2b, JSON.stringify({
+      format: 1,
+      nonce: nonce2b,
+      requestedAt: Date.now(),
+      target,
+      args: ['--remote-debugging-port=0'],
+      proxyEnabled: false,
+      forceHttp1: false,
+      proxyEnv: null,
+      onboardingSync: null,
+      ackPath: ackPath2b,
+      logPath: logPath2b
+    }));
+    let spawnCalled2b = 0;
+    const res2b = await runRelaunchJob(jobPath2b, {
+      listTargetPids: () => [],
+      listLanguageServerPids: () => [79998],
+      gracefulClosePid: () => {},
+      forceKillPid: () => {},
+      spawnProcess: () => { spawnCalled2b++; return { pid: process.pid, on() {}, unref() {} }; },
+      settleMs: 5,
+      gracefulTimeoutMs: 25,
+      forceTimeoutMs: 25,
+      postExitSettleMs: 5,
+      verifyDelayMs: 5,
+      pollMs: 10
+    });
+    assert.equal(res2b.ok, true);
+    assert.equal(spawnCalled2b, 1);
+    const ack2b = JSON.parse(readFileSync(ackPath2b, 'utf8'));
+    assert.equal(ack2b.ok, true);
+    assert.equal(ack2b.restoreFailed, undefined);
+    assert.match(readFileSync(logPath2b, 'utf8'), /warn: elevated language_server/);
+
+    // 2c. Antigravity.exe exited, elevated language_server.exe survived during account switch -> skips restore/clearScope, STILL spawns IDE with restoreFailed: true
+    const jobPath2c = join(root, 'job2c.json');
+    const ackPath2c = join(root, 'ack2c.json');
+    const scopePath2c = join(root, 'sub2c', 'credential-user-scope');
+    mkdirSync(join(root, 'sub2c'), { recursive: true });
+    writeFileSync(scopePath2c, 'keep-when-ls-stuck');
+    const nonce2c = '2c345678-1234-1234-1234-1234567890ab';
+    writeFileSync(jobPath2c, JSON.stringify({
+      format: 1,
+      nonce: nonce2c,
+      requestedAt: Date.now(),
+      target,
+      args: ['--remote-debugging-port=0'],
+      proxyEnabled: false,
+      forceHttp1: false,
+      proxyEnv: null,
+      onboardingSync: null,
+      credentialSwitch: { accountId: 'acct-beta', expectedEmail: 'beta@example.com' },
+      clearScopePath: scopePath2c,
+      ackPath: ackPath2c
+    }));
+    let restoreCalled2c = 0;
+    let spawnCalled2c = 0;
+    const res2c = await runRelaunchJob(jobPath2c, {
+      listTargetPids: () => [],
+      listLanguageServerPids: () => [79997],
+      gracefulClosePid: () => {},
+      forceKillPid: () => {},
+      restoreCredential: async () => { restoreCalled2c++; return { ok: true }; },
+      spawnProcess: () => { spawnCalled2c++; return { pid: process.pid, on() {}, unref() {} }; },
+      settleMs: 5,
+      gracefulTimeoutMs: 25,
+      forceTimeoutMs: 25,
+      postExitSettleMs: 5,
+      verifyDelayMs: 5,
+      pollMs: 10
+    });
+    assert.equal(res2c.ok, true);
+    assert.equal(res2c.restoreFailed, true);
+    assert.equal(restoreCalled2c, 0);
+    assert.equal(spawnCalled2c, 1);
+    assert.equal(existsSync(scopePath2c), true);
+    const ack2c = JSON.parse(readFileSync(ackPath2c, 'utf8'));
+    assert.equal(ack2c.ok, true);
+    assert.equal(ack2c.restoreFailed, true);
+    assert.equal(ack2c.reason, 'elevated-process-running');
+
+    // 3a. credentialSwitch restore mismatch -> fail closed without spawning
+    const jobPath3 = join(root, 'job3.json');
+    const ackPath3 = join(root, 'ack3.json');
+    const nonce3 = '32345678-1234-1234-1234-1234567890ab';
+    writeFileSync(jobPath3, JSON.stringify({
+      format: 1,
+      nonce: nonce3,
+      requestedAt: Date.now(),
+      target,
+      args: ['--remote-debugging-port=0'],
+      proxyEnabled: false,
+      forceHttp1: false,
+      proxyEnv: null,
+      onboardingSync: null,
+      credentialSwitch: { accountId: 'acct-beta', expectedEmail: 'beta@example.com' },
+      ackPath: ackPath3
+    }));
+    let spawnCalled3 = 0;
+    const res3 = await runRelaunchJob(jobPath3, {
+      listTargetPids: () => [],
+      listLanguageServerPids: () => [],
+      restoreCredential: async () => ({ ok: false, mismatch: true, error: 'mismatch' }),
+      spawnProcess: () => { spawnCalled3++; return { pid: process.pid, on() {}, unref() {} }; },
+      settleMs: 5,
+      postExitSettleMs: 5,
+      verifyDelayMs: 5
+    });
+    assert.equal(res3.ok, false);
+    assert.equal(res3.reason, 'credential-mismatch');
+    assert.equal(spawnCalled3, 0);
+    const ack3 = JSON.parse(readFileSync(ackPath3, 'utf8'));
+    assert.equal(ack3.ok, false);
+    assert.equal(ack3.reason, 'credential-mismatch');
+
+    // 3b. credentialSwitch transient (non-mismatch) restore error -> log restore err, STILL spawn IDE so it is never stranded, write restoreFailed: true in ACK
+    const jobPath3b = join(root, 'job3b.json');
+    const ackPath3b = join(root, 'ack3b.json');
+    const logPath3b = join(root, 'log3b.log');
+    const scopePath3b = join(root, 'sub3b', 'credential-user-scope');
+    mkdirSync(join(root, 'sub3b'), { recursive: true });
+    writeFileSync(scopePath3b, 'keep-on-transient-err');
+    const nonce3b = '3b345678-1234-1234-1234-1234567890ab';
+    writeFileSync(jobPath3b, JSON.stringify({
+      format: 1,
+      nonce: nonce3b,
+      requestedAt: Date.now(),
+      target,
+      args: ['--remote-debugging-port=0'],
+      proxyEnabled: false,
+      forceHttp1: false,
+      proxyEnv: null,
+      onboardingSync: null,
+      credentialSwitch: { accountId: 'acct-beta', expectedEmail: 'beta@example.com' },
+      clearScopePath: scopePath3b,
+      ackPath: ackPath3b,
+      logPath: logPath3b
+    }));
+    let spawnCalled3b = 0;
+    const res3b = await runRelaunchJob(jobPath3b, {
+      listTargetPids: () => [],
+      listLanguageServerPids: () => [],
+      restoreCredential: async () => ({ ok: false, error: 'credman transient busy' }),
+      spawnProcess: () => { spawnCalled3b++; return { pid: process.pid, on() {}, unref() {} }; },
+      settleMs: 5,
+      postExitSettleMs: 5,
+      verifyDelayMs: 5
+    });
+    assert.equal(res3b.ok, true);
+    assert.equal(res3b.restoreFailed, true);
+    assert.equal(spawnCalled3b, 1);
+    assert.equal(existsSync(scopePath3b), true);
+    const ack3b = JSON.parse(readFileSync(ackPath3b, 'utf8'));
+    assert.equal(ack3b.ok, true);
+    assert.equal(ack3b.restoreFailed, true);
+    assert.match(readFileSync(logPath3b, 'utf8'), /restore err: credman transient busy/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('inspectWindowsShortcutBytes safely scans arbitrary binary/surrogate .lnk payloads at even and odd offsets without utf16le decoding', () => {
+  const root = mkdtempSync(join(tmpdir(), 'agy-lnk-bytes-'));
+  try {
+    // 1. Dense arbitrary binary + unpaired UTF-16 surrogates (reproduces Node 24 Windows utf16le.toLowerCase heap crash pattern)
+    const noisy = Buffer.alloc(4096);
+    for (let i = 0; i < noisy.length; i += 2) {
+      noisy[i] = (i * 37 + 0x55) & 0xff;
+      noisy[i + 1] = i % 4 === 0 ? 0xd8 : 0xdc;
+    }
+    const nonAgyPath = join(root, 'OpenCode.lnk');
+    writeFileSync(nonAgyPath, noisy);
+    const nonAgyRes = inspectWindowsShortcutBytes(nonAgyPath);
+    assert.deepEqual(nonAgyRes, {
+      isAntigravity: false,
+      hasDebugFlag: false,
+      hasDefaultDebugFlag: false,
+      readable: true
+    });
+
+    // 2. Odd-byte-offset UTF-16LE tokens surrounded by unpaired surrogates
+    const oddUtf16 = Buffer.concat([
+      noisy.subarray(0, 129), // odd offset
+      Buffer.from('AnTiGrAvItY.ExE', 'utf16le'),
+      Buffer.from([0x00, 0xd8, 0xff]),
+      Buffer.from('--Remote-Debugging-Port=0', 'utf16le'),
+      noisy.subarray(200, 512)
+    ]);
+    const oddPath = join(root, 'CustomShortcut.lnk');
+    writeFileSync(oddPath, oddUtf16);
+    const oddRes = inspectWindowsShortcutBytes(oddPath);
+    assert.deepEqual(oddRes, {
+      isAntigravity: true,
+      hasDebugFlag: true,
+      hasDefaultDebugFlag: true,
+      readable: true
+    });
+
+    // 3. Pure ASCII tokens with custom port (hasDebugFlag true, hasDefaultDebugFlag false)
+    const asciiPayload = Buffer.concat([
+      noisy.subarray(0, 64),
+      Buffer.from('C:\\Program Files\\Antigravity\\ANTIGRAVITY.EXE --remote-debugging-port=9222', 'latin1'),
+      noisy.subarray(64, 128)
+    ]);
+    const asciiPath = join(root, 'Launcher.lnk');
+    writeFileSync(asciiPath, asciiPayload);
+    const asciiRes = inspectWindowsShortcutBytes(asciiPath);
+    assert.deepEqual(asciiRes, {
+      isAntigravity: true,
+      hasDebugFlag: true,
+      hasDefaultDebugFlag: false,
+      readable: true
+    });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -97,6 +97,15 @@ test('本地字体保存后立即应用，清空、总开关和卸载均恢复�
   await p.env.change({ customFontWeight: 500 });
   assert.equal(p.properties.get('--agy-custom-weight'), '500');
   assert.equal(p.properties.has('--agy-custom-font'), false);
+  const densityCss = p.nodes.find(el => el.dataset?.agyDensityStyle === '')?.textContent || '';
+  assert.match(densityCss, /html\[data-agy-custom-weight\]\{--agy-fw-light:.*--agy-fw-normal:.*--agy-fw-medium:.*--agy-fw-semibold:.*--agy-fw-bold:/);
+  assert.match(densityCss, /html\[data-agy-custom-weight\] body\{--font-weight-light:var\(--agy-fw-light\)!important;.*--font-weight-medium:var\(--agy-fw-medium\)!important;.*--font-weight-semibold:var\(--agy-fw-semibold\)!important;.*--font-weight-bold:var\(--agy-fw-bold\)!important\}/);
+  assert.match(densityCss, /html\[data-agy-custom-weight\] :where\(\.font-medium\)\{font-weight:var\(--agy-fw-medium\)\}/);
+  assert.match(densityCss, /html\[data-agy-custom-font\] body\{[^}]*font-variation-settings:normal!important/);
+  for (const rel of ['../lib/native-panels.js', '../lib/native-sidebar-monitor.js']) {
+    const cssSrc = readFileSync(new URL(rel, import.meta.url), 'utf8');
+    assert.equal(/font-weight:(?:400|500|600)(?=[;}!])/.test(cssSrc), false, `${rel} should route CSS font-weight through --agy-fw-* vars`);
+  }
   await p.env.change({ customFont: 'Maple Mono NF CN' });
   assert.equal(p.env.settingsError(), '');
   assert.equal(p.context.__agyPowertools.settings.customFont, 'Maple Mono NF CN');
@@ -667,6 +676,7 @@ test('startAddAccount awaits active sync and calls accounts.completeAdd, and ref
   let currentEmail = 'alpha@example.com';
   const calls = [];
   let mismatchNextSync = false;
+  let pendingIgnoredNextSync = false;
   let quotaRemaining = 0.9;
 
   p.context.ReactDOM = { createRoot() { return { render() {}, unmount() {} }; } };
@@ -704,13 +714,22 @@ test('startAddAccount awaits active sync and calls accounts.completeAdd, and ref
       } else if (req.method === 'accounts.autoSwitchCandidate') {
         p.context.__agyPowertoolsReceive(req.id, { candidate: { id: 'acct-a', email: 'alpha@example.com', name: 'Alpha' }, cooldownRemainingMs: 0 });
       } else if (req.method === 'accounts.prepareAdd') {
-        p.context.__agyPowertoolsReceive(req.id, { ok: true, backedUpId: 'acct-a', prevCredHash: 'HASH_A', activeId: 'acct-a', accounts: [{ id: 'acct-a', email: 'alpha@example.com', hasCredential: true }] });
+        p.context.__agyPowertoolsReceive(req.id, { ok: true, backedUpId: 'acct-a', prevCredHash: 'HASH_A', prevRefreshHash: 'RF_HASH_A', activeId: 'acct-a', accounts: [{ id: 'acct-a', email: 'alpha@example.com', hasCredential: true }] });
       } else if (req.method === 'accounts.syncActive') {
         if (mismatchNextSync) {
           p.context.__agyPowertoolsReceive(req.id, {
             activeId: 'acct-b',
             accounts: [{ id: 'acct-b', email: 'beta@example.com', hasCredential: true }],
             credentialMismatch: { uiEmail: 'beta@example.com', credentialEmail: 'alpha@example.com' }
+          });
+        } else if (pendingIgnoredNextSync) {
+          p.context.__agyPowertoolsReceive(req.id, {
+            activeId: 'acct-b',
+            accounts: [
+              { id: 'acct-a', email: 'alpha@example.com', hasCredential: true },
+              { id: 'acct-b', email: 'beta@example.com', hasCredential: true }
+            ],
+            pendingSwitchIgnored: true
           });
         } else {
           p.context.__agyPowertoolsReceive(req.id, {
@@ -761,7 +780,16 @@ test('startAddAccount awaits active sync and calls accounts.completeAdd, and ref
   assert.equal(completeCall.email, 'beta@example.com');
   assert.equal(completeCall.prevEmail, 'alpha@example.com');
   assert.equal(completeCall.prevCredHash, 'HASH_A');
+  assert.equal(completeCall.prevRefreshHash, 'RF_HASH_A');
   assert.equal(completeCall.relaunch, true);
+
+  // P2 #9: when syncActive returns pendingSwitchIgnored, refreshAccount MUST NOT trigger maybeAutoSwitch even when quota is depleted
+  quotaRemaining = 0;
+  pendingIgnoredNextSync = true;
+  await capturedEnv.refreshAccountQuotas('acct-b');
+  assert.equal(calls.some(c => c.method === 'accounts.autoSwitchCandidate'), false);
+  pendingIgnoredNextSync = false;
+  quotaRemaining = 0.9;
 
   // When syncActive reports credentialMismatch, refreshAccount MUST NOT call quota.observe
   const beforeObserve = calls.filter(c => c.method === 'quota.observe').length;
@@ -3794,4 +3822,415 @@ test('composerRingSig gates contextWindow and speedStats fields on their respect
   assert.equal(renderCount, afterToggle);
 
   p.context.__agyPowertools.dispose();
+});
+
+test('overview native title tooltips preserve original English key across language switches, restore and pause when disabled, and prune detached hosts', async () => {
+  const i18nSrc = readFileSync(new URL('../lib/native-i18n.js', import.meta.url), 'utf8');
+  const jaPack = getLocalePack('ja');
+
+  const docListeners = new Map();
+  const matchesAtom = (el, atom) => {
+    if (!el || el.nodeType !== 1) return false;
+    const mEq = atom.match(/^\[([^=\]]+)="([^"]*)"\]$/);
+    if (mEq) return el.getAttribute(mEq[1]) === mEq[2];
+    const mAttr = atom.match(/^\[([^\]]+)\]$/);
+    if (mAttr) return el.hasAttribute(mAttr[1]);
+    return false;
+  };
+  const matchesDescendant = (el, sel) => {
+    for (const part of sel.split(',')) {
+      const tokens = part.trim().split(/\s+/).filter(Boolean);
+      if (!tokens.length) continue;
+      if (!matchesAtom(el, tokens[tokens.length - 1])) continue;
+      let ok = true;
+      let cur = el.parentElement;
+      for (let i = tokens.length - 2; i >= 0; i--) {
+        while (cur && !matchesAtom(cur, tokens[i])) cur = cur.parentElement;
+        if (!cur) { ok = false; break; }
+        cur = cur.parentElement;
+      }
+      if (ok) return el;
+    }
+    return null;
+  };
+  const makeEl = tag => ({
+    nodeType: 1,
+    tagName: String(tag || 'div').toUpperCase(),
+    attrs: {},
+    dataset: {},
+    style: {},
+    className: '',
+    children: [],
+    parentElement: null,
+    isConnected: true,
+    textContent: '',
+    getBoundingClientRect: () => ({ top: 200, bottom: 224, left: 600, right: 820, width: 220, height: 24 }),
+    setAttribute(k, v) { this.attrs[k] = String(v); },
+    getAttribute(k) { return Object.prototype.hasOwnProperty.call(this.attrs, k) ? this.attrs[k] : null; },
+    hasAttribute(k) { return Object.prototype.hasOwnProperty.call(this.attrs, k); },
+    removeAttribute(k) { delete this.attrs[k]; },
+    append(...items) {
+      for (const it of items) {
+        if (it && typeof it === 'object') { it.parentElement = this; it.isConnected = true; this.children.push(it); }
+      }
+    },
+    appendChild(it) { this.append(it); return it; },
+    remove() {
+      if (this.parentElement) {
+        const idx = this.parentElement.children.indexOf(this);
+        if (idx >= 0) this.parentElement.children.splice(idx, 1);
+      }
+      this.isConnected = false;
+      this.parentElement = null;
+    },
+    closest(sel) {
+      for (let cur = this; cur; cur = cur.parentElement) {
+        const hit = matchesDescendant(cur, sel);
+        if (hit) return hit;
+      }
+      return null;
+    },
+    querySelector: () => null,
+    querySelectorAll: () => []
+  });
+
+  const head = makeEl('head');
+  const body = makeEl('body');
+  const ovPanel = makeEl('div');
+  ovPanel.setAttribute('data-testid', 'overview-panel');
+  // Bug 1 fixture: element pre-translated by native-i18n.js before hover
+  const preTranslatedRow = makeEl('div');
+  preTranslatedRow.setAttribute('data-agy-original-title', 'Modified Files');
+  preTranslatedRow.setAttribute('title', '已修改文件');
+  const zhRow = makeEl('div');
+  zhRow.setAttribute('title', '这是中文产物摘要');
+  // Bug 3 fixture: element detached after promotion
+  const detachableRow = makeEl('div');
+  detachableRow.setAttribute('title', 'Background Tasks');
+  const freshRow = makeEl('div');
+  freshRow.setAttribute('title', 'Overview');
+  // Bug 2 fixture: untouched element hovered while Powertools is disabled
+  const disabledRow = makeEl('div');
+  disabledRow.setAttribute('title', 'Side Questions');
+  // P2 #5 fixture: Overview rows named Folders / Preview must NOT be mistranslated on hover via tAttr
+  const foldersRow = makeEl('div');
+  foldersRow.setAttribute('title', 'Folders');
+  const previewRow = makeEl('div');
+  previewRow.setAttribute('title', 'Preview');
+  ovPanel.append(preTranslatedRow, zhRow, detachableRow, freshRow, disabledRow, foldersRow, previewRow);
+  body.append(ovPanel);
+
+  const document = {
+    nodeType: 9,
+    head,
+    body,
+    documentElement: { toggleAttribute() {}, removeAttribute() {}, setAttribute() {}, style: { setProperty() {}, removeProperty() {} }, clientWidth: 1280, clientHeight: 800 },
+    readyState: 'complete',
+    createElement: tag => makeEl(tag),
+    createTreeWalker: () => ({ nextNode: () => null }),
+    addEventListener(type, fn) { if (!docListeners.has(type)) docListeners.set(type, []); docListeners.get(type).push(fn); },
+    removeEventListener() {},
+    querySelector: () => null,
+    querySelectorAll: () => []
+  };
+
+  let stored = { enabled: true, language: 'zh-CN' };
+  let env = null;
+  const ctx = vm.createContext({
+    document,
+    window: { addEventListener() {}, removeEventListener() {} },
+    innerWidth: 1280,
+    innerHeight: 800,
+    location: { pathname: '/c/conv-tip' },
+    NodeFilter: { SHOW_TEXT: 4 },
+    MutationObserver: class { observe() {} disconnect() {} },
+    AbortController,
+    getComputedStyle: () => ({ display: 'block' }),
+    React: { createElement: () => null, Fragment: 'fragment', useSyncExternalStore: (_, g) => g() },
+    ReactDOM: { createRoot: () => ({ render() {}, unmount() {} }) },
+    HC: () => null,
+    __agyToZhTw: toZhTw,
+    __agyPanels: value => { env = value; return { dispose() {} }; },
+    __agyInitialSettings: { ...stored },
+    __agyNativeAdapter: {
+      wrap: el => el,
+      installPage: () => true,
+      executionState: () => null,
+      runningConversationIds: () => [],
+      capabilities: () => ({}),
+      service: () => ({}),
+      setEnabled() {}, setStageUpdates() {}, setEfficientIO() {}, setContextLimit() {}, setSidebarProjectLimit() {},
+      dispose() {}
+    },
+    __agyPowertoolsHost: raw => {
+      const req = JSON.parse(raw);
+      queueMicrotask(() => {
+        if (req.method === 'settings.get') {
+          ctx.__agyPowertoolsReceive(req.id, { ...stored });
+        } else if (req.method === 'settings.set') {
+          stored = { ...stored, ...req.settings };
+          ctx.__agyPowertoolsReceive(req.id, { ...stored });
+        } else if (req.method === 'i18n.pack') {
+          ctx.__agyPowertoolsReceive(req.id, { pack: req.language === 'ja' ? jaPack : null, custom: [] });
+        } else {
+          ctx.__agyPowertoolsReceive(req.id, {});
+        }
+      });
+    },
+    setInterval: () => 1,
+    clearInterval: () => {},
+    setTimeout,
+    clearTimeout,
+    queueMicrotask
+  });
+
+  vm.runInContext(i18nSrc, ctx);
+  vm.runInContext(source, ctx);
+  await new Promise(r => setTimeout(r, 20));
+  assert.ok(env);
+
+  const fire = (type, evt) => { for (const fn of docListeners.get(type) || []) fn(evt); };
+
+  // Bug 1 check: pre-translated Overview row promotes using data-agy-original-title ("Modified Files"), not Chinese title
+  fire('pointerover', { target: preTranslatedRow });
+  assert.equal(preTranslatedRow.hasAttribute('title'), false);
+  assert.equal(preTranslatedRow.hasAttribute('data-agy-original-title'), false);
+  assert.equal(preTranslatedRow.getAttribute('data-agy-native-title'), 'Modified Files');
+  assert.equal(preTranslatedRow.getAttribute('data-pt-tip-place'), 'left');
+  fire('focusin', { target: preTranslatedRow });
+
+  const pop = body.children.find(c => c.id === 'agy-pt-tip-pop');
+  assert.ok(pop);
+  assert.equal(pop.dataset.open, 'true');
+  assert.equal(pop.children[0].textContent, '已修改文件');
+
+  // Switching to English renders the true original English string instead of staying locked in Chinese
+  await env.change({ language: 'en' });
+  fire('focusin', { target: preTranslatedRow });
+  assert.equal(pop.children[0].textContent, 'Modified Files');
+
+  // Switching to Japanese re-translates cleanly from the preserved English original
+  ctx.__agyLocalePack = jaPack;
+  await env.change({ language: 'ja' });
+  fire('focusin', { target: preTranslatedRow });
+  assert.equal(pop.children[0].textContent, jaPack.entries['Modified Files']);
+  assert.notEqual(pop.children[0].textContent, 'Modified Files');
+  assert.notEqual(pop.children[0].textContent, '已修改文件');
+
+  // Untranslated Chinese row stays intact
+  fire('focusin', { target: zhRow });
+  assert.equal(zhRow.hasAttribute('title'), false);
+  assert.equal(pop.children[0].textContent, '这是中文产物摘要');
+
+  // Bug 3 check: detached promoted host is pruned on subsequent promotion/cleanup and no longer retained
+  fire('pointerover', { target: detachableRow });
+  assert.equal(detachableRow.getAttribute('data-agy-native-title'), 'Background Tasks');
+  detachableRow.remove();
+  assert.equal(detachableRow.isConnected, false);
+  fire('pointerover', { target: freshRow });
+  assert.equal(freshRow.getAttribute('data-agy-native-title'), 'Overview');
+  // Re-marking isConnected=true after pruning proves detachableRow was already deleted from promotedNativeTitles
+  detachableRow.isConnected = true;
+
+  // Bug 2 check: disabling Powertools restores all connected promoted titles immediately and stops promoting new hovers
+  await env.change({ enabled: false });
+  assert.equal(preTranslatedRow.getAttribute('title'), 'Modified Files');
+  assert.equal(preTranslatedRow.hasAttribute('data-pt-tip'), false);
+  assert.equal(preTranslatedRow.hasAttribute('data-agy-native-title'), false);
+  assert.equal(zhRow.getAttribute('title'), '这是中文产物摘要');
+  assert.equal(freshRow.getAttribute('title'), 'Overview');
+  assert.equal(detachableRow.hasAttribute('title'), false);
+  assert.equal(pop.dataset.open, 'false');
+
+  fire('pointerover', { target: disabledRow });
+  fire('focusin', { target: disabledRow });
+  assert.equal(disabledRow.getAttribute('title'), 'Side Questions');
+  assert.equal(disabledRow.hasAttribute('data-pt-tip'), false);
+  assert.equal(disabledRow.hasAttribute('data-agy-native-title'), false);
+  assert.equal(pop.dataset.open, 'false');
+
+  // Re-enabling resumes promotion cleanly and dispose restores remaining promoted rows
+  ctx.__agyLocalePack = null;
+  await env.change({ enabled: true, language: 'zh-CN' });
+  fire('focusin', { target: disabledRow });
+  assert.equal(disabledRow.hasAttribute('title'), false);
+  assert.equal(disabledRow.getAttribute('data-agy-native-title'), 'Side Questions');
+  assert.equal(pop.children[0].textContent, '侧边对话');
+
+  // P2 #5 check: Overview rows named Folders / Preview stay untranslated in promoted tooltips
+  fire('focusin', { target: foldersRow });
+  assert.equal(pop.children[0].textContent, 'Folders');
+  fire('focusin', { target: previewRow });
+  assert.equal(pop.children[0].textContent, 'Preview');
+
+  ctx.__agyPowertools.dispose();
+  assert.equal(disabledRow.getAttribute('title'), 'Side Questions');
+  assert.equal(disabledRow.hasAttribute('data-pt-tip'), false);
+  assert.equal(foldersRow.getAttribute('title'), 'Folders');
+  assert.equal(previewRow.getAttribute('title'), 'Preview');
+  assert.equal(pop.isConnected, false);
+});
+
+test('accounts.syncActive switchMismatch surfaces a clear error toast without middle dots (Issue #97)', async () => {
+  const p = page(true);
+  const toasts = [];
+  let env = null;
+  const customizations = { isConnected: true, nextSibling: null, parentElement: { insertBefore(n) { n.isConnected = true; } } };
+  p.document.querySelector = sel => sel === 'a[href="/customizations"]' ? customizations : null;
+  p.context.um = () => payload => { toasts.push(payload); };
+  p.context.React = {
+    createElement: (type, props, ...children) => ({ type, props: props || {}, children }),
+    useEffect: fn => { fn(); }
+  };
+  p.context.ReactDOM = {
+    createRoot: () => ({
+      render(el) { if (typeof el?.type === 'function') el.type(el.props || {}); },
+      unmount() {}
+    })
+  };
+  p.context.__agyNativeAdapter.wrap = el => el;
+  p.context.__agyNativeAdapter.installPage = () => true;
+  p.context.__agyNativeAdapter.capabilities = () => ({ email: 'old@example.com', name: 'Old', plan: 'Pro', planId: 'pro' });
+  p.context.__agyNativeAdapter.service = () => ({ retrieveUserQuotaSummary: async () => ({ response: { groups: [] } }) });
+  p.context.__agyPanels = value => { env = value; return { Sidebar: () => null, Page: () => null, dispose() {} }; };
+
+  let lang = 'zh-CN';
+  p.context.__agyPowertoolsHost = raw => {
+    const req = JSON.parse(raw);
+    queueMicrotask(() => {
+      if (req.method === 'settings.get') {
+        p.context.__agyPowertoolsReceive(req.id, { enabled: true, multiAccount: true, language: lang });
+      } else if (req.method === 'settings.set') {
+        if (req.settings?.language) lang = req.settings.language;
+        p.context.__agyPowertoolsReceive(req.id, { enabled: true, multiAccount: true, language: lang });
+      } else if (req.method === 'accounts.syncActive') {
+        p.context.__agyPowertoolsReceive(req.id, {
+          activeId: 'acct-old',
+          accounts: [
+            { id: 'acct-old', email: 'old@example.com', hasCredential: true },
+            { id: 'acct-target', email: 'target@example.com', hasCredential: false }
+          ],
+          switchMismatch: { expectedEmail: 'target@example.com', actualEmail: 'old@example.com' }
+        });
+      } else {
+        p.context.__agyPowertoolsReceive(req.id, { ok: true });
+      }
+    });
+  };
+  p.context.__agyInitialSettings = { enabled: true, multiAccount: true, language: 'zh-CN' };
+  vm.runInContext(source, p.context);
+  await new Promise(r => setTimeout(r, 20));
+  assert.ok(env);
+
+  await env.refreshAccountQuotas('acct-old');
+  const zhToast = toasts.find(t => t.tag === 'agy-account-switch-mismatch');
+  assert.ok(zhToast);
+  assert.equal(zhToast.message, '切号未生效：当前登录的仍是其他账号，已标记目标凭据失效，请重新登录目标账号。');
+  assert.doesNotMatch(zhToast.message, /[\u00b7\u2022\u2027\u30fb]/);
+
+  toasts.length = 0;
+  await env.change({ language: 'en' });
+  await env.refreshAccountQuotas('acct-old');
+  const enToast = toasts.find(t => t.tag === 'agy-account-switch-mismatch');
+  assert.ok(enToast);
+  assert.equal(enToast.message, 'Account switch failed: logged in as another account. Please re-login the target account.');
+  assert.doesNotMatch(enToast.message, /[\u00b7\u2022\u2027\u30fb]/);
+
+  p.context.__agyPowertools.dispose();
+});
+
+test('About panel surfaces update.install error message when request rejects (Issue #96)', async () => {
+  const panelsSrc = readFileSync(new URL('../lib/native-panels.js', import.meta.url), 'utf8');
+  const head = { append() {} };
+  const states = [];
+  let idx = 0;
+  const ctx = vm.createContext({
+    document: { head, createElement: () => ({ dataset: {}, textContent: '', remove() {} }) },
+    URL,
+    window: { addEventListener() {}, removeEventListener() {} },
+    location: { pathname: '/powertools' },
+    React: {
+      Fragment: Symbol('Fragment'),
+      createElement: (type, props, ...children) => ({ type, props: props || {}, children: children.flat() }),
+      useId: () => 'id-about',
+      useState: init => {
+        const slot = idx++;
+        if (!(slot in states)) states[slot] = typeof init === 'function' ? init() : init;
+        return [states[slot], next => { states[slot] = typeof next === 'function' ? next(states[slot]) : next; }];
+      },
+      useEffect() {},
+      useRef: v => ({ current: v }),
+      useMemo: fn => fn(),
+      useCallback: fn => fn,
+      useSyncExternalStore: (_, g) => g()
+    },
+    HC: ({ children }) => children,
+    IC: ({ children }) => children,
+    JC: ({ children }) => children,
+    KC: ({ children }) => children,
+    GC: ({ children }) => children,
+    kT: ({ children }) => children,
+    lT: ({ children }) => children,
+    mT: ({ children }) => children,
+    nT: ({ children }) => children,
+    Uy: props => ({ type: 'button', props, children: [] }),
+    XP: props => ({ type: 'switch', props, children: [] }),
+    UP: props => ({ type: 'row', props, children: [props.description, props.rightElement, props.extraContent] }),
+    TP: ({ children }) => ({ type: 'card', props: {}, children }),
+    VP: ({ children }) => ({ type: 'section', props: {}, children }),
+    dq: props => ({ type: 'icon', props, children: [] }),
+    Sy: ({ children }) => children,
+    Wz: ({ children }) => children
+  });
+  vm.runInContext(panelsSrc, ctx);
+  const panels = ctx.__agyPanels({
+    adapter: { router: () => ({ navigate() {} }) },
+    t: s => s,
+    version: '2.16.10',
+    defaults: { enabled: true, language: 'en' },
+    project: { name: 'Agy Powertools', githubUrl: 'https://github.com/whitzard0421/agy-powertools', subscriptionUrl: '' },
+    options: () => ({ enabled: true, language: 'en' }),
+    updateNotice: () => ({ status: 'available', version: '2.16.11', canInstall: true, releaseUrl: 'https://github.com/whitzard0421/agy-powertools/releases/tag/v2.16.11' }),
+    updateInstallState: () => ({ status: 'idle' }),
+    consumeExpandUpdateNotes: () => false,
+    consumeScrollToAbout: () => false,
+    request: async method => {
+      if (method === 'update.install') throw new Error('EACCES: permission denied');
+      return { status: 'idle' };
+    },
+    subscribe: () => () => {},
+    revision: () => 0
+  });
+  const expand = node => {
+    if (!node || typeof node !== 'object') return node;
+    if (Array.isArray(node)) return node.map(expand);
+    if (typeof node.type === 'function') return expand(node.type({ ...(node.props || {}), children: node.children }));
+    return { ...node, children: Array.isArray(node.children) ? node.children.map(expand) : node.children };
+  };
+  const findByTestId = (node, tid) => {
+    if (!node || typeof node !== 'object') return null;
+    if (Array.isArray(node)) { for (const c of node) { const hit = findByTestId(c, tid); if (hit) return hit; } return null; }
+    if (node.props?.['data-testid'] === tid) return node;
+    return findByTestId(node.children, tid);
+  };
+  const collectText = node => {
+    if (typeof node === 'string' || typeof node === 'number') return String(node);
+    if (!node || typeof node !== 'object') return '';
+    if (Array.isArray(node)) return node.map(collectText).join('');
+    return collectText(node.children);
+  };
+
+  idx = 0;
+  let tree = expand(panels.About());
+  const installBtn = findByTestId(tree, 'agy-install-update');
+  assert.ok(installBtn);
+  installBtn.props.onClick();
+  await new Promise(r => setImmediate(r));
+
+  idx = 0;
+  tree = expand(panels.About());
+  const statusEl = findByTestId(tree, 'agy-install-status');
+  assert.ok(statusEl);
+  assert.match(collectText(statusEl), /EACCES: permission denied/);
+  panels.dispose();
 });
