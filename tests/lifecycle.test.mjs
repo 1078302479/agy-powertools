@@ -1,13 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,existsSync,readdirSync,rmSync,symlinkSync,unlinkSync,lstatSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,existsSync,readdirSync,rmSync,symlinkSync,unlinkSync,lstatSync,renameSync} from 'node:fs';
 import {join,resolve,parse as parsePath} from 'node:path';
 import {tmpdir} from 'node:os';
-import {spawn} from 'node:child_process';
+import {spawn,spawnSync} from 'node:child_process';
 import {pathToFileURL} from 'node:url';
 import {collectPackage,writePackage,encodePackage,decodePackage,validatePackage,sha256,releaseName} from '../lib/package.mjs';
-import {installationPaths,installPlugin,uninstallPlugin,atomicJson,assertOwnedPath} from '../lib/lifecycle.mjs';
-import {runUpdateJob,updateStatus,startUpdate} from '../lib/update-manager.mjs';
+import {installationPaths,maintenancePaths,installPlugin,uninstallPlugin,atomicJson,assertOwnedPath} from '../lib/lifecycle.mjs';
+import {runUpdateJob,updateStatus,updateState,startUpdate} from '../lib/update-manager.mjs';
 import {serveRuntime,stopRuntimes,waitForRuntime,runtimeRecords} from '../lib/runtime-control.mjs';
 import {createPricingStore} from '../lib/pricing.mjs';
 
@@ -228,101 +228,159 @@ test('release includes locale modules, static Windows relaunch scripts, and omit
   for (const lang of ['index','fr','ja','ko','de','es','ru']) assert.ok(names.has(`lib/locales/${lang}.mjs`));
   assert.ok(names.has('scripts/relaunch-worker.mjs'));
   assert.ok(names.has('scripts/relaunch-antigravity.cmd'));
+  assert.ok(names.has('scripts/launch-macos.mjs'));
   assert.ok(![...names].some(name=>/^docs\/README_/.test(name)));
 });
 
-test('Issue #96: top-level .gemini symlink/junction supports install, in-app update, and uninstall while still rejecting dangling or inner links', async () => {
-  const linkType = process.platform === 'win32' ? 'junction' : 'dir';
-  const root = mkdtempSync(join(tmpdir(), 'agy-gemini-link-'));
-  const home = join(root, 'home');
-  const targetGemini = join(root, 'shared-gemini');
-  mkdirSync(home, { recursive: true });
-  mkdirSync(join(targetGemini, 'config'), { recursive: true });
-  const paths = installationPaths(home);
-  symlinkSync(targetGemini, paths.root, linkType);
-  atomicJson(paths.config, { plugins: { other: { enabled: true } }, userSettings: { language: 'zh-CN' } });
+function relocateGemini(s){
+  const target=join(s.root,'relocated gemini');
+  renameSync(s.paths.root,target);
+  symlinkSync(target,s.paths.root,process.platform==='win32'?'junction':'dir');
+  return target;
+}
 
+test('Issue #96: Windows relocated .gemini junction supports install, update handoff, mid-operation TOCTOU pinning, and uninstall while rejecting inner/dangling/root links', { skip: process.platform !== 'win32' }, async () => {
+  const s = sandbox();
   try {
-    // installationPaths keeps logical paths.root without rewriting via realpathSync
-    assert.equal(paths.root, join(resolve(home), '.gemini'));
-    assert.equal(lstatSync(paths.root).isSymbolicLink(), true);
+    const targetGemini = relocateGemini(s);
+    const marker = join(targetGemini, 'keep.txt');
+    writeFileSync(marker, 'keep');
 
-    // 1. Fresh install through .gemini junction/symlink succeeds
-    const installed = await installPlugin({ bundle: older, home, stop });
+    // installationPaths keeps logical paths.root; maintenancePaths pins real destination
+    assert.equal(s.paths.root, join(resolve(s.home), '.gemini'));
+    assert.equal(lstatSync(s.paths.root).isSymbolicLink(), true);
+    assert.equal(maintenancePaths(s.home).root, targetGemini);
+
+    // 1. Fresh install + startUpdate + runUpdateJob through .gemini junction succeed
+    const installed = await installPlugin({ bundle: older, home: s.home, stop });
     assert.equal(installed.version, older.version);
-    assert.equal(JSON.parse(readFileSync(join(paths.installed, 'plugin.json'), 'utf8')).version, older.version);
     assert.equal(JSON.parse(readFileSync(join(targetGemini, 'config', 'plugins', 'agy-powertools', 'plugin.json'), 'utf8')).version, older.version);
 
-    // 2. In-app update (runUpdateJob) through .gemini junction/symlink succeeds
-    const bytes = encodePackage(newer);
-    const job = join(paths.data, 'jobs', 'link-update');
-    mkdirSync(job, { recursive: true });
-    const plan = {
-      format: 1,
-      home,
-      version: newer.version,
-      job,
-      asset: {
-        name: releaseName(newer.version),
-        url: 'https://github.com/test/project/releases/download/v2.14.0/package.bundle.gz',
-        sha256: sha256(bytes)
+    const bytes = encodePackage(newer), name = releaseName(newer.version);
+    let plan;
+    await startUpdate({
+      home: s.home,
+      currentVersion: older.version,
+      expectedVersion: newer.version,
+      project: { githubUrl: 'https://github.com/test/project' },
+      fetcher: async () => Response.json({ tag_name: 'v' + newer.version, assets: [{ name, state: 'uploaded', digest: 'sha256:' + sha256(bytes) }] }),
+      launch: async (script, file) => {
+        assert.ok(existsSync(script));
+        plan = JSON.parse(readFileSync(file, 'utf8'));
+        return process.pid;
       }
-    };
+    });
+    assert.equal(plan.home, s.home);
+    assert.equal(plan.expectedRoot, targetGemini);
+    assert.equal(updateStatus(s.home).status, 'preparing');
     await runUpdateJob(plan, {
       fetcher: async () => new Response(bytes),
       verify: async ({ paths: p, version }) => {
         assert.equal(JSON.parse(readFileSync(join(p.installed, 'plugin.json'), 'utf8')).version, version);
       }
     });
-    assert.equal(updateStatus(home).status, 'completed');
-    assert.equal(JSON.parse(readFileSync(join(paths.installed, 'plugin.json'), 'utf8')).version, newer.version);
+    assert.equal(updateStatus(s.home).status, 'completed');
+    assert.equal(existsSync(plan.job), false);
+    assert.equal(JSON.parse(readFileSync(join(targetGemini, 'config', 'plugins', 'agy-powertools', 'plugin.json'), 'utf8')).version, newer.version);
 
-    // 3. Symlink/junction INSIDE paths.installed is STILL strictly rejected (including runUpdateJob jobs dir)
+    // 2. Mid-operation TOCTOU junction swap is caught by assertPinnedPath without touching swapped target
+    const swappedTarget = join(s.root, 'swapped-gemini');
+    mkdirSync(join(swappedTarget, 'config', 'plugins', 'agy-powertools'), { recursive: true });
+    writeFileSync(join(swappedTarget, 'sentinel.txt'), 'untouched');
+    await assert.rejects(() => installPlugin({
+      bundle: original,
+      home: s.home,
+      stop: async () => {
+        unlinkSync(s.paths.root);
+        symlinkSync(swappedTarget, s.paths.root, 'junction');
+      }
+    }), /目录已更改/);
+    assert.equal(readFileSync(join(swappedTarget, 'sentinel.txt'), 'utf8'), 'untouched');
+    // Restore original junction and verify uninstall leaves junction + marker intact
+    unlinkSync(s.paths.root);
+    symlinkSync(targetGemini, s.paths.root, 'junction');
+
+    const removed = await uninstallPlugin({ home: s.home, purge: true, stop });
+    assert.equal(removed.removed, true);
+    assert.equal(lstatSync(s.paths.root).isSymbolicLink(), true);
+    assert.equal(readFileSync(marker, 'utf8'), 'keep');
+    assert.equal(existsSync(s.paths.installed), false);
+    assert.equal(existsSync(s.paths.data), false);
+  } finally {
+    s.clean();
+  }
+});
+
+test('Issue #96 & PR #103: nested data links, home symlinks, dangling/volume-root links, and POSIX .gemini symlinks are strictly rejected', async () => {
+  const linkType = process.platform === 'win32' ? 'junction' : 'dir';
+
+  // 1. Nested data link (including updateStatus cleanup) stays strictly off limits on all platforms
+  const s1 = sandbox();
+  try {
+    if (process.platform === 'win32') relocateGemini(s1);
+    const external = join(s1.root, 'external');
+    const stateFile = join(external, 'plugin_data', 'agy-powertools', 'update-state.json');
+    atomicJson(stateFile, { status: 'completed', version: older.version });
+    symlinkSync(external, join(s1.paths.root, 'antigravity'), linkType);
+    assert.equal(updateStatus(s1.home, older.version).status, 'idle');
+    assert.equal(existsSync(stateFile), true, 'updateStatus must not unlink through a nested symlink');
+    assert.throws(() => updateState(s1.home, { status: 'preparing' }), /符号链接/);
+    await assert.rejects(() => startUpdate({ home: s1.home }), /符号链接/);
+    await assert.rejects(() => installPlugin({ bundle: older, home: s1.home, stop }), /符号链接/);
+    await assert.rejects(() => uninstallPlugin({ home: s1.home, stop }), /符号链接/);
+    assert.deepEqual(readdirSync(join(external, 'plugin_data', 'agy-powertools')), ['update-state.json']);
+  } finally {
+    s1.clean();
+  }
+
+  // 2. update worker rejects a linked ancestor before cleaning up its job
+  const s2 = sandbox();
+  try {
+    const external = join(s2.root, 'external');
+    const job = join(s2.paths.data, 'jobs', 'example');
+    mkdirSync(join(external, 'plugin_data', 'agy-powertools', 'jobs', 'example'), { recursive: true });
+    symlinkSync(external, join(s2.paths.root, 'antigravity'), linkType);
+    await assert.rejects(() => runUpdateJob({ format: 1, home: s2.home, version: newer.version, asset: { name: 'bundle' }, job }), /符号链接/);
+    assert.equal(existsSync(job), true);
+  } finally {
+    s2.clean();
+  }
+
+  // 3. Symlinked home directory is rejected by maintenancePaths / installPlugin
+  const s3 = sandbox();
+  try {
+    const linkedHome = join(s3.root, 'linked-home');
+    symlinkSync(s3.home, linkedHome, linkType);
+    assert.throws(() => maintenancePaths(linkedHome), /符号链接/);
+    await assert.rejects(() => installPlugin({ bundle: older, home: linkedHome, stop }), /符号链接/);
+  } finally {
+    s3.clean();
+  }
+
+  // 4. Direct assertOwnedPath allowRootLink checks (dangling, volume-root, inner link, strict default)
+  const root = mkdtempSync(join(tmpdir(), 'agy-owned-link-'));
+  try {
+    const targetGemini = join(root, 'target-gemini');
+    mkdirSync(join(targetGemini, 'config', 'plugins', 'agy-powertools'), { recursive: true });
+    const home = join(root, 'home');
+    mkdirSync(home, { recursive: true });
+    const paths = installationPaths(home);
+    symlinkSync(targetGemini, paths.root, linkType);
+    assert.throws(() => assertOwnedPath(paths.root, paths.installed), /符号链接/);
     const innerExternal = join(root, 'inner-external');
     mkdirSync(innerExternal, { recursive: true });
-    const jobsDir = join(paths.data, 'jobs');
-    if (existsSync(jobsDir)) rmSync(jobsDir, { recursive: true, force: true });
-    symlinkSync(innerExternal, jobsDir, linkType);
-    try {
-      await assert.rejects(() => runUpdateJob({ ...plan, job: join(jobsDir, 'escape-job') }, { fetcher: async () => new Response(bytes), verify: async () => {} }), /符号链接/);
-    } finally {
-      unlinkSync(jobsDir);
-    }
     const innerLink = join(paths.installed, 'evil-link');
     symlinkSync(innerExternal, innerLink, linkType);
     assert.throws(() => assertOwnedPath(paths.root, join(innerLink, 'file.txt'), { allowRootLink: true }), /符号链接/);
-    await assert.rejects(() => installPlugin({ bundle: original, home, stop }), /符号链接/);
     unlinkSync(innerLink);
 
-    // Strict default (allowRootLink: false) still rejects root symlink
-    assert.throws(() => assertOwnedPath(paths.root, paths.installed), /符号链接/);
-
-    // 4. Uninstall through .gemini junction/symlink succeeds and leaves the junction intact
-    const removed = await uninstallPlugin({ home, purge: true, stop });
-    assert.equal(removed.removed, true);
-    assert.equal(existsSync(paths.installed), false);
-    assert.equal(existsSync(paths.data), false);
-    assert.equal(lstatSync(paths.root).isSymbolicLink(), true);
-    assert.deepEqual(JSON.parse(readFileSync(paths.config, 'utf8')).plugins.other, { enabled: true });
-
-    // 5. Symlink/junction at paths.installed itself is rejected even with .gemini as a junction/symlink
-    mkdirSync(join(targetGemini, 'config', 'plugins'), { recursive: true });
-    symlinkSync(innerExternal, paths.installed, linkType);
-    await assert.rejects(() => installPlugin({ bundle: original, home, stop }), /符号链接/);
-    assert.deepEqual(readdirSync(innerExternal), []);
-    unlinkSync(paths.installed);
-
-    // 6. Dangling .gemini link is rejected
     const danglingHome = join(root, 'dangling-home');
     mkdirSync(danglingHome, { recursive: true });
     const danglingPaths = installationPaths(danglingHome);
-    const missingTarget = join(root, 'does-not-exist');
-    symlinkSync(missingTarget, danglingPaths.root, linkType);
+    symlinkSync(join(root, 'does-not-exist'), danglingPaths.root, linkType);
     assert.throws(() => assertOwnedPath(danglingPaths.root, danglingPaths.installed, { allowRootLink: true }), /符号链接/);
-    await assert.rejects(() => installPlugin({ bundle: original, home: danglingHome, stop }), /符号链接/);
     unlinkSync(danglingPaths.root);
 
-    // 7. .gemini pointing to filesystem root is rejected
     const fsRootHome = join(root, 'fsroot-home');
     mkdirSync(fsRootHome, { recursive: true });
     const fsRootPaths = installationPaths(fsRootHome);
@@ -330,20 +388,60 @@ test('Issue #96: top-level .gemini symlink/junction supports install, in-app upd
     symlinkSync(fsRoot, fsRootPaths.root, linkType);
     try {
       assert.throws(() => assertOwnedPath(fsRootPaths.root, fsRootPaths.installed, { allowRootLink: true }), /根目录/);
+      assert.throws(() => maintenancePaths(fsRootHome, { allowRootLink: true }), /根目录/);
     } finally {
       unlinkSync(fsRootPaths.root);
     }
+    unlinkSync(paths.root);
   } finally {
-    try { unlinkSync(paths.root); } catch {}
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test('Issue #93: sidecar.json and update-manager omit NODE_USE_ENV_PROXY=1 and pricing store supports proxy-aware injectable fetcher', async () => {
+test('a POSIX .gemini symlink is still rejected', { skip: process.platform === 'win32' }, async () => {
+  const s = sandbox();
+  try {
+    relocateGemini(s);
+    await assert.rejects(() => installPlugin({ bundle: older, home: s.home, stop }), /符号链接/);
+    await assert.rejects(() => uninstallPlugin({ home: s.home, stop }), /符号链接/);
+    assert.throws(() => updateState(s.home, { status: 'preparing' }), /符号链接/);
+    assert.equal(updateStatus(s.home).status, 'idle');
+  } finally {
+    s.clean();
+  }
+});
+
+test('Issue #93 & PR #105: sidecar.json and update-manager explicitly disable NODE_USE_ENV_PROXY=0 so SOCKS5h proxies never crash bootstrap, and pricing store supports proxy-aware injectable fetcher', async () => {
   const sidecarCfg = JSON.parse(readFileSync(resolve('sidecars/inspector/sidecar.json'), 'utf8'));
-  assert.equal(sidecarCfg.env?.NODE_USE_ENV_PROXY, undefined);
+  assert.equal(sidecarCfg.env?.NODE_USE_ENV_PROXY, '0');
   const umSrc = readFileSync(resolve('lib/update-manager.mjs'), 'utf8');
   assert.equal(/NODE_USE_ENV_PROXY\s*:\s*['"]1['"]/.test(umSrc), false);
+  assert.match(umSrc, /NODE_USE_ENV_PROXY\s*:\s*['"]0['"]/);
+
+  // Verify manifest env overrides an inherited NODE_USE_ENV_PROXY=1 + socks5h:// proxy cleanly
+  const cleanEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/proxy|node_options/i.test(key)));
+  const probe = spawnSync(process.execPath, ['--input-type=module', '-e', `
+    import { createServer } from 'node:http';
+    const server = createServer((_req, res) => res.end('local-cdp'));
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const response = await fetch('http://127.0.0.1:' + server.address().port + '/json/list');
+      console.log(await response.text());
+    } finally { server.close(); }
+  `], {
+    env: {
+      ...cleanEnv,
+      NODE_USE_ENV_PROXY: '1',
+      HTTP_PROXY: 'socks5h://127.0.0.1:1',
+      HTTPS_PROXY: 'socks5h://127.0.0.1:1',
+      ...sidecarCfg.env
+    },
+    encoding: 'utf8',
+    timeout: 10000,
+    windowsHide: true
+  });
+  assert.equal(probe.status, 0, probe.error?.message || probe.stderr);
+  assert.equal(probe.stdout.trim(), 'local-cdp');
 
   const dir = mkdtempSync(join(tmpdir(), 'agy-pricing-fetch-'));
   try {

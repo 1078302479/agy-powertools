@@ -25,7 +25,9 @@ function createFakeVault(initial = {}) {
     slots,
     has(target) { return slots.has(target); },
     inspect(target) {
-      return slots.has(target) ? { exists: true, hash: hashOf(slots.get(target)) } : { exists: false, hash: '' };
+      const value = slots.get(target);
+      const owner = ({ 'token-A': 'alpha', 'token-B': 'beta', 'tok-a': 'alpha', 'tok-b': 'beta', 'tok-alpha': 'alpha', 'tok-beta': 'beta' })[value];
+      return slots.has(target) ? { exists: true, hash: hashOf(value), ...(owner ? { email: `${owner}@example.com` } : {}) } : { exists: false, hash: '' };
     },
     copy(from, to) {
       if (!slots.has(from)) return { ok: false, error: 'missing source' };
@@ -460,6 +462,8 @@ test('AccountSwitcher, Quotas, and Settings implement master switch risk warning
   assert.equal(offUi.renderSwitcher(), null);
   assert.equal(offUi.find(offUi.renderQuotas(), 'agy-accounts-overview'), null);
   let settingsTree = offUi.renderSettings();
+  offUi.find(settingsTree, 'agy-settings-cat-accounts').props.onClick();
+  settingsTree = offUi.renderSettings();
   const masterToggle = offUi.find(settingsTree, 'agy-setting-multiAccount');
   assert.ok(masterToggle);
   assert.equal(offUi.find(settingsTree, 'agy-setting-accountSwitcher'), null);
@@ -528,7 +532,12 @@ test('AccountSwitcher, Quotas, and Settings implement master switch risk warning
   popWinTabs.children[0].props.onClick();
   swTree = listUi.renderSwitcher();
   assert.ok(listUi.collectText(swTree).includes('86%'));
-  assert.ok(listUi.find(listUi.renderSettings(), 'agy-account-quota-window'));
+  const acctSettingsTree = listUi.renderSettings();
+  listUi.find(acctSettingsTree, 'agy-settings-cat-accounts').props.onClick();
+  const acctTabTree = listUi.renderSettings();
+  assert.ok(listUi.find(acctTabTree, 'agy-setting-accountSwitcher'));
+  assert.equal(listUi.find(acctTabTree, 'agy-account-quota-window'), null);
+  assert.equal(listUi.find(acctTabTree, 'agy-account-view-mode'), null);
 
   listUi.find(swTree, 'agy-popover-refresh-quotas').props.onClick();
   listUi.find(swTree, 'agy-account-open-settings').props.onClick();
@@ -630,10 +639,8 @@ test('Overview defaults to Current weekly quota (本轮周限额内用量), disp
   assert.equal(tokenTotal, '200K');
 
   const settingsTree = ui.renderSettings();
-  const settingRow = ui.find(settingsTree, 'agy-setting-row-overviewRange');
-  assert.ok(settingRow);
-  assert.ok(ui.collectText(settingRow).includes('概览默认时间范围'));
-  assert.ok(ui.collectText(settingRow).includes('本轮周限额内用量'));
+  // Redundant overviewRange row is removed from Settings (Overview retains its own live range picker)
+  assert.equal(ui.find(settingsTree, 'agy-setting-row-overviewRange'), null);
   // User bubble tint defaults to off and hides color swatch row until enabled
   assert.ok(ui.find(settingsTree, 'agy-setting-row-userBubbleTint'));
   assert.equal(ui.find(settingsTree, 'agy-setting-row-userBubbleColor'), null);
@@ -1392,19 +1399,23 @@ test('QuickPopover reuses full panels across all 6 tabs with lazy loading, badge
     }
   );
 
-  // Settings exposes single titlebarQuickPanel toggle (no redundant mode/custom settings) and composerWorkingBeam (default off, hides palette row)
+  // Settings exposes single titlebarQuickPanel toggle on general tab and composerWorkingBeam on beams tab (default off, hides palette row)
   const settingsTree = ui.renderSettings();
   assert.ok(ui.find(settingsTree, 'agy-setting-titlebarQuickPanel'));
   assert.equal(ui.find(settingsTree, 'agy-setting-row-titlebarQuickPanelMode'), null);
-  assert.ok(ui.find(settingsTree, 'agy-setting-composerWorkingBeam'));
-  assert.equal(ui.find(settingsTree, 'agy-setting-row-composerWorkingBeamPalette'), null);
+  ui.find(settingsTree, 'agy-settings-cat-beams').props.onClick();
+  const beamsSettingsTree = ui.renderSettings();
+  assert.ok(ui.find(beamsSettingsTree, 'agy-setting-composerWorkingBeam'));
+  assert.equal(ui.find(beamsSettingsTree, 'agy-setting-row-composerWorkingBeamPalette'), null);
   let previewOn = false;
   const beamUi = createPanelHarness(
     accountsData,
     { enabled: true, composerWorkingBeam: true, composerWorkingBeamPalette: 'aurora' },
     { beamPreview: () => previewOn, onSetBeamPreview: v => { previewOn = Boolean(v); } }
   );
-  const beamSettings = beamUi.renderSettings();
+  let beamSettings = beamUi.renderSettings();
+  beamUi.find(beamSettings, 'agy-settings-cat-beams').props.onClick();
+  beamSettings = beamUi.renderSettings();
   assert.ok(beamUi.find(beamSettings, 'agy-setting-row-composerWorkingBeamPalette'));
   assert.equal(beamUi.find(beamSettings, 'agy-beam-palette-aurora')?.props?.['aria-pressed'], true);
   const previewBtn = beamUi.find(beamSettings, 'agy-beam-preview-toggle');
@@ -1413,6 +1424,8 @@ test('QuickPopover reuses full panels across all 6 tabs with lazy loading, badge
   previewBtn.props.onClick();
   assert.equal(previewOn, true);
   assert.equal(beamUi.find(beamUi.renderSettings(), 'agy-beam-preview-toggle')?.props?.['aria-pressed'], true);
+  // Restore ui back to general tab so subsequent quick-badge assertions inspect default tab cleanly
+  ui.find(beamsSettingsTree, 'agy-settings-cat-general').props.onClick();
 
   // Closed by default: zero lazy loads; ignores disabled 1% bucket, warns on 18% active bucket and shows multiline tooltip + first-time alert callout
   let tree = ui.renderQuickPopover();
@@ -1590,7 +1603,9 @@ test('Pricing provides standard vs API promo basis switch, clean single-row rate
   const reqStd = ui.renderEventTable(sampleDash, false);
   const costTh = ui.findAll(reqStd, n => n.type === 'th' && n.props?.className?.includes('pt-cost-th'))[0];
   assert.ok(costTh?.props?.['data-pt-tip']?.includes('正式标准单价'));
-  const settingsTree = ui.renderSettings();
+  let settingsTree = ui.renderSettings();
+  ui.find(settingsTree, 'agy-settings-cat-features').props.onClick();
+  settingsTree = ui.renderSettings();
   assert.ok(ui.find(settingsTree, 'agy-setting-row-pricingMode'));
   assert.equal(ui.find(settingsTree, 'agy-pricing-mode-select-standard')?.props?.selected, true);
   assert.ok(ui.collectText(ui.find(settingsTree, 'agy-pricing-mode-select')).includes('正式标准价'));
@@ -2079,15 +2094,38 @@ test('createAccountsStore blocks chimera refreshHash collisions, self-heals swit
     assert.equal('invalidRefreshHash' in mismatched.accounts.find(a => a.id === betaId), false);
     assert.equal(slots.get(`agy-powertools:account:${alphaId}`), alphaBefore);
 
-    // refreshCredentials MUST NOT falsely flip the poisoned beta slot back to hasCredential: true
+    // refreshCredentials MUST NOT falsely flip the quarantined/poisoned beta slot back to hasCredential: true
     const afterRefresh = store.refreshCredentials();
     assert.equal(afterRefresh.accounts.find(a => a.id === betaId).hasCredential, false);
-    assert.throws(() => store.switchAccount(betaId), /失效|串号|重新登录/);
-
-    // Re-logging beta with a genuinely fresh refresh_token clears invalid markers and restores valid credential
+    assert.throws(() => store.switchAccount(betaId), /隔离|失效|串号|重新登录/);
+    // syncActive alone CANNOT clear quarantine on beta even with a new token (must come from fresh completeAdd with matching UI email + new refreshHash)
     slots.set('gemini:antigravity', makeToken('beta@example.com', 'at-b4', 'rt-beta-fresh'));
+    const blockedSyncRecover = store.syncActive({ email: 'beta@example.com', name: 'Beta' });
+    assert.ok(blockedSyncRecover.credentialMismatch);
+    assert.equal(blockedSyncRecover.canRecordQuota, false);
+    assert.equal(blockedSyncRecover.confirmedQuotaEmail, '');
+    assert.equal(store.canRecordQuota('beta@example.com'), false);
+    // completeAdd with old refresh_token OR non-matching UI email cannot clear quarantine
+    slots.set('gemini:antigravity', makeToken('beta@example.com', 'at-b-same-rt', 'rt-beta'));
+    assert.throws(
+      () => store.completeAdd({ email: 'beta@example.com', prevEmail: 'alpha@example.com', prevCredHash: 'H_old' }),
+      /重新登录/
+    );
+    slots.set('gemini:antigravity', makeToken('beta@example.com', 'at-b4', 'rt-beta-fresh'));
+    assert.throws(
+      () => store.completeAdd({ email: 'alpha@example.com', prevEmail: 'alpha@example.com', prevCredHash: 'H_old' }),
+      /重新登录/
+    );
+    // Fresh completeAdd with matching UI email + new hash + new refreshHash clears quarantine cleanly
+    const recoveredAdd = store.completeAdd({ email: 'beta@example.com', prevEmail: 'alpha@example.com', prevCredHash: 'H_old', triggerRelaunch: false });
+    assert.equal(recoveredAdd.account.hasCredential, true);
     const recovered = store.syncActive({ email: 'beta@example.com', name: 'Beta' });
     assert.equal(recovered.accounts.find(a => a.id === betaId).hasCredential, true);
+    assert.equal(recovered.canRecordQuota, true);
+    assert.equal(recovered.confirmedQuotaEmail, 'beta@example.com');
+    assert.equal(store.canRecordQuota('beta@example.com'), true);
+    assert.equal(store.canRecordQuota('alpha@example.com'), false);
+    assert.equal(store.canRecordQuota('alpha@example.com', { multiAccountEnabled: false }), true);
 
     // Different access_token (different credHash) but SAME refresh_token (same refreshHash) on alpha slot is caught by refreshCredentials & switchAccount
     slots.set(`agy-powertools:account:${alphaId}`, makeToken('alpha@example.com', 'at-different', 'rt-beta-fresh'));
@@ -2097,7 +2135,17 @@ test('createAccountsStore blocks chimera refreshHash collisions, self-heals swit
     assert.equal(dupRf.account.hasCredential, false);
     assert.throws(() => store.switchAccount(alphaId), /重复|重新登录/);
 
-    // 2. Native Windows switchAccount defers restoreToActive to relaunch-worker, and falls back in-place + clears scope file when manualRestartRequired
+    // Mismatch during prepareAdd does NOT auto-backup into ownerAcct's slot (prevents chimera contamination)
+    slots.set(`agy-powertools:account:${alphaId}`, makeToken('alpha@example.com', 'at-a-clean', 'rt-alpha'));
+    const alphaSlotBeforeMismatch = slots.get(`agy-powertools:account:${alphaId}`);
+    slots.set('gemini:antigravity', makeToken('alpha@example.com', 'at-chimera-overwrite', 'rt-alpha-sus'));
+    const prepMismatchNoClobber = store.prepareAdd();
+    assert.equal(prepMismatchNoClobber.ok, true);
+    assert.equal(prepMismatchNoClobber.backedUpId, '');
+    assert.equal(slots.get(`agy-powertools:account:${alphaId}`), alphaSlotBeforeMismatch);
+
+    // 2. Native Windows switchAccount defers restoreToActive to relaunch-worker, threads switchId & profileDir,
+    //    guards concurrent switches, NEVER falls back to live restoreInPlace() when blocked/manual, and does NOT mutate activeId prematurely
     const winDir = join(dir, 'win-store');
     mkdirSync(winDir, { recursive: true });
     const winScopePath = join(winDir, 'credential-user-scope');
@@ -2106,11 +2154,12 @@ test('createAccountsStore blocks chimera refreshHash collisions, self-heals swit
     const winVault = makeVault({ backend: 'win32-credman' });
     const winRelaunchOpts = [];
     let nextRelaunchRes = { scheduled: true };
+    const winEnv = { ANTIGRAVITY_LS_ADDRESS: '127.0.0.1:42001' };
     const winStore = createAccountsStore(winDir, {
       now: () => clock,
       vault: winVault,
       platform: 'win32',
-      env: { ANTIGRAVITY_LS_ADDRESS: '127.0.0.1:42001' },
+      env: winEnv,
       appStoragePath: join(winDir, 'app_storage.json'),
       scopePath: winScopePath,
       relaunch: async opts => {
@@ -2128,31 +2177,53 @@ test('createAccountsStore blocks chimera refreshHash collisions, self-heals swit
     const swDeferred = await winStore.switchAccount(wAlphaId, { triggerRelaunch: true });
     assert.equal(swDeferred.ok, true);
     assert.equal(swDeferred.relaunching, true);
+    assert.equal(swDeferred.activeId, wBetaId, 'native Windows must NOT mutate activeId before relaunch confirms');
+    assert.equal(winStore.confirmedQuotaEmail(), '');
     assert.equal(restoreCalls, 0, 'native Windows relaunch must defer restoreToActive to relaunch-worker');
-    assert.deepEqual(winRelaunchOpts.at(-1).credentialSwitch, { accountId: wAlphaId, expectedEmail: 'alpha@example.com' });
-    assert.equal(winRelaunchOpts.at(-1).clearScopePath, winScopePath);
-    assert.equal(existsSync(winScopePath), true, 'scope file stays untouched until worker post-exit when relaunch succeeds');
+    const lastOpts = winRelaunchOpts.at(-1);
+    assert.equal(lastOpts.credentialSwitch.accountId, wAlphaId);
+    assert.equal(lastOpts.credentialSwitch.expectedEmail, 'alpha@example.com');
+    assert.ok(lastOpts.credentialSwitch.switchId);
+    assert.ok(lastOpts.profileDir);
+    assert.equal(lastOpts.clearScopePath, winScopePath);
+    assert.equal(existsSync(winScopePath), true, 'scope file stays untouched until worker post-exit');
 
-    // Simulate manualRestartRequired fallback -> restores active credential in-place AND deletes credential-user-scope
-    slots.set('gemini:antigravity', makeToken('alpha@example.com', 'at-wa1', 'rt-wa'));
-    winStore.syncActive({ email: 'alpha@example.com', name: 'Alpha' });
+    // Concurrent switch and prepareAdd are rejected while pendingSwitch is live on native Windows
+    assert.throws(() => winStore.switchAccount(wAlphaId, { triggerRelaunch: true }), /正在切换账号/);
+    assert.throws(() => winStore.prepareAdd(), /正在切换账号/);
+
+    // Worker ACK with failedSwitchId clears pendingSwitch cleanly WITHOUT quarantining target slot
+    writeFileSync(join(winDir, 'relaunch-ack.json'), JSON.stringify({
+      nonce: '11111111-2222-3333-4444-555555555555',
+      state: 'launched',
+      failedSwitchId: lastOpts.credentialSwitch.switchId
+    }));
+    winEnv.ANTIGRAVITY_LS_ADDRESS = '127.0.0.1:42002';
+    const afterWorkerFail = winStore.syncActive({ email: 'beta@example.com', name: 'Beta' });
+    assert.equal(afterWorkerFail.switchMismatch.restoreFailed, true);
+    assert.equal(afterWorkerFail.credentialMismatch.afterSwitch, true);
+    assert.equal(afterWorkerFail.canRecordQuota, false);
+    assert.equal(winStore.list().accounts.find(a => a.id === wAlphaId).hasCredential, true, 'failedSwitchId must NOT falsely quarantine unapplied target');
+
+    // Blocked or disabled relaunch on native Windows throws without live restoreInPlace(), leaves active cred & scope untouched, and clears pendingSwitch
     nextRelaunchRes = { scheduled: false, manualRestartRequired: true, reason: 'relaunch-blocked' };
     restoreCalls = 0;
-    const swFallback = await winStore.switchAccount(wBetaId, { triggerRelaunch: true });
-    assert.equal(swFallback.ok, true);
-    assert.equal(swFallback.manualRestartRequired, true);
-    assert.equal(restoreCalls, 1, 'fallback on manualRestartRequired must restore active credential in-place');
+    await assert.rejects(() => winStore.switchAccount(wAlphaId, { triggerRelaunch: true }), /未执行凭据切换/);
+    assert.throws(() => winStore.switchAccount(wAlphaId, { triggerRelaunch: false }), /未执行凭据切换/);
+    assert.equal(restoreCalls, 0, 'blocked native Windows switch must NEVER fall back to live restoreInPlace');
     assert.equal(parseMeta(slots.get('gemini:antigravity')).email, 'beta@example.com');
-    assert.equal(existsSync(winScopePath), false, 'fallback must remove credential-user-scope');
+    assert.equal(existsSync(winScopePath), true, 'blocked native Windows switch must leave scope file untouched');
+    assert.equal(winStore.list().activeId, wBetaId);
+    assert.equal(JSON.parse(readFileSync(join(winDir, 'accounts.json'), 'utf8')).pendingSwitch, null);
 
-    // 3. P2 #8: publicAccount strips internal hash fields across ALL single-account & pickAutoSwitch RPC responses
+    // 3. P2 #8: publicAccount strips internal hash & quarantine fields across ALL single-account & pickAutoSwitch RPC responses
     const assertPublicOnly = (acct, label) => {
       assert.ok(acct && typeof acct === 'object', `${label}: expected account object`);
-      for (const field of ['credHash', 'refreshHash', 'invalidCredHash', 'invalidRefreshHash']) {
+      for (const field of ['credHash', 'refreshHash', 'invalidCredHash', 'invalidRefreshHash', 'quarantined']) {
         assert.equal(field in acct, false, `${label}: leaked internal field ${field}`);
       }
     };
-    assertPublicOnly(swFallback.account, 'switchAccount');
+    assertPublicOnly(swDeferred.account, 'switchAccount');
     const renamed = store.renameAccount(alphaId, 'Work');
     assertPublicOnly(renamed.account, 'renameAccount');
     const disabled = store.setDisabled(alphaId, true);
@@ -2175,4 +2246,277 @@ test('createAccountsStore blocks chimera refreshHash collisions, self-heals swit
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('Settings renders 5 category tabs, live cross-category search, nested subordinate toggles, removes 3 redundant rows, keeps About visible, and hides nav when disabled', () => {
+  const ui = createPanelHarness(
+    null,
+    {
+      enabled: true,
+      language: 'zh-CN',
+      multiAccount: true,
+      composerWorkingBeam: true,
+      composerQuotaHalo: true,
+      sidebarRunningBeam: true,
+      sidebarHideNativeSpinner: true,
+      timing: true,
+      toolDetails: true,
+      sidebarFolderDrop: true,
+      sidebarFolderDropPin: false,
+      proxyEnabled: false
+    }
+  );
+
+  // 1. All 5 category tabs render with tablist/tab semantics, default to general, and keep About pinned across every tab
+  let tree = ui.renderSettings();
+  const catNav = ui.find(tree, 'agy-settings-categories');
+  assert.ok(catNav);
+  assert.equal(catNav.props.role, 'tablist');
+  const expectedCats = [
+    ['general', '常规与外观', 'agy-setting-row-language'],
+    ['beams', '流光与侧栏', 'agy-setting-row-composerWorkingBeam'],
+    ['features', '统计与增强', 'agy-setting-row-pricingMode'],
+    ['accounts', '账号与网络', 'agy-setting-row-multiAccount'],
+    ['system', '系统与维护', 'agy-setting-row-configTransfer']
+  ];
+  for (const [id, label] of expectedCats) {
+    const tabBtn = ui.find(tree, `agy-settings-cat-${id}`);
+    assert.ok(tabBtn, `Missing category tab ${id}`);
+    assert.equal(tabBtn.props.role, 'tab');
+    assert.equal(ui.collectText(tabBtn).trim(), label);
+  }
+  assert.equal(ui.find(tree, 'agy-settings-cat-general').props['aria-selected'], true);
+  assert.equal(ui.find(tree, 'agy-settings-cat-general').props['aria-current'], 'page');
+  assert.ok(ui.find(tree, 'agy-setting-enabled'));
+  assert.ok(ui.find(tree, 'agy-setting-row-customFont'));
+  assert.ok(ui.find(tree, 'agy-setting-row-titlebarQuickPanel'));
+  assert.equal(ui.find(tree, 'agy-setting-row-composerWorkingBeam'), null);
+  assert.ok(ui.find(tree, 'agy-about-version'));
+
+  for (const [id, , markerTestId] of expectedCats) {
+    ui.find(tree, `agy-settings-cat-${id}`).props.onClick();
+    tree = ui.renderSettings();
+    assert.equal(ui.find(tree, `agy-settings-cat-${id}`).props['aria-selected'], true);
+    assert.equal(ui.find(tree, `agy-settings-cat-${id}`).props['aria-current'], 'page');
+    assert.ok(ui.find(tree, markerTestId), `Expected ${markerTestId} on category ${id}`);
+    assert.ok(ui.find(tree, 'agy-about-version'), `Expected About visible on category ${id}`);
+    // The 3 redundant page-level view preferences never render on any Settings category
+    assert.equal(ui.find(tree, 'agy-setting-row-overviewRange'), null);
+    assert.equal(ui.find(tree, 'agy-setting-row-accountViewMode'), null);
+    assert.equal(ui.find(tree, 'agy-setting-row-accountQuotaWindow'), null);
+    assert.equal(ui.find(tree, 'agy-account-view-mode'), null);
+    assert.equal(ui.find(tree, 'agy-account-quota-window'), null);
+    const tabText = ui.collectText(tree);
+    assert.equal(/[\u00b7\u2022\u2027\u30fb]/.test(tabText), false, `Forbidden dot on category ${id}`);
+  }
+
+  // 2. Live cross-category search works from general tab across all 5 categories & preserves nested sub-panels
+  ui.find(tree, 'agy-settings-cat-general').props.onClick();
+  tree = ui.renderSettings();
+  assert.equal(ui.find(tree, 'agy-settings-search-clear'), null);
+
+  // Search '代理' finds NetworkProxySection while activeCat is 'general'
+  ui.find(tree, 'agy-settings-search').props.onChange({ target: { value: '代理' } });
+  tree = ui.renderSettings();
+  assert.ok(ui.find(tree, 'agy-settings-search-clear'));
+  assert.ok(ui.find(tree, 'agy-setting-proxyEnabled'));
+  assert.equal(ui.find(tree, 'agy-setting-row-compact'), null);
+  assert.ok(ui.find(tree, 'agy-about-version'));
+
+  // Search English 'proxy' also finds NetworkProxySection
+  ui.find(tree, 'agy-settings-search').props.onChange({ target: { value: 'proxy' } });
+  tree = ui.renderSettings();
+  assert.ok(ui.find(tree, 'agy-setting-proxyEnabled'));
+
+  // Search '流光' finds both composer & sidebar beams with their nested sub-panels intact
+  ui.find(tree, 'agy-settings-search').props.onChange({ target: { value: '流光' } });
+  tree = ui.renderSettings();
+  assert.ok(ui.find(tree, 'agy-setting-composerWorkingBeam'));
+  assert.ok(ui.find(tree, 'agy-setting-row-composerWorkingBeamPalette'));
+  assert.ok(ui.find(tree, 'agy-setting-sidebarRunningBeam'));
+  assert.ok(ui.find(tree, 'agy-setting-row-sidebarRunningBeamPalette'));
+  assert.ok(ui.find(tree, 'agy-setting-sidebarHideNativeSpinner'));
+
+  // Search 'export' finds System config backup/reset row
+  ui.find(tree, 'agy-settings-search').props.onChange({ target: { value: 'export' } });
+  tree = ui.renderSettings();
+  assert.ok(ui.find(tree, 'agy-export-settings-btn'));
+  assert.ok(ui.find(tree, 'agy-import-settings-btn'));
+
+  // Nonsense query shows clean empty state with zero middle dots; clear button restores active category
+  ui.find(tree, 'agy-settings-search').props.onChange({ target: { value: 'zzz-nonexistent-setting-xyz' } });
+  tree = ui.renderSettings();
+  const emptyCard = ui.find(tree, 'agy-settings-search-empty');
+  assert.ok(emptyCard);
+  assert.ok(ui.collectText(emptyCard).includes('未找到匹配的设置项'));
+  assert.equal(/[\u00b7\u2022\u2027\u30fb]/.test(ui.collectText(emptyCard)), false);
+  ui.find(tree, 'agy-settings-search-clear').props.onClick();
+  tree = ui.renderSettings();
+  assert.equal(ui.find(tree, 'agy-settings-search-empty'), null);
+  assert.equal(ui.find(tree, 'agy-settings-search-clear'), null);
+  assert.ok(ui.find(tree, 'agy-setting-row-language'));
+
+  // 3. Nested subordinate toggles/controls appear inside pt-bubble-panel when parent is ON and disappear when parent is OFF
+  ui.find(tree, 'agy-settings-cat-beams').props.onClick();
+  tree = ui.renderSettings();
+  assert.ok(ui.find(tree, 'agy-setting-row-composerQuotaHaloWindow'));
+  assert.equal(ui.find(tree, 'agy-setting-row-composerQuotaHaloWindow').props.className, 'pt-bubble-panel');
+  const sbDrawer = ui.find(tree, 'agy-setting-row-sidebarRunningBeamPalette');
+  assert.ok(ui.find(sbDrawer, 'agy-setting-row-sidebarHideNativeSpinner'));
+  assert.ok(ui.find(sbDrawer, 'agy-setting-sidebarHideNativeSpinner'));
+
+  ui.find(tree, 'agy-settings-cat-features').props.onClick();
+  tree = ui.renderSettings();
+  assert.ok(ui.find(tree, 'agy-setting-row-toolDetails'));
+  assert.ok(ui.find(tree, 'agy-setting-toolDetails'));
+  assert.ok(ui.find(tree, 'agy-setting-row-sidebarFolderDropPin'));
+  assert.ok(ui.find(tree, 'agy-setting-sidebarFolderDropPin'));
+
+  const parentOffUi = createPanelHarness(null, {
+    enabled: true,
+    language: 'zh-CN',
+    composerQuotaHalo: false,
+    sidebarRunningBeam: false,
+    timing: false,
+    sidebarFolderDrop: false
+  });
+  let offTree = parentOffUi.renderSettings();
+  parentOffUi.find(offTree, 'agy-settings-cat-beams').props.onClick();
+  offTree = parentOffUi.renderSettings();
+  assert.equal(parentOffUi.find(offTree, 'agy-setting-row-composerQuotaHaloWindow'), null);
+  assert.equal(parentOffUi.find(offTree, 'agy-setting-sidebarHideNativeSpinner'), null);
+  parentOffUi.find(offTree, 'agy-settings-cat-features').props.onClick();
+  offTree = parentOffUi.renderSettings();
+  assert.equal(parentOffUi.find(offTree, 'agy-setting-row-toolDetails'), null);
+  assert.equal(parentOffUi.find(offTree, 'agy-setting-toolDetails'), null);
+  assert.equal(parentOffUi.find(offTree, 'agy-setting-row-sidebarFolderDropPin'), null);
+  assert.equal(parentOffUi.find(offTree, 'agy-setting-sidebarFolderDropPin'), null);
+
+  // 4. Master switch OFF hides pt-settings-nav and renders ONLY master enabled toggle + About
+  const disabledUi = createPanelHarness(null, { enabled: false, language: 'zh-CN' });
+  const disabledTree = disabledUi.renderSettings();
+  assert.equal(disabledUi.find(disabledTree, 'agy-settings-nav'), null);
+  assert.equal(disabledUi.find(disabledTree, 'agy-settings-categories'), null);
+  assert.equal(disabledUi.find(disabledTree, 'agy-settings-search'), null);
+  assert.ok(disabledUi.find(disabledTree, 'agy-setting-enabled'));
+  assert.ok(disabledUi.find(disabledTree, 'agy-about-version'));
+  assert.equal(disabledUi.find(disabledTree, 'agy-setting-row-language'), null);
+});
+
+test('Token unit (compact/zh), currency display (USD/CNY + cnyRate), Progress >= 1h clock, and Settings UI / search work seamlessly', () => {
+  const now = Date.now();
+  const sampleDash = {
+    pricing: {
+      mode: 'standard',
+      rates: [
+        { model: 'gemini-4-carbon', input: 4, output: 20, cache: 0.2, cacheWrite: 5, until: '2099-01-01', next: { input: 4, output: 20, cache: 0.2, cacheWrite: 5 } }
+      ]
+    },
+    requests: [
+      { id: 'r1', model: 'Gemini 4 Carbon', timestampMs: now - 10_000, durationMs: 1500, inputTokens: 1_183_000_000, cacheReadTokens: 237_700, outputTokens: 8_540, costUsd: 10, status: 'success' }
+    ]
+  };
+
+  // 1. Default compact + USD in Overview and Pricing
+  const usdUi = createPanelHarness(null, { enabled: true, language: 'zh-CN', overviewRange: '24h', tokenUnit: 'compact', currency: 'USD', cnyRate: 7.2, multiAccount: false });
+  const usdOv = usdUi.renderOverview(sampleDash);
+  const usdOvText = usdUi.collectText(usdOv);
+  assert.ok(usdOvText.includes('1.18B'));
+  assert.ok(usdOvText.includes('费用 (USD)'));
+  assert.ok(usdOvText.includes('$10.00'));
+  const usdPrice = usdUi.renderPricing(sampleDash);
+  const usdPriceText = usdUi.collectText(usdPrice);
+  assert.ok(usdPriceText.includes('每百万 Token 单价 (USD)'));
+  assert.equal(usdUi.find(usdPrice, 'agy-price-cny-rate-note'), null);
+  assert.ok(usdPriceText.includes('$4'));
+  assert.ok(usdPriceText.includes('$20'));
+
+  // 2. zh-CN + zh token unit + CNY with custom cnyRate 7.5 across Overview, EventTable, and Pricing
+  const cnyUi = createPanelHarness(null, { enabled: true, language: 'zh-CN', overviewRange: '24h', tokenUnit: 'zh', currency: 'CNY', cnyRate: 7.5, multiAccount: false });
+  const cnyOv = cnyUi.renderOverview(sampleDash);
+  const cnyOvText = cnyUi.collectText(cnyOv);
+  assert.ok(cnyOvText.includes('11.83亿'));
+  assert.ok(cnyOvText.includes('23.77万'));
+  assert.ok(cnyOvText.includes('8540'));
+  assert.ok(cnyOvText.includes('费用 (CNY)'));
+  assert.ok(cnyOvText.includes('¥75.00'));
+  assert.equal(/[\u00b7\u2022\u2027\u30fb]/.test(cnyOvText), false);
+
+  const cnyReqText = cnyUi.collectText(cnyUi.renderEventTable(sampleDash, false));
+  assert.ok(cnyReqText.includes('11.83亿'));
+  assert.ok(cnyReqText.includes('23.77万'));
+  assert.ok(cnyReqText.includes('8540'));
+  assert.ok(cnyReqText.includes('¥75.00'));
+
+  const cnyPrice = cnyUi.renderPricing(sampleDash);
+  const cnyPriceText = cnyUi.collectText(cnyPrice);
+  assert.ok(cnyPriceText.includes('每百万 Token 单价 (CNY)'));
+  assert.ok(cnyUi.find(cnyPrice, 'agy-price-cny-rate-note'));
+  assert.ok(cnyPriceText.includes('参考汇率 1 USD = 7.5 CNY'));
+  assert.ok(cnyPriceText.includes('¥30.00'));
+  assert.ok(cnyPriceText.includes('¥150.00'));
+  assert.equal(/[\u00b7\u2022\u2027\u30fb]/.test(cnyPriceText), false);
+
+  // 3. zh-TW + zh token unit + CNY renders Traditional 萬 / 億 / 幣 / 匯率
+  const twUi = createPanelHarness(null, { enabled: true, language: 'zh-TW', overviewRange: '24h', tokenUnit: 'zh', currency: 'CNY', cnyRate: 7.2, multiAccount: false });
+  const twOvText = twUi.collectText(twUi.renderOverview(sampleDash));
+  assert.ok(twOvText.includes('11.83億'));
+  assert.ok(twOvText.includes('23.77萬'));
+  assert.ok(twOvText.includes('¥72.00'));
+
+  // 4. Settings UI: tokenUnit & currency rows in 统计与进度, cnyRate nested sub-row hidden when USD & shown when CNY, validation/reset, and live Settings search
+  const changes = [];
+  const setUi = createPanelHarness(null, { enabled: true, language: 'zh-CN', tokenUnit: 'compact', currency: 'USD', cnyRate: 7.2, multiAccount: false }, { onChange: p => changes.push(p) });
+  let tree = setUi.renderSettings();
+  setUi.find(tree, 'agy-settings-cat-features').props.onClick();
+  tree = setUi.renderSettings();
+  assert.ok(setUi.find(tree, 'agy-setting-row-tokenUnit'));
+  assert.ok(setUi.find(tree, 'agy-token-unit-select'));
+  assert.ok(setUi.find(tree, 'agy-setting-row-currency'));
+  assert.ok(setUi.find(tree, 'agy-currency-select'));
+  assert.equal(setUi.find(tree, 'agy-setting-row-cnyRate'), null);
+
+  // Select CNY -> cnyRate nested panel appears with width 88 input and no reset button at default 7.2
+  setUi.find(tree, 'agy-currency-select-CNY').props.onClick();
+  assert.deepEqual({ ...changes.at(-1) }, { currency: 'CNY' });
+  tree = setUi.renderSettings();
+  const rateRow = setUi.find(tree, 'agy-setting-row-cnyRate');
+  assert.ok(rateRow);
+  assert.equal(rateRow.props.className, 'pt-bubble-panel');
+  const rateInput = setUi.find(rateRow, 'agy-cny-rate-input');
+  assert.ok(rateInput);
+  assert.equal(rateInput.props.style.width, 88);
+  assert.equal(setUi.find(rateRow, 'agy-cny-rate-reset'), null);
+
+  // Invalid input shows alert and does not save
+  rateInput.props.onChange({ target: { value: '0.01' } });
+  rateInput.props.onBlur({ target: { value: '0.01' } });
+  tree = setUi.renderSettings();
+  assert.ok(setUi.find(tree, 'agy-cny-rate-error'));
+  assert.equal(changes.length, 1);
+
+  // Valid input saves on Enter, exposes reset button, clicking reset restores 7.2
+  setUi.find(tree, 'agy-cny-rate-input').props.onChange({ target: { value: '7.5' } });
+  setUi.find(tree, 'agy-cny-rate-input').props.onKeyDown({ key: 'Enter', preventDefault() {} });
+  assert.deepEqual({ ...changes.at(-1) }, { cnyRate: 7.5 });
+  tree = setUi.renderSettings();
+  assert.equal(setUi.find(tree, 'agy-cny-rate-error'), null);
+  const resetBtn = setUi.find(tree, 'agy-cny-rate-reset');
+  assert.ok(resetBtn);
+  resetBtn.props.onClick();
+  assert.deepEqual({ ...changes.at(-1) }, { cnyRate: 7.2 });
+
+  // Live Settings search from default general tab finds both rows via Chinese & English keywords
+  setUi.find(tree, 'agy-settings-cat-general').props.onClick();
+  tree = setUi.renderSettings();
+  setUi.find(tree, 'agy-settings-search').props.onChange({ target: { value: '人民币' } });
+  tree = setUi.renderSettings();
+  assert.ok(setUi.find(tree, 'agy-setting-row-currency'));
+  assert.equal(setUi.find(tree, 'agy-setting-row-tokenUnit'), null);
+
+  setUi.find(tree, 'agy-settings-search').props.onChange({ target: { value: '亿' } });
+  tree = setUi.renderSettings();
+  assert.ok(setUi.find(tree, 'agy-setting-row-tokenUnit'));
+  assert.equal(setUi.find(tree, 'agy-setting-row-currency'), null);
+  assert.equal(/[\u00b7\u2022\u2027\u30fb]/.test(setUi.collectText(tree)), false);
 });

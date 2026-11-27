@@ -20,7 +20,8 @@ function createFakeVault(initial = {}) {
     slots,
     has(target) { return slots.has(target); },
     inspect(target) {
-      return slots.has(target) ? { exists: true, hash: hashOf(slots.get(target)) } : { exists: false, hash: '' };
+      const value = slots.get(target);
+      return slots.has(target) ? { exists: true, hash: hashOf(value), email: `${String(value).slice(4)}@example.com` } : { exists: false, hash: '' };
     },
     copy(from, to) {
       if (!slots.has(from)) return { ok: false, error: 'missing source' };
@@ -146,7 +147,7 @@ test('accounts.switchAccount and completeAdd return manualRestartRequired when r
   }
 });
 
-function createSidecarDomSandbox(html, { fetchImpl }) {
+function createSidecarDomSandbox(html, { fetchImpl, clock = Date }) {
   const scriptMatches = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];
   assert.ok(scriptMatches.length >= 1, 'Expected inline script in sidecar HTML');
   const scriptCode = scriptMatches[scriptMatches.length - 1][1];
@@ -185,10 +186,15 @@ function createSidecarDomSandbox(html, { fetchImpl }) {
   elements.get('cmd-box').hidden = true;
   elements.get('copy-cmd-btn').hidden = true;
   elements.get('feedback').hidden = true;
+  elements.get('install-update-btn').hidden = true;
+  elements.get('download-link').hidden = true;
+  elements.get('update-feedback').hidden = true;
+  elements.get('update-notes').hidden = true;
 
   const timeouts = [];
   const intervals = [];
   const ctx = vm.createContext({
+    Date: clock,
     URLSearchParams,
     location: { search: '?token=test-tok', reload() {} },
     document: {
@@ -653,6 +659,8 @@ test('ProxySettings surfaces error feedback and never wedges on green relaunchin
 
   const renderSettings = () => { activeComponent = 'settings'; hookIdx = 0; return panels.Settings(); };
   let tree = renderSettings();
+  find(tree, 'agy-settings-cat-accounts').props.onClick();
+  tree = renderSettings();
   const applyBtn = find(tree, 'agy-proxy-apply-btn');
   assert.ok(applyBtn);
 
@@ -874,4 +882,123 @@ test('Issue #100: Aux Pane resets update progress on installing -> idle, updates
   assert.equal(sb2.elements.get('update-feedback').hidden, true);
   assert.equal(sb2.elements.get('update-feedback').textContent, '');
   assert.equal(sb2.elements.get('state-text').textContent, 'Agy Powertools 2.18.2');
+});
+
+test('PR #106: Aux Pane guards submitting phase, out-of-order status/progress polls, non-active POST replies, and retry failure timestamps', async () => {
+  const tick = () => new Promise(resolve => setImmediate(resolve));
+  const idle = { status: 'idle' };
+  const available = { status: 'available', version: '2.20.0', canInstall: true, notes: 'Release notes', releaseUrl: 'https://example.org/release' };
+
+  async function makeSidecar(initial = idle, clock = Date, version = '') {
+    const replies = {
+      '/api/status': { healthy: true, update: initial, ...(version ? { version } : {}) },
+      '/api/update/check': available,
+      '/api/update/install': { status: 'preparing' },
+      '/api/update/status': idle
+    };
+    const { elements, intervals } = createSidecarDomSandbox(renderAuxPaneHtml({ version, language: 'en' }), {
+      clock,
+      fetchImpl: async url => {
+        const data = await replies[url.split('?')[0]];
+        return { ok: !data.error || !!data.status, json: async () => data };
+      }
+    });
+    await tick();
+    const el = id => elements.get(id);
+    return {
+      replies,
+      el,
+      check: el('check-update-btn'),
+      install: el('install-update-btn'),
+      feedback: el('update-feedback'),
+      click: async btn => { await btn.trigger('click'); await tick(); },
+      fastPoll: () => intervals.find(i => i.ms === 900 && !i.cleared),
+      poll: () => intervals.find(i => i.ms === 3000).fn()
+    };
+  }
+
+  // 1. Out-of-order submitting POST, delayed idle /api/status, and stale installing /api/status vs fast idle /api/update/status
+  const ui = await makeSidecar();
+  await ui.click(ui.check);
+  const post = Promise.withResolvers();
+  ui.replies['/api/update/install'] = post.promise;
+  await ui.click(ui.install);
+  await ui.poll(); // idle while POST is still pending (submitting phase)
+  assert.equal(ui.check.disabled, true);
+  assert.equal(ui.install.disabled, true);
+  assert.match(ui.feedback.textContent, /Preparing/);
+
+  const delayed = Promise.withResolvers();
+  ui.replies['/api/status'] = delayed.promise;
+  const oldIdle = ui.poll();
+  post.resolve({ status: 'preparing' });
+  await tick();
+  delayed.resolve({ healthy: true, update: idle });
+  await oldIdle;
+  assert.match(ui.feedback.textContent, /Preparing/);
+  assert.equal(ui.check.disabled, true);
+
+  const stale = Promise.withResolvers();
+  ui.replies['/api/status'] = stale.promise;
+  const oldProgress = ui.poll();
+  const fast = ui.fastPoll();
+  await fast.fn(); // dedicated /api/update/status returns idle with higher requestId
+  stale.resolve({ healthy: true, update: { status: 'installing' } });
+  await oldProgress;
+  assert.equal(fast.cleared, true);
+  assert.equal(ui.feedback.hidden, true);
+  assert.equal(ui.check.disabled, false);
+  for (const id of ['install-update-btn', 'download-link', 'update-notes']) assert.equal(ui.el(id).hidden, true, id);
+
+  // 2. Non-active POST reply (failed/error) preserves retry error without starting fast poll
+  const uiErr = await makeSidecar({ status: 'completed' });
+  assert.match(uiErr.feedback.textContent, /completed/i);
+  uiErr.replies['/api/status'].update = idle;
+  await uiErr.poll();
+  assert.equal(uiErr.feedback.hidden, true);
+
+  await uiErr.click(uiErr.check);
+  uiErr.replies['/api/update/install'] = { error: 'Worker could not start' };
+  await uiErr.click(uiErr.install);
+  await uiErr.poll();
+  assert.equal(uiErr.feedback.textContent, 'Worker could not start');
+  assert.equal(uiErr.feedback.hidden, false);
+  assert.equal(uiErr.install.hidden, false);
+  assert.equal(uiErr.install.disabled, false);
+  assert.equal(uiErr.fastPoll(), undefined);
+
+  // 3. Older persisted failure (at < lastUpdateActionAt) cannot clobber a newer retry install POST error
+  let now = 1000;
+  const uiRetry = await makeSidecar(idle, { now: () => now });
+  await uiRetry.click(uiRetry.check);
+  await uiRetry.click(uiRetry.install);
+  now += 100;
+  const previousFailure = { status: 'failed', at: now, error: 'Invalid package' };
+  uiRetry.replies['/api/update/status'] = previousFailure;
+  await uiRetry.fastPoll().fn();
+  assert.match(uiRetry.feedback.textContent, /Invalid package/);
+
+  now += 100;
+  uiRetry.replies['/api/update/install'] = { error: 'Worker could not start' };
+  await uiRetry.click(uiRetry.install);
+  uiRetry.replies['/api/status'].update = previousFailure;
+  await uiRetry.poll();
+  assert.equal(uiRetry.feedback.textContent, 'Worker could not start');
+  assert.equal(uiRetry.install.disabled, false);
+
+  // 4. Non-active HTTP 200 POST reply ({ status: 'failed', error: 'bad' }) does not start fast poll
+  const uiNonActive = await makeSidecar();
+  await uiNonActive.click(uiNonActive.check);
+  uiNonActive.replies['/api/update/install'] = { status: 'failed', error: 'checksum invalid' };
+  await uiNonActive.click(uiNonActive.install);
+  assert.match(uiNonActive.feedback.textContent, /checksum invalid/);
+  assert.equal(uiNonActive.fastPoll(), undefined);
+
+  // 5. Version check before clearing availableUpdate preserves Install button if version did NOT advance
+  const uiVersionGuard = await makeSidecar(idle, Date, '2.19.0');
+  await uiVersionGuard.click(uiVersionGuard.check);
+  await uiVersionGuard.click(uiVersionGuard.install);
+  uiVersionGuard.replies['/api/status'] = { healthy: true, version: '2.19.0', update: idle };
+  await uiVersionGuard.poll();
+  assert.equal(uiVersionGuard.install.hidden, false, 'Install button stays available if version did not advance');
 });

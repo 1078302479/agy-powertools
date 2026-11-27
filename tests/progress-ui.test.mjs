@@ -63,6 +63,16 @@ test('progress integrates live phase into header, renders connected activity tra
   assert.ok(!doneText.includes('本轮已结束'));
   assert.ok(!doneText.includes('最近活动'));
   assert.ok(doneText.includes('0:25'));
+
+  const longTree = renderProgress({
+    status: 'complete',
+    toolCount: 3,
+    elapsedMs: 3725000,
+    recentActivity: [{ id: 'c3', label: 'Long build', groupKey: 'commands', status: 'complete', durationMs: 3725000 }]
+  });
+  const longText = collectText(longTree);
+  assert.ok(longText.includes('1:02:05'));
+  assert.ok(longText.includes('1h 2m 5s'));
 });
 
 test('progress supports native-style collapsing with compact status badge and persists state', () => {
@@ -220,8 +230,10 @@ test('ProgressOrb maps live phases and tool kinds to distinct orb modes and pres
   assert.equal(orbNode.props['data-orb-mode'], 'searching');
   assert.equal(orbNode.props.role, 'progressbar');
   assert.equal(orbNode.props['aria-valuenow'], 50);
+  assert.equal(orbNode.props['aria-label'], '任务进度 检索查阅 50%');
   assert.equal(orbNode.props.title, undefined);
-  assert.equal(orbNode.props['data-pt-tip'], '检索查阅 50%');
+  assert.equal(orbNode.props['data-pt-tip'], undefined);
+  assert.equal(orbNode.props['data-pt-tip-place'], undefined);
 
   // Static terminal states must not schedule requestAnimationFrame
   let rafCalls = 0;
@@ -247,4 +259,64 @@ test('ProgressOrb maps live phases and tool kinds to distinct orb modes and pres
   assert.equal(doneEl.props['data-orb-mode'], 'complete');
   assert.equal(rafCalls, 0);
   effectCleanup?.();
+});
+
+test('Overview Progress omits redundant tooltips on progress orb and headline unless retryError adds distinct detail', () => {
+  const expand = node => {
+    if (!node || typeof node !== 'object') return node;
+    if (Array.isArray(node)) return node.map(expand);
+    if (typeof node.type === 'function') return expand(node.type({ ...(node.props || {}), children: node.children }));
+    return { ...node, children: Array.isArray(node.children) ? node.children.map(expand) : node.children };
+  };
+  const findNode = (node, pred) => {
+    if (!node || typeof node !== 'object') return null;
+    if (Array.isArray(node)) {
+      for (const c of node) { const hit = findNode(c, pred); if (hit) return hit; }
+      return null;
+    }
+    if (pred(node)) return node;
+    return findNode(node.children, pred);
+  };
+  const renderTree = progress => {
+    const R = { createElement: (type, props, ...children) => ({ type, props: props || {}, children }), useSyncExternalStore: (_, snapshot) => snapshot() };
+    const context = vm.createContext({ React: R, dq: 'icon', document: { createElement: () => ({ dataset: {}, remove() {} }), head: { append() {} } } });
+    vm.runInContext(readFileSync(new URL('../lib/native-panels.js', import.meta.url), 'utf8'), context);
+    const panels = context.__agyPanels({
+      t: v => v,
+      options: () => ({ progress: true, language: 'zh-CN' }),
+      state: () => ({ conversationId: 'conv-tip', progress }),
+      subscribe: () => () => {},
+      revision: () => 0
+    });
+    return expand(panels.Progress());
+  };
+
+  for (const progress of [
+    { status: 'complete', elapsedMs: 12000 },
+    { status: 'running', phase: 'thinking', phaseDetail: 'thinking', elapsedMs: 5000 },
+    { status: 'running', phase: 'retrying', retryCount: 1, retryError: '   ' },
+    { status: 'running', phase: 'retrying', retryCount: 1, retryError: '正在重试（第 1 次）' }
+  ]) {
+    const tree = renderTree(progress);
+    const orb = findNode(tree, n => n.props?.['data-testid'] === 'agy-progress-orb');
+    const title = findNode(tree, n => n.props?.className === 'pt-progress-title');
+    assert.ok(orb);
+    assert.ok(title);
+    assert.equal(orb.props['data-pt-tip'], undefined);
+    assert.equal(orb.props['data-pt-tip-place'], undefined);
+    assert.ok(orb.props['aria-label']);
+    assert.equal(title.props['data-pt-tip'], undefined);
+    assert.equal(title.props['data-pt-tip-place'], undefined);
+  }
+
+  const retryTree = renderTree({
+    status: 'running',
+    phase: 'retrying',
+    retryCount: 2,
+    retryError: 'HTTP 429 Too Many Requests'
+  });
+  const retryTitle = findNode(retryTree, n => n.props?.className === 'pt-progress-title');
+  assert.ok(retryTitle);
+  assert.equal(retryTitle.props['data-pt-tip'], 'HTTP 429 Too Many Requests');
+  assert.equal(retryTitle.props['data-pt-tip-place'], 'left');
 });

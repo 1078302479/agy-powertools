@@ -224,6 +224,21 @@ sh ./install.sh
 
 ## 更新日誌
 
+### v2.16.12
+- **全新分層設定介面與即時跨組搜尋**：將設定頁重構為 5 個頂部分段分類（一般與外觀、流光與側邊欄、統計與增強、帳號與網路、系統與維護）並配備右側即時跨組搜尋框；將 4 項從屬開關（四圓點隱藏、光環週期、點擊耗時展開工具、拖入置頂）收進對應父開關抽屜，移除 3 個在頁面內可直接切換的重複偏好列，將匯出/匯入/恢復預設整合為單列並精簡文案，「關於」與更新卡片常駐底部。
+- **側邊欄執行中會話流光新增「內發光脈衝」與「外光暈脈衝」動效**：採用 1px 極細彩邊與 3 團互質週期非同步呼吸漂移光斑、多彩配色板連續色相流動以及緊湊防裁切外光暈，統一預覽框尺寸消除切換跳動，完整適配九種語言與淺深色主題，保留「底部掃光」預設樣式。
+- **新增 macOS 一次直啟混合方案（closes #87，closes #101，整合 PR #105，感謝 `@puyialeng233-spec`）**：新增共用即時設定直啟引擎 [launch-macos.mjs](../scripts/launch-macos.mjs) 與設定頁僅限 macOS 顯示的「建立啟動圖示 / 在 Finder 中顯示 / 刪除啟動圖示 / 複製直啟指令」，按需在 `~/Applications` 產生 `LSUIElement` 輕量化 `Antigravity (Powertools).app`（自動同步原版 `.icns` 圖示與 `lsregister -f/-u` 快取重新整理，解除安裝零殘留）。
+- **新增 Token 計數單位、極簡人民幣計價與小時級時長進位**：
+  - 「統計與增強」新增 **Token 計數單位**（國際通用 `K / M / B` 現已對超過 10 億進位為 `B`，可選簡中計數 `万 / 亿` 與繁中 `萬 / 億`）；
+  - 新增 **費用顯示幣別**（美元 `$` / 人民幣 `¥`，零外部網路相依、內建參考匯率 `7.2` 並支援於抽屜內手動自訂匯率，全域聯動概覽、請求表、價格頁、會話統計與每輪底列）；
+  - 會話統計與子智能體耗時滿 1 小時自動進位為「小時 / 分 / 秒」（如 `21小時53分18秒` / `21h 53m 18s`），任務進度鐘錶滿 60 分鐘同步進位為 `h:mm:ss`。
+- **介面細節與互動最佳化**：修正點擊上下文圓環時因自動聚焦導致首個子智能體浮動提示誤彈的問題，並將子智能體浮動提示收窄至僅懸停子智能體名稱時觸發；移除右側「任務進度」圓環與標題的多餘浮動提示；移除會話統計中無用的「快取觀察」列；修正流光「停止預覽」按鈕圖示顯示為 `stop` 文字的問題。
+- **後端穩定性與安全邊界加固（選擇性整合 PR #102 / PR #103 / PR #105 / PR #106，感謝 `@puyialeng233-spec`）**：
+  - 在 `sidecar.json` 與更新器中明確寫入 `NODE_USE_ENV_PROXY: "0"` 隔離宿主環境變數干擾；
+  - Windows 重啟器支援 `language_server_windows_*.exe` / `agy.exe` 辨識與 `tasklist` 異常 fail-closed，保留自訂 `ANTIGRAVITY_USER_DATA_DIR`，憑證信箱空值 fail-closed 並將 Win32 JSON 解析升級為 `.NET JavaScriptSerializer`，補齊多帳號額度歸因保護與切號鎖；
+  - 伴生輔助頁更新狀態機新增 `submitting` 階段、單調遞增 `requestId` 與 `lastUpdateActionAt` 消除輪詢競態；
+  - [lifecycle.mjs](../lib/lifecycle.mjs) 與 [update-manager.mjs](../lib/update-manager.mjs) 補全 `realpathSync.native` 根路徑 TOCTOU 釘死與全路徑 `assertOwnedPath` 校驗。
+
 ### v2.16.11
 - **修正 SOCKS5 代理下伴生程序當機與重啟穩定性（#93，#64）**：移除會使 Node `fetch` 在 SOCKS5 環境下異常的 `NODE_USE_ENV_PROXY`，[pricing.mjs](../lib/pricing.mjs) 統一改走 `createProxyFetcher()`；Windows 重啟 ACK 等待延長至 6 秒並於失敗時清理 `lastRelaunchAt`，支援外部代理設定變更時自動重啟，捷徑修補改為非阻塞執行，且 4 秒除錯連接埠輪詢不再誤清 24 小時重啟熔斷狀態。
 - **徹底修正多帳號切換後串號/帳號錯位與 macOS 憑證前綴相容性（#97，#95）**：新增 `refreshHash` 去重與碰撞保護，切號重啟僅在目前使用者作用域內結束殘留 `language_server.exe`，並於退出後動態回填目標憑證及清理 `credential-user-scope`（遇提權程序或暫時性異常絕不使客戶端停在關閉狀態），補充 `fromLsAddress` 校驗與 `switchMismatch` 自癒提示；JS 與 Win32 C# 端統一解包 macOS `go-keyring-base64:` 前綴。

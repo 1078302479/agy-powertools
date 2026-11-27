@@ -224,6 +224,21 @@ sh ./install.sh
 
 ## 更新日志
 
+### v2.16.12
+- **全新分层设置界面与实时跨组搜索**：将设置页重构为 5 个顶部分段分类（常规与外观、流光与侧栏、统计与增强、账号与网络、系统与维护）并配备右侧实时跨组搜索框；将 4 项从属开关（四圆点隐藏、光环周期、点击用时展开工具、拖入置顶）收进对应父开关抽屉，移除 3 个在页面内可直接切换的重复偏好行，将导出/导入/恢复默认整合为单行并精简文案，「关于」与更新卡片常驻底部。
+- **侧栏运行中会话流光新增「内发光脉冲」与「外光晕脉冲」动效**：采用 1px 极细彩边与 3 团互质周期异步呼吸漂移光斑、多彩配色板连续色相流动以及紧凑防裁切外光晕，统一预览框尺寸消除切换跳动，完整适配九种语言与浅深色主题，保留「底部扫光」默认样式。
+- **新增 macOS 一次直启混合方案（closes #87，closes #101，吸收 PR #105，感谢 `@puyialeng233-spec`）**：新增共用实时配置直启引擎 [launch-macos.mjs](scripts/launch-macos.mjs) 与设置页仅限 macOS 显示的「创建启动图标 / 在 Finder 中显示 / 删除启动图标 / 复制直启命令」，按需在 `~/Applications` 生成 `LSUIElement` 轻量化 `Antigravity (Powertools).app`（自动同步原版 `.icns` 图标与 `lsregister -f/-u` 缓存刷新，卸载零残留）。
+- **新增 Token 计数单位、极简人民币计价与小时级时长进位**：
+  - 「统计与增强」新增 **Token 计数单位**（国际通用 `K / M / B` 现已对超过 10 亿进位为 `B`，可选中文计数 `万 / 亿` 与繁中 `萬 / 億`）；
+  - 新增 **费用显示币种**（美元 `$` / 人民币 `¥`，零外部网络依赖、内置参考汇率 `7.2` 并支持在抽屉内手动自定义汇率，全域联动概览、请求表、价格页、会话统计与每轮底栏）；
+  - 会话统计与子智能体用时满 1 小时自动进位为「小时 / 分 / 秒」（如 `21小时53分18秒` / `21h 53m 18s`），任务进度钟表满 60 分钟同步进位为 `h:mm:ss`。
+- **界面细节与交互优化**：修复点击上下文圆环时因自动聚焦导致首个子代理浮窗误弹的问题，并将子代理浮窗收窄至仅悬停子代理名字触发；移除右侧「任务进度」圆环与标题的多余浮窗；移除会话统计中无用的「缓存观察」行；修复流光「停止预览」按钮图标显示为 `stop` 文本的问题。
+- **后端稳定性与安全边界加固（选择性吸收 PR #102 / PR #103 / PR #105 / PR #106，感谢 `@puyialeng233-spec`）**：
+  - 在 `sidecar.json` 与更新器显式写入 `NODE_USE_ENV_PROXY: "0"` 隔离宿主环境变量干扰；
+  - Windows 重启器支持 `language_server_windows_*.exe` / `agy.exe` 识别与 `tasklist` 异常 fail-closed，保留自定义 `ANTIGRAVITY_USER_DATA_DIR`，凭据邮箱空值 fail-closed 并升级 Win32 JSON 解析为 `.NET JavaScriptSerializer`，补齐多账号额度归因保护与切号锁；
+  - 伴生页更新状态机新增 `submitting` 阶段、单调 `requestId` 与 `lastUpdateActionAt` 消除轮询竞态；
+  - [lifecycle.mjs](lib/lifecycle.mjs) 与 [update-manager.mjs](lib/update-manager.mjs) 补全 `realpathSync.native` 根路径 TOCTOU 钉死与全路径 `assertOwnedPath` 校验。
+
 ### v2.16.11
 - **修复 SOCKS5 代理下伴生进程崩溃与重启稳定性（#93，#64）**：移除会令 Node `fetch` 在 SOCKS5 环境下异常的 `NODE_USE_ENV_PROXY`，[pricing.mjs](lib/pricing.mjs) 统一走 `createProxyFetcher()`；Windows 重启 ACK 等待延长至 6 秒并在失败时清理 `lastRelaunchAt`，支持外部代理配置变更自动重启，快捷方式修补改为非阻塞执行，且 4 秒调试端口轮询不再误清 24 小时重启熔断状态。
 - **根治多账号切换后串号/账号错位与 macOS 凭据前缀兼容（#97，#95）**：新增 `refreshHash` 去重与碰撞保护，切号重启仅在当前用户作用域内结束残留 `language_server.exe` 并在退出后动态回填目标凭据与清理 `credential-user-scope`（遇提权进程或临时异常绝不令客户端停在关闭态），补充 `fromLsAddress` 校验与 `switchMismatch` 自愈提示；JS 与 Win32 C# 侧统一解包 macOS `go-keyring-base64:` 前缀。

@@ -1486,3 +1486,553 @@ test('shouldAutoRelaunchProxy handles unmanaged external proxy conflicts, ready 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('scripts/launch-macos.mjs builds live-config plans, scrubs env, uses open --env with inherited-env fallback, and redacts credentials in output (Issues #87 & #101)', async () => {
+  const {
+    buildMacDirectLaunchPlan,
+    launchMacDirect,
+    sanitizeLaunchPlanForOutput,
+    parseMacLaunchCliArgs
+  } = await import('../scripts/launch-macos.mjs');
+  const { inspectProxyRuntime } = await import('../lib/proxy.mjs');
+  const { createSettingsStore } = await import('../lib/settings.mjs');
+  const root = mkdtempSync(join(tmpdir(), 'agy-mac-direct-'));
+  try {
+    const home = join(root, 'home');
+    const dataDir = join(root, 'data');
+    mkdirSync(dataDir, { recursive: true });
+    const store = createSettingsStore(dataDir);
+    const app = '/Applications/Antigravity.app';
+
+    // 1. Proxy disabled preserves user external proxy and does not add --env flags
+    const offPlan = buildMacDirectLaunchPlan({
+      platform: 'darwin',
+      home,
+      dataDir,
+      sourceApp: app,
+      env: {
+        HTTPS_PROXY: 'http://user-corp-proxy:8080',
+        ELECTRON_RUN_AS_NODE: '1',
+        NODE_OPTIONS: '--inspect',
+        NODE_USE_ENV_PROXY: '1',
+        ANTIGRAVITY_SIDECAR_TOKEN: 'secret-tok',
+        ANTIGRAVITY_LS_ADDRESS: '127.0.0.1:5000',
+        GITHUB_TOKEN: 'ghp_must_not_leak'
+      }
+    });
+    assert.equal(offPlan.command, '/usr/bin/open');
+    assert.equal(offPlan.usesEnvFlags, false);
+    assert.deepEqual(offPlan.primaryArgs, ['-a', app, '--args', '--remote-debugging-port=0']);
+    assert.deepEqual(offPlan.fallbackArgs, ['-a', app, '--args', '--remote-debugging-port=0']);
+    assert.equal(offPlan.env.HTTPS_PROXY, 'http://user-corp-proxy:8080');
+    assert.equal(offPlan.env.ELECTRON_RUN_AS_NODE, undefined);
+    assert.equal(offPlan.env.NODE_OPTIONS, undefined);
+    assert.equal(offPlan.env.NODE_USE_ENV_PROXY, undefined);
+    assert.equal(offPlan.env.ANTIGRAVITY_SIDECAR_TOKEN, undefined);
+    assert.equal(offPlan.env.ANTIGRAVITY_LS_ADDRESS, undefined);
+    assert.equal(inspectProxyRuntime(store.get(), offPlan.env).reason, 'disabled');
+
+    // 2. Proxy enabled with credentials + proxyForceHttp1 -> dynamic settings, --env primary + fallbackArgs, sidecar match, credential redaction
+    const authUrl = 'socks5h://alice:super-secret-pw@127.0.0.1:7897';
+    const enabledSettings = store.set({
+      proxyEnabled: true,
+      proxyUrl: authUrl,
+      proxyBypass: '.internal, 10.0.0.0/8',
+      proxyForceHttp1: true
+    });
+    const onPlan = buildMacDirectLaunchPlan({
+      platform: 'darwin',
+      home,
+      dataDir,
+      sourceApp: app,
+      env: {
+        HTTPS_PROXY: 'http://user-corp-proxy:8080',
+        ELECTRON_RUN_AS_NODE: '1',
+        NODE_USE_ENV_PROXY: '1',
+        ANTIGRAVITY_SIDECAR_PORT: '9999',
+        GITHUB_TOKEN: 'ghp_must_not_leak'
+      },
+      extraArgs: ['-psn_0_123456', '/Users/dev/project']
+    });
+    assert.equal(onPlan.usesEnvFlags, true);
+    assert.deepEqual(onPlan.appArgs, [
+      '--remote-debugging-port=0',
+      '--proxy-server=socks5://127.0.0.1:7897',
+      '--proxy-bypass-list=localhost;127.0.0.1;[::1];.internal;10.0.0.0/8',
+      '/Users/dev/project'
+    ]);
+    assert.deepEqual(onPlan.fallbackArgs, [
+      '-a', app, '--args',
+      '--remote-debugging-port=0',
+      '--proxy-server=socks5://127.0.0.1:7897',
+      '--proxy-bypass-list=localhost;127.0.0.1;[::1];.internal;10.0.0.0/8',
+      '/Users/dev/project'
+    ]);
+    assert.ok(onPlan.primaryArgs.includes('--env'));
+    assert.ok(onPlan.primaryArgs.includes(`HTTPS_PROXY=${authUrl}`));
+    assert.ok(onPlan.primaryArgs.includes(`https_proxy=${authUrl}`));
+    assert.ok(onPlan.primaryArgs.includes('GODEBUG=http2client=0'));
+    assert.ok(onPlan.primaryArgs.indexOf('--env') < onPlan.primaryArgs.indexOf('-a'));
+    for (const k of ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy']) {
+      assert.equal(onPlan.env[k], authUrl);
+    }
+    assert.equal(onPlan.env.NO_PROXY, 'localhost,127.0.0.1,::1,.internal,10.0.0.0/8');
+    assert.equal(onPlan.env.no_proxy, onPlan.env.NO_PROXY);
+    assert.equal(onPlan.env.GODEBUG, 'http2client=0');
+    assert.equal(onPlan.env.NODE_USE_ENV_PROXY, undefined);
+    assert.equal(onPlan.env.ANTIGRAVITY_SIDECAR_PORT, undefined);
+    const rtOn = inspectProxyRuntime(enabledSettings, onPlan.env);
+    assert.equal(rtOn.managedByPowertools, true);
+    assert.equal(rtOn.reason, 'active');
+
+    // Sanitized output never leaks proxy password or unrelated env secrets
+    const safeOut = sanitizeLaunchPlanForOutput(onPlan);
+    const safeJson = JSON.stringify(safeOut);
+    assert.equal(safeJson.includes('super-secret-pw'), false);
+    assert.equal(safeJson.includes('ghp_must_not_leak'), false);
+    assert.equal(safeOut.proxy.displayUrl, 'socks5h://***@127.0.0.1:7897');
+    assert.equal(safeOut.proxyEnv.HTTPS_PROXY, 'socks5h://***@127.0.0.1:7897');
+    assert.ok(safeOut.primaryArgs.includes('HTTPS_PROXY=socks5h://***@127.0.0.1:7897'));
+
+    // 3. Updating settings & disabling proxy clears plugin-managed proxy env and GODEBUG dynamically
+    const h2Settings = store.set({ proxyUrl: 'http://127.0.0.1:4567', proxyForceHttp1: false });
+    const updatedPlan = buildMacDirectLaunchPlan({ platform: 'darwin', home, dataDir, sourceApp: app, env: onPlan.env });
+    assert.equal(updatedPlan.env.GODEBUG, undefined);
+    assert.ok(updatedPlan.appArgs.includes('--proxy-server=http://127.0.0.1:4567'));
+    assert.equal(inspectProxyRuntime(h2Settings, updatedPlan.env).reason, 'active');
+
+    const disabledSettings = store.set({ proxyEnabled: false });
+    const clearedPlan = buildMacDirectLaunchPlan({ platform: 'darwin', home, dataDir, sourceApp: app, env: onPlan.env });
+    assert.equal(clearedPlan.usesEnvFlags, false);
+    assert.equal(clearedPlan.env.HTTPS_PROXY, undefined);
+    assert.equal(clearedPlan.env.AGY_POWERTOOLS_PROXY_SPEC, undefined);
+    assert.equal(clearedPlan.env.GODEBUG, undefined);
+    assert.equal(inspectProxyRuntime(disabledSettings, clearedPlan.env).reason, 'disabled');
+
+    // 4. launchMacDirect: dryRun skips spawn; primary --env succeeds; older macOS --env failure falls back cleanly to inherited env
+    store.set({ proxyEnabled: true, proxyUrl: 'http://127.0.0.1:7897', proxyForceHttp1: false });
+    let dryCalls = 0;
+    const dryRes = launchMacDirect({
+      platform: 'darwin', home, dataDir, sourceApp: app, dryRun: true, env: {},
+      run: () => { dryCalls++; return { status: 0 }; }
+    });
+    assert.equal(dryRes.ok, true);
+    assert.equal(dryRes.dryRun, true);
+    assert.equal(dryRes.launched, false);
+    assert.equal(dryCalls, 0);
+
+    const primaryCalls = [];
+    const primaryRes = launchMacDirect({
+      platform: 'darwin', home, dataDir, sourceApp: app, env: {},
+      run(cmd, args, opts) { primaryCalls.push({ cmd, args, opts }); return { status: 0 }; }
+    });
+    assert.equal(primaryRes.ok, true);
+    assert.equal(primaryRes.usedFallback, false);
+    assert.equal(primaryCalls.length, 1);
+    assert.equal(primaryCalls[0].cmd, '/usr/bin/open');
+    assert.ok(primaryCalls[0].args.includes('--env'));
+
+    const fallbackCalls = [];
+    const fallbackRes = launchMacDirect({
+      platform: 'darwin', home, dataDir, sourceApp: app, env: {},
+      run(cmd, args, opts) {
+        fallbackCalls.push({ cmd, args, opts });
+        if (args.includes('--env')) return { status: 1, stderr: 'unrecognized option --env' };
+        return { status: 0 };
+      }
+    });
+    assert.equal(fallbackRes.ok, true);
+    assert.equal(fallbackRes.usedFallback, true);
+    assert.equal(fallbackCalls.length, 2);
+    assert.equal(fallbackCalls[1].cmd, '/usr/bin/open');
+    assert.equal(fallbackCalls[1].args.includes('--env'), false);
+    assert.equal(fallbackCalls[1].opts.env.HTTPS_PROXY, 'http://127.0.0.1:7897');
+
+    // 5. Platform, missing app, recursive wrapper guard, and CLI arg parsing
+    assert.throws(() => buildMacDirectLaunchPlan({ platform: 'linux', home, dataDir, sourceApp: app }), /requires macOS/);
+    assert.throws(() => buildMacDirectLaunchPlan({ platform: 'darwin', home, dataDir, resolveApp: () => '' }), /not found/);
+    assert.throws(
+      () => buildMacDirectLaunchPlan({ platform: 'darwin', home, dataDir, resolveApp: () => join(home, 'Applications', 'Antigravity (Powertools).app') }),
+      /not found/
+    );
+    assert.throws(
+      () => launchMacDirect({ platform: 'darwin', home, dataDir, sourceApp: app, env: {}, run: () => ({ status: 1, stderr: 'LSOpenURLsWithRole failed' }) }),
+      /LSOpenURLsWithRole failed/
+    );
+
+    const parsedCli = parseMacLaunchCliArgs(['--dry-run', '--json', '--data-dir', '/tmp/d', '-psn_0_999', '--', '--verbose', '/tmp/proj']);
+    assert.deepEqual(parsedCli, {
+      dryRun: true,
+      json: true,
+      newInstance: false,
+      help: false,
+      dataDir: '/tmp/d',
+      extraArgs: ['--verbose', '/tmp/proj']
+    });
+    assert.throws(() => parseMacLaunchCliArgs(['--unknown-flag']), /Unknown option/);
+
+    // Direct CLI --help invocation works via main-module guard
+    const cliHelp = spawnSync(process.execPath, [join('scripts', 'launch-macos.mjs'), '--help'], { encoding: 'utf8' });
+    assert.equal(cliHelp.status, 0, cliHelp.stderr);
+    assert.match(cliHelp.stdout, /Usage: node launch-macos\.mjs/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('macOS opt-in direct launcher .app API creates, inspects, reveals, preserves/refreshes icon on upgrade, and cleans up on remove/uninstall (Issues #87 & #101)', async () => {
+  const {
+    MAC_DIRECT_LAUNCHER_BUNDLE_ID,
+    macDirectLauncherPath,
+    inspectMacDirectLauncher,
+    createMacDirectLauncher,
+    removeMacDirectLauncher,
+    revealMacDirectLauncher
+  } = await import('../lib/launcher.mjs');
+  const root = mkdtempSync(join(tmpdir(), 'agy-mac-optin-app-'));
+  try {
+    const home = join(root, 'home');
+    const dataDir = join(root, 'data');
+    const pluginDir = join(home, '.gemini', 'config', 'plugins', 'agy-powertools');
+    mkdirSync(dataDir, { recursive: true });
+    mkdirSync(join(pluginDir, 'scripts'), { recursive: true });
+
+    // Non-darwin checks
+    const winInspect = inspectMacDirectLauncher({ home, dataDir, platform: 'win32' });
+    assert.equal(winInspect.supported, false);
+    assert.equal(winInspect.exists, false);
+    assert.throws(() => createMacDirectLauncher({ home, dataDir, platform: 'win32' }), /only supported on macOS/);
+    assert.throws(() => removeMacDirectLauncher({ home, dataDir, platform: 'win32' }), /only supported on macOS/);
+    assert.equal(revealMacDirectLauncher({ home, platform: 'win32' }).reason, 'not-darwin');
+
+    // Missing Antigravity.app fails clearly
+    assert.throws(
+      () => createMacDirectLauncher({ home, dataDir, platform: 'darwin', sandbox: true, env: {}, execPath: '' }),
+      /not found/
+    );
+
+    // Seed fake Antigravity.app with Info.plist and .icns icon
+    const sourceApp = join(home, 'Applications', 'Antigravity.app');
+    const sourceRes = join(sourceApp, 'Contents', 'Resources');
+    mkdirSync(sourceRes, { recursive: true });
+    writeFileSync(join(sourceApp, 'Contents', 'Info.plist'), '<plist><dict><key>CFBundleIconFile</key><string>Antigravity</string></dict></plist>', 'utf8');
+    const sourceIcon = join(sourceRes, 'Antigravity.icns');
+    writeFileSync(sourceIcon, Buffer.from('ICNS_V1_DATA'));
+
+    // Seed pre-existing fields in launcher-state.json to verify preservation
+    const stateFile = join(dataDir, 'launcher-state.json');
+    writeFileSync(stateFile, JSON.stringify({ shortcuts: ['keep-me'], desktopEntries: [], customFlag: 42 }), 'utf8');
+
+    const expectedAppPath = macDirectLauncherPath({ home });
+    assert.equal(expectedAppPath, join(home, 'Applications', 'Antigravity (Powertools).app'));
+
+    const before = inspectMacDirectLauncher({ home, dataDir, platform: 'darwin', sandbox: true, env: {}, execPath: '' });
+    assert.equal(before.supported, true);
+    assert.equal(before.exists, false);
+    assert.equal(before.optIn, false);
+    assert.equal(before.sourceApp, sourceApp);
+    assert.equal(before.iconUpToDate, false);
+    assert.equal(before.cliCommand, 'node "$HOME/.gemini/config/plugins/agy-powertools/scripts/launch-macos.mjs"');
+
+    // Create opt-in launcher .app
+    const createCmds = [];
+    const created = createMacDirectLauncher({
+      home,
+      dataDir,
+      pluginDir,
+      nodePath: '/opt/custom/bin/node',
+      platform: 'darwin',
+      sandbox: true,
+      env: {},
+      execPath: '',
+      runCommand: (cmd, args) => { createCmds.push({ cmd, args }); return { status: 0 }; }
+    });
+    assert.equal(created.ok, true);
+    assert.equal(created.exists, true);
+    assert.equal(created.optIn, true);
+    assert.equal(created.appPath, expectedAppPath);
+    assert.equal(created.iconConfigured, true);
+    assert.equal(created.iconUpToDate, true);
+
+    // Verify Info.plist, LSUIElement, marker, icon.icns, and shell launcher script
+    const plist = readFileSync(join(expectedAppPath, 'Contents', 'Info.plist'), 'utf8');
+    assert.ok(plist.includes('<key>CFBundleExecutable</key>\n  <string>launcher</string>'));
+    assert.ok(plist.includes(`<string>${MAC_DIRECT_LAUNCHER_BUNDLE_ID}</string>`));
+    assert.ok(plist.includes('<key>CFBundleName</key>\n  <string>Antigravity (Powertools)</string>'));
+    assert.ok(plist.includes('<key>CFBundleDisplayName</key>\n  <string>Antigravity (Powertools)</string>'));
+    assert.ok(plist.includes('<key>CFBundlePackageType</key>\n  <string>APPL</string>'));
+    assert.ok(plist.includes('<key>CFBundleIconFile</key>\n  <string>icon</string>'));
+    assert.ok(plist.includes('<key>LSUIElement</key>\n  <true/>'));
+
+    const marker = readFileSync(join(expectedAppPath, 'Contents', 'Resources', '.agy-powertools-launcher'), 'utf8').trim();
+    assert.equal(marker, MAC_DIRECT_LAUNCHER_BUNDLE_ID);
+    assert.deepEqual(readFileSync(join(expectedAppPath, 'Contents', 'Resources', 'icon.icns')), Buffer.from('ICNS_V1_DATA'));
+
+    const launcherScript = readFileSync(join(expectedAppPath, 'Contents', 'MacOS', 'launcher'), 'utf8');
+    assert.ok(launcherScript.startsWith('#!/bin/sh\n'));
+    assert.equal(launcherScript.includes('\r\n'), false);
+    assert.ok(launcherScript.includes("RECORDED_NODE='/opt/custom/bin/node'"));
+    const idxRecorded = launcherScript.indexOf('"$RECORDED_NODE"');
+    const idxAgyNode = launcherScript.indexOf('"$HOME/Library/Application Support/Antigravity/bin/agy-node"');
+    const idxBrew = launcherScript.indexOf('"/opt/homebrew/bin/node"');
+    const idxUsrLocal = launcherScript.indexOf('"/usr/local/bin/node"');
+    const idxCmdV = launcherScript.indexOf('command -v node');
+    assert.ok(idxRecorded > 0 && idxRecorded < idxAgyNode && idxAgyNode < idxBrew && idxBrew < idxUsrLocal && idxUsrLocal < idxCmdV);
+    assert.ok(launcherScript.includes('exec "$NODE_BIN" "$LAUNCH_SCRIPT" "$@"'));
+    assert.ok(launcherScript.includes('exec /usr/bin/open -a "$SOURCE_APP"'));
+    if (process.platform !== 'win32') {
+      const shCheck = spawnSync('sh', ['-n', join(expectedAppPath, 'Contents', 'MacOS', 'launcher')], { encoding: 'utf8' });
+      assert.equal(shCheck.status, 0, shCheck.stderr);
+    }
+
+    // Verify lsregister -f and mdimport were invoked
+    assert.equal(createCmds.some(c => c.cmd.endsWith('lsregister') && c.args[0] === '-f' && c.args[1] === expectedAppPath), true);
+    assert.equal(createCmds.some(c => c.cmd === '/usr/bin/mdimport' && c.args[0] === expectedAppPath), true);
+
+    // Verify launcher-state.json preserved unrelated fields and recorded opt-in + icon signature
+    const stateAfterCreate = JSON.parse(readFileSync(stateFile, 'utf8'));
+    assert.equal(stateAfterCreate.macDirectLauncherOptIn, true);
+    assert.equal(stateAfterCreate.macDirectLauncherAppPath, expectedAppPath);
+    assert.ok(stateAfterCreate.macDirectLauncherIconSig);
+    assert.deepEqual(stateAfterCreate.shortcuts, ['keep-me']);
+    assert.equal(stateAfterCreate.customFlag, 42);
+
+    const inspected = inspectMacDirectLauncher({ home, dataDir, platform: 'darwin', sandbox: true, env: {}, execPath: '' });
+    assert.equal(inspected.exists, true);
+    assert.equal(inspected.optIn, true);
+    assert.equal(inspected.iconUpToDate, true);
+
+    // Reveal calls /usr/bin/open -R
+    const revealCmds = [];
+    const revealed = revealMacDirectLauncher({
+      home,
+      platform: 'darwin',
+      runCommand: (cmd, args) => { revealCmds.push({ cmd, args }); return { status: 0 }; }
+    });
+    assert.equal(revealed.ok, true);
+    assert.equal(revealed.revealed, true);
+    assert.deepEqual(revealCmds, [{ cmd: '/usr/bin/open', args: ['-R', expectedAppPath] }]);
+
+    // configureLaunchers preserves opted-in .app without refreshing when icon unchanged
+    const cfgCmds1 = [];
+    const cfg1 = configureLaunchers({
+      home, dataDir, platform: 'darwin', sandbox: true, env: {}, execPath: '',
+      runCommand: (cmd, args) => { cfgCmds1.push({ cmd, args }); return { status: 0 }; }
+    });
+    assert.deepEqual(cfg1.removedLegacyMacApps, []);
+    assert.equal(cfg1.preservedMacDirectLauncher, true);
+    assert.equal(cfg1.iconRefreshed, false);
+    assert.equal(existsSync(expectedAppPath), true);
+    assert.equal(cfgCmds1.length, 0);
+
+    // Updating Antigravity.app icon causes inspect -> iconUpToDate: false and configureLaunchers -> silent icon refresh + lsregister -f
+    writeFileSync(sourceIcon, Buffer.from('ICNS_V2_UPDATED_LONGER_PAYLOAD'));
+    const future = new Date(Date.now() + 5000);
+    utimesSync(sourceIcon, future, future);
+    assert.equal(inspectMacDirectLauncher({ home, dataDir, platform: 'darwin', sandbox: true, env: {}, execPath: '' }).iconUpToDate, false);
+
+    const cfgCmds2 = [];
+    const cfg2 = configureLaunchers({
+      home, dataDir, platform: 'darwin', sandbox: true, env: {}, execPath: '',
+      runCommand: (cmd, args) => { cfgCmds2.push({ cmd, args }); return { status: 0 }; }
+    });
+    assert.equal(cfg2.preservedMacDirectLauncher, true);
+    assert.equal(cfg2.iconRefreshed, true);
+    assert.deepEqual(readFileSync(join(expectedAppPath, 'Contents', 'Resources', 'icon.icns')), Buffer.from('ICNS_V2_UPDATED_LONGER_PAYLOAD'));
+    assert.equal(cfgCmds2.some(c => c.cmd.endsWith('lsregister') && c.args[0] === '-f' && c.args[1] === expectedAppPath), true);
+    assert.equal(inspectMacDirectLauncher({ home, dataDir, platform: 'darwin', sandbox: true, env: {}, execPath: '' }).iconUpToDate, true);
+
+    // removeMacDirectLauncher runs lsregister -u, deletes .app, clears opt-in while preserving other state
+    const removeCmds = [];
+    const removed = removeMacDirectLauncher({
+      home, dataDir, platform: 'darwin', sandbox: true,
+      runCommand: (cmd, args) => { removeCmds.push({ cmd, args }); return { status: 0 }; }
+    });
+    assert.equal(removed.ok, true);
+    assert.equal(removed.removed, true);
+    assert.equal(existsSync(expectedAppPath), false);
+    assert.equal(removeCmds.some(c => c.cmd.endsWith('lsregister') && c.args[0] === '-u' && c.args[1] === expectedAppPath), true);
+    const stateAfterRemove = JSON.parse(readFileSync(stateFile, 'utf8'));
+    assert.equal(stateAfterRemove.macDirectLauncherOptIn, false);
+    assert.equal(stateAfterRemove.customFlag, 42);
+    assert.equal(revealMacDirectLauncher({ home, platform: 'darwin', runCommand: () => assert.fail('must not call open') }).reason, 'not-found');
+
+    // Fail-safe: removeMacDirectLauncher refuses to delete an unrecognized app bundle lacking our marker/bundleId
+    mkdirSync(join(expectedAppPath, 'Contents'), { recursive: true });
+    writeFileSync(join(expectedAppPath, 'Contents', 'Info.plist'), '<plist><dict><key>CFBundleIdentifier</key><string>com.other.app</string></dict></plist>', 'utf8');
+    assert.throws(
+      () => removeMacDirectLauncher({ home, dataDir, platform: 'darwin', sandbox: true }),
+      /unrecognized app bundle/
+    );
+    assert.equal(existsSync(expectedAppPath), true);
+    rmSync(expectedAppPath, { recursive: true, force: true });
+
+    // Uninstall via restoreLaunchers ALWAYS removes opted-in .app (running lsregister -u first) and clears launcher-state.json
+    createMacDirectLauncher({ home, dataDir, pluginDir, platform: 'darwin', sandbox: true, env: {}, execPath: '', runCommand: () => ({ status: 0 }) });
+    assert.equal(existsSync(expectedAppPath), true);
+    const restoreCmds = [];
+    const restored = restoreLaunchers({
+      home, dataDir, platform: 'darwin', sandbox: true,
+      runCommand: (cmd, args) => { restoreCmds.push({ cmd, args }); return { status: 0 }; }
+    });
+    assert.deepEqual(restored.restored, [expectedAppPath]);
+    assert.equal(existsSync(expectedAppPath), false);
+    assert.equal(existsSync(stateFile), false);
+    assert.equal(restoreCmds.some(c => c.cmd.endsWith('lsregister') && c.args[0] === '-u' && c.args[1] === expectedAppPath), true);
+    const afterUninstall = inspectMacDirectLauncher({ home, dataDir, platform: 'darwin', sandbox: true, env: {}, execPath: '' });
+    assert.equal(afterUninstall.exists, false);
+    assert.equal(afterUninstall.optIn, false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('verifyRelaunchStarted fails immediately on ack.state === "failed" or ack.ok === false, cleans stale job, and clears lastRelaunchAt (PR #102)', async () => {
+  const { verifyRelaunchStarted } = await import('../lib/launcher.mjs');
+  const root = mkdtempSync(join(tmpdir(), 'agy-verify-failed-ack-'));
+  try {
+    const dataDir = join(root, 'data');
+    mkdirSync(dataDir, { recursive: true });
+    const stateFile = join(dataDir, 'relaunch-state.json');
+    const jobPath = join(dataDir, 'relaunch-job.json');
+    const ackPath = join(dataDir, 'relaunch-ack.json');
+    const nonce1 = 'aaaa1111-bbbb-2222-cccc-3333dddd4444';
+
+    // 1. ack.state === 'failed' with explicit reason fails immediately, deletes stale job, clears lastRelaunchAt without setting lastRelaunchBlockedAt
+    writeFileSync(stateFile, JSON.stringify({ lastRelaunchAt: 1_760_000_000_000, keepField: 'ok' }));
+    writeFileSync(jobPath, '{"format":1}');
+    writeFileSync(ackPath, JSON.stringify({ nonce: nonce1, pid: 77111, state: 'failed', reason: 'switch-cancelled', at: Date.now() }));
+    const res1 = await verifyRelaunchStarted(
+      { scheduled: true, jobPath, ackPath, nonce: nonce1, target: 'C:\\Antigravity.exe' },
+      { dataDir, timeoutMs: 2000, pollIntervalMs: 20 }
+    );
+    assert.equal(res1.scheduled, false);
+    assert.equal(res1.confirmed, false);
+    assert.equal(res1.manualRestartRequired, true);
+    assert.equal(res1.reason, 'switch-cancelled');
+    assert.equal(res1.workerPid, 77111);
+    assert.equal(existsSync(jobPath), false);
+    const saved1 = JSON.parse(readFileSync(stateFile, 'utf8'));
+    assert.equal(saved1.lastRelaunchAt, 0);
+    assert.equal(saved1.keepField, 'ok');
+    assert.equal(saved1.lastRelaunchBlockedAt, undefined);
+
+    // 2. ack.ok === false (e.g. elevated-process-running) also fails immediately
+    const nonce2 = 'bbbb2222-cccc-3333-dddd-4444eeee5555';
+    writeFileSync(stateFile, JSON.stringify({ lastRelaunchAt: 1_760_000_100_000 }));
+    writeFileSync(jobPath, '{"format":1}');
+    writeFileSync(ackPath, JSON.stringify({ nonce: nonce2, pid: 77222, state: 'launched', ok: false, reason: 'elevated-process-running', at: Date.now() }));
+    const res2 = await verifyRelaunchStarted(
+      { scheduled: true, jobPath, ackPath, nonce: nonce2, target: 'C:\\Antigravity.exe' },
+      { dataDir, timeoutMs: 2000, pollIntervalMs: 20 }
+    );
+    assert.equal(res2.scheduled, false);
+    assert.equal(res2.confirmed, false);
+    assert.equal(res2.manualRestartRequired, true);
+    assert.equal(res2.reason, 'elevated-process-running');
+    assert.equal(existsSync(jobPath), false);
+    assert.equal(JSON.parse(readFileSync(stateFile, 'utf8')).lastRelaunchAt, 0);
+
+    // 3. ack.state === 'failed' without reason defaults to 'relaunch-failed'
+    const nonce3 = 'cccc3333-dddd-4444-eeee-5555ffff6666';
+    writeFileSync(jobPath, '{"format":1}');
+    writeFileSync(ackPath, JSON.stringify({ nonce: nonce3, pid: 77333, state: 'failed', at: Date.now() }));
+    const res3 = await verifyRelaunchStarted(
+      { scheduled: true, jobPath, ackPath, nonce: nonce3, target: 'C:\\Antigravity.exe' },
+      { dataDir, timeoutMs: 2000, pollIntervalMs: 20 }
+    );
+    assert.equal(res3.scheduled, false);
+    assert.equal(res3.confirmed, false);
+    assert.equal(res3.manualRestartRequired, true);
+    assert.equal(res3.reason, 'relaunch-failed');
+    assert.equal(existsSync(jobPath), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('scheduleRelaunchWithDebugPort forwards expectedHash, switchId, and canonical profileDir into relaunch-job.json passing validateRelaunchJob (PR #102)', async () => {
+  const { validateRelaunchJob } = await import('../scripts/relaunch-worker.mjs');
+  const root = mkdtempSync(join(tmpdir(), 'agy-relaunch-pr102-'));
+  try {
+    const dataDir = join(root, 'data');
+    const profileDir = join(root, 'AppData', 'Roaming', 'Antigravity');
+    const appDir = join(root, 'AppData', 'Local', 'Programs', 'antigravity');
+    mkdirSync(dataDir, { recursive: true });
+    mkdirSync(profileDir, { recursive: true });
+    mkdirSync(appDir, { recursive: true });
+    const winExe = join(appDir, 'Antigravity.exe');
+    writeFileSync(winExe, '');
+
+    const switchId = '11111111-2222-3333-4444-555555555555';
+    const expectedHash = 'a1b2c3d4e5f6';
+    const res1 = scheduleRelaunchWithDebugPort({
+      dataDir,
+      home: root,
+      platform: 'win32',
+      env: { LOCALAPPDATA: join(root, 'AppData', 'Local'), APPDATA: join(root, 'AppData', 'Roaming') },
+      onboardingSync: { email: 'bob@example.com', isGcpTos: true },
+      credentialSwitch: {
+        accountId: 'acct-bob',
+        expectedEmail: 'bob@example.com',
+        expectedHash,
+        switchId
+      },
+      profileDir,
+      clearScopePath: join(profileDir, 'credential-user-scope'),
+      spawnProcess() { return { unref() {} }; }
+    });
+    assert.equal(res1.scheduled, true);
+    const job1 = JSON.parse(readFileSync(res1.jobPath, 'utf8'));
+    const canonicalProfile = realpathSync.native ? realpathSync.native(profileDir) : realpathSync(profileDir);
+    assert.deepEqual(job1.credentialSwitch, {
+      accountId: 'acct-bob',
+      expectedEmail: 'bob@example.com',
+      expectedHash,
+      switchId
+    });
+    assert.equal(job1.profileDir, canonicalProfile);
+    assert.equal(job1.onboardingSync.appStoragePath, join(canonicalProfile, 'app_storage.json'));
+    assert.equal(job1.clearScopePath, join(canonicalProfile, 'credential-user-scope'));
+    assert.deepEqual(validateRelaunchJob(job1, { jobPath: res1.jobPath }), { valid: true });
+
+    // Omitting explicit profileDir on native Windows with credentialSwitch derives canonical antigravityUserDataDir
+    const res2 = scheduleRelaunchWithDebugPort({
+      dataDir,
+      home: root,
+      platform: 'win32',
+      env: { LOCALAPPDATA: join(root, 'AppData', 'Local'), APPDATA: join(root, 'AppData', 'Roaming') },
+      onboardingSync: { email: 'bob@example.com', isGcpTos: false },
+      credentialSwitch: {
+        accountId: 'acct-bob',
+        expectedEmail: 'bob@example.com',
+        expectedHash,
+        switchId
+      },
+      spawnProcess() { return { unref() {} }; }
+    });
+    const job2 = JSON.parse(readFileSync(res2.jobPath, 'utf8'));
+    assert.equal(job2.profileDir, canonicalProfile);
+    assert.equal(job2.onboardingSync.appStoragePath, join(canonicalProfile, 'app_storage.json'));
+    assert.deepEqual(validateRelaunchJob(job2, { jobPath: res2.jobPath }), { valid: true });
+
+    // Invalid expectedHash or switchId fails closed (omits credentialSwitch instead of downgrading checks)
+    const resBad = scheduleRelaunchWithDebugPort({
+      dataDir,
+      home: root,
+      platform: 'win32',
+      env: { LOCALAPPDATA: join(root, 'AppData', 'Local'), APPDATA: join(root, 'AppData', 'Roaming') },
+      credentialSwitch: {
+        accountId: 'acct-bob',
+        expectedEmail: 'bob@example.com',
+        expectedHash: 'not-valid-hash!',
+        switchId: 'bad-uuid'
+      },
+      spawnProcess() { return { unref() {} }; }
+    });
+    const jobBad = JSON.parse(readFileSync(resBad.jobPath, 'utf8'));
+    assert.equal(jobBad.credentialSwitch, undefined);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

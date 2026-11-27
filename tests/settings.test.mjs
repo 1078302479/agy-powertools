@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   createSettingsStore,
+  CURRENCIES,
+  DEFAULT_CNY_RATE,
   DEFAULT_SETTINGS,
   detectSystemLanguage,
   exportSettingsPayload,
@@ -13,7 +15,9 @@ import {
   SETTINGS_EXPORT_FORMAT,
   SETTINGS_EXPORT_SCHEMA_VERSION,
   SETTINGS_IMPORT_MAX_BYTES,
-  stripProxyUrlCredentials
+  SIDEBAR_BEAM_STYLES,
+  stripProxyUrlCredentials,
+  TOKEN_UNITS
 } from '../lib/settings.mjs';
 import { startNativeIntegration } from '../lib/native-host.mjs';
 
@@ -122,16 +126,21 @@ test('settings persist, merge safely, and reject unknown options without changin
     store.set({ sidebarProjectLimit: 3 }); assert.equal(store.get().sidebarProjectLimit, 3);
     store.set({ sidebarProjectLimit: -1 }); assert.equal(store.get().sidebarProjectLimit, -1);
     store.set({ sidebarProjectLimit: 0 });
+    assert.deepEqual([...SIDEBAR_BEAM_STYLES], ['sweep', 'pulse-inner', 'pulse-outside']);
     assert.equal(store.get().sidebarRunningBeam, false);
     assert.equal(store.get().sidebarRunningBeamPalette, 'sync');
+    assert.equal(store.get().sidebarRunningBeamStyle, 'sweep');
     assert.equal(store.get().sidebarHideNativeSpinner, true);
     assert.equal(store.get().sidebarRunningGroup, false);
-    store.set({ sidebarRunningBeam: true, sidebarRunningBeamPalette: 'neon', sidebarHideNativeSpinner: false, sidebarRunningGroup: true });
+    store.set({ sidebarRunningBeam: true, sidebarRunningBeamPalette: 'neon', sidebarRunningBeamStyle: 'pulse-inner', sidebarHideNativeSpinner: false, sidebarRunningGroup: true });
     assert.equal(store.get().sidebarRunningBeam, true);
     assert.equal(store.get().sidebarRunningBeamPalette, 'neon');
+    assert.equal(store.get().sidebarRunningBeamStyle, 'pulse-inner');
     assert.equal(store.get().sidebarHideNativeSpinner, false);
     assert.equal(store.get().sidebarRunningGroup, true);
-    store.set({ sidebarRunningBeam: false, sidebarRunningBeamPalette: 'sync', sidebarHideNativeSpinner: true, sidebarRunningGroup: false });
+    store.set({ sidebarRunningBeamStyle: 'pulse-outside' });
+    assert.equal(store.get().sidebarRunningBeamStyle, 'pulse-outside');
+    store.set({ sidebarRunningBeam: false, sidebarRunningBeamPalette: 'sync', sidebarRunningBeamStyle: 'sweep', sidebarHideNativeSpinner: true, sidebarRunningGroup: false });
     assert.equal(DEFAULT_SETTINGS.overviewRange, 'weeklyQuota');
     assert.equal(store.get().overviewRange, 'weeklyQuota');
     store.set({ overviewRange: '24h' }); assert.equal(store.get().overviewRange, '24h');
@@ -141,13 +150,26 @@ test('settings persist, merge safely, and reject unknown options without changin
     assert.equal(store.get().pricingMode, 'standard');
     store.set({ pricingMode: 'promo' }); assert.equal(store.get().pricingMode, 'promo');
     store.set({ pricingMode: 'standard' }); assert.equal(store.get().pricingMode, 'standard');
+    assert.deepEqual([...TOKEN_UNITS], ['compact', 'zh']);
+    assert.deepEqual([...CURRENCIES], ['USD', 'CNY']);
+    assert.equal(DEFAULT_CNY_RATE, 7.2);
+    assert.equal(DEFAULT_SETTINGS.tokenUnit, 'compact');
+    assert.equal(DEFAULT_SETTINGS.currency, 'USD');
+    assert.equal(DEFAULT_SETTINGS.cnyRate, 7.2);
+    store.set({ tokenUnit: 'zh', currency: 'CNY', cnyRate: 7.35 });
+    assert.equal(store.get().tokenUnit, 'zh');
+    assert.equal(store.get().currency, 'CNY');
+    assert.equal(store.get().cnyRate, 7.35);
+    store.set({ cnyRate: 0.1 }); assert.equal(store.get().cnyRate, 0.1);
+    store.set({ cnyRate: 1000 }); assert.equal(store.get().cnyRate, 1000);
+    store.set({ tokenUnit: 'compact', currency: 'USD', cnyRate: 7.2 });
     store.set({ enabled: false }); assert.equal(store.get().enabled, false);
     assert.equal(DEFAULT_SETTINGS.contextLimit, 0);
     store.set({language:'en',contextLimit:1000000});assert.equal(store.get().contextLimit,1000000);assert.equal(store.get().language,'en');
     store.set({contextLimit:256000});assert.equal(store.get().contextLimit,256000);
     store.set({contextLimit:0});assert.equal(store.get().contextLimit,0);
     const before = readFileSync(join(directory, 'settings.json'), 'utf8');
-    for (const value of [{ compact: 'false' }, { turnMeta: 'yes' }, { userBubbleTint: 'yes' }, { userBubblePreset: 'neon' }, { userBubbleColor: 'red' }, { userBubbleColor: '#123;color:red' }, { userBubbleStrength: 5 }, { userBubbleStrength: 105 }, { userBubbleStrength: 20.5 }, { sessionSearch: 'yes' }, { sidebarFolderDrop: 'yes' }, { sidebarFolderDropPin: 'yes' }, { composerQuotaHaloWindow: '1d' }, { sidebarRunningBeam: 'yes' }, { sidebarRunningBeamPalette: 'quota' }, { sidebarHideNativeSpinner: 1 }, { sidebarRunningGroup: 'on' }, { unknown: true }, { toString: false }, {language:'invalid'}, {overviewRange:'custom'}, {overviewRange:'invalid'}, {pricingMode:'batch'}, {pricingMode:true}, {accountViewMode:'grid'}, {accountQuotaWindow:'1h'}, {proxyUrl:'ftp://127.0.0.1:21'}, {proxyUrl:'http://127.0.0.1:7897;calc'}, {proxyBypass:'localhost"bad'}, {contextLimit:999999}, []]) assert.throws(() => store.set(value), /设置/);
+    for (const value of [{ compact: 'false' }, { turnMeta: 'yes' }, { userBubbleTint: 'yes' }, { userBubblePreset: 'neon' }, { userBubbleColor: 'red' }, { userBubbleColor: '#123;color:red' }, { userBubbleStrength: 5 }, { userBubbleStrength: 105 }, { userBubbleStrength: 20.5 }, { sessionSearch: 'yes' }, { sidebarFolderDrop: 'yes' }, { sidebarFolderDropPin: 'yes' }, { composerQuotaHaloWindow: '1d' }, { sidebarRunningBeam: 'yes' }, { sidebarRunningBeamPalette: 'quota' }, { sidebarRunningBeamStyle: 'pulse' }, { sidebarRunningBeamStyle: 'orbit' }, { sidebarRunningBeamStyle: 123 }, { sidebarHideNativeSpinner: 1 }, { sidebarRunningGroup: 'on' }, { unknown: true }, { toString: false }, {language:'invalid'}, {overviewRange:'custom'}, {overviewRange:'invalid'}, {pricingMode:'batch'}, {pricingMode:true}, {tokenUnit:'metric'}, {tokenUnit:1}, {currency:'EUR'}, {currency:'cny'}, {cnyRate:0}, {cnyRate:0.09}, {cnyRate:1000.1}, {cnyRate:Number.NaN}, {cnyRate:Number.POSITIVE_INFINITY}, {cnyRate:'7.2'}, {accountViewMode:'grid'}, {accountQuotaWindow:'1h'}, {proxyUrl:'ftp://127.0.0.1:21'}, {proxyUrl:'http://127.0.0.1:7897;calc'}, {proxyBypass:'localhost"bad'}, {contextLimit:999999}, []]) assert.throws(() => store.set(value), /设置/);
     assert.equal(readFileSync(join(directory, 'settings.json'), 'utf8'), before);
     store.set(DEFAULT_SETTINGS); assert.deepEqual(store.get(), DEFAULT_SETTINGS);
     store.set({ compact: false, language: DEFAULT_SETTINGS.language === 'en' ? 'zh-CN' : 'en' });
@@ -228,9 +250,33 @@ test('stripProxyUrlCredentials and exportSettingsPayload strip proxy auth and ex
   );
 
   // Without proxy credentials, strippedProxyAuth is false
-  const cleanExport = exportSettingsPayload({ ...DEFAULT_SETTINGS, proxyUrl: 'http://127.0.0.1:7897' });
+  const cleanExport = exportSettingsPayload({ ...DEFAULT_SETTINGS, proxyUrl: 'http://127.0.0.1:7897', sidebarRunningBeamStyle: 'pulse-outside', tokenUnit: 'zh', currency: 'CNY', cnyRate: 7.45 });
   assert.equal(cleanExport.strippedProxyAuth, false);
   assert.equal(cleanExport.settings.proxyUrl, 'http://127.0.0.1:7897');
+  assert.equal(cleanExport.settings.sidebarRunningBeamStyle, 'pulse-outside');
+  assert.equal(cleanExport.settings.tokenUnit, 'zh');
+  assert.equal(cleanExport.settings.currency, 'CNY');
+  assert.equal(cleanExport.settings.cnyRate, 7.45);
+
+  // Roundtrip sidebarRunningBeamStyle + tokenUnit/currency/cnyRate through sanitizeImportedSettings (valid accepted, invalid skipped)
+  const beamRoundtrip = sanitizeImportedSettings(JSON.stringify(cleanExport));
+  assert.equal(beamRoundtrip.patch.sidebarRunningBeamStyle, 'pulse-outside');
+  assert.equal(beamRoundtrip.patch.tokenUnit, 'zh');
+  assert.equal(beamRoundtrip.patch.currency, 'CNY');
+  assert.equal(beamRoundtrip.patch.cnyRate, 7.45);
+  const beamInnerImport = sanitizeImportedSettings({
+    format: SETTINGS_EXPORT_FORMAT,
+    schemaVersion: 1,
+    settings: { sidebarRunningBeamStyle: 'pulse-inner' }
+  });
+  assert.deepEqual(beamInnerImport.patch, { sidebarRunningBeamStyle: 'pulse-inner' });
+  const beamBadImport = sanitizeImportedSettings({
+    format: SETTINGS_EXPORT_FORMAT,
+    schemaVersion: 1,
+    settings: { sidebarRunningBeam: true, sidebarRunningBeamStyle: 'invalid-style', tokenUnit: 'invalid', currency: 'EUR', cnyRate: 0.01 }
+  });
+  assert.deepEqual(beamBadImport.patch, { sidebarRunningBeam: true });
+  assert.deepEqual(beamBadImport.skippedKeys.sort(), ['cnyRate', 'currency', 'sidebarRunningBeamStyle', 'tokenUnit']);
 });
 
 test('sanitizeImportedSettings validates envelope, strips proxy credentials, skips non-portable/unknown/invalid keys, and rejects bad payloads (Issue #88)', () => {

@@ -5,10 +5,11 @@ import {
   readFileSync,
   realpathSync,
   renameSync,
+  statSync,
   unlinkSync,
   writeFileSync
 } from 'node:fs';
-import { basename, dirname, isAbsolute, relative, resolve, win32 } from 'node:path';
+import { dirname, isAbsolute, join, parse as parsePath, relative, resolve, win32 } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
@@ -37,7 +38,12 @@ const NO_PROXY_VALUE_RE = /^[^\x00-\x1f\x7f'"`\\$|&<>]{0,512}$/;
 const PROXY_SPEC_VALUE_RE = /^[^\x00-\x1f\x7f'"`\\$&<>]{1,768}$/;
 const SAFE_EMAIL_RE = /^[^\s@"'`\\;|$<>]{1,120}@[^\s@"'`\\;|$<>]{1,120}\.[^\s@"'`\\;|$<>]{1,63}$/;
 const SAFE_ACCOUNT_ID_RE = /^[a-z0-9_-]{1,64}$/i;
+const SAFE_SHORT_HASH_RE = /^[0-9a-f]{12}$/i;
+const SAFE_SWITCH_ID_RE = /^[0-9a-f-]{36}$/i;
+const ALLOWED_CRED_SWITCH_KEYS = new Set(['accountId', 'expectedEmail', 'expectedHash', 'switchId']);
 const CLEAR_SCOPE_BASENAME_RE = /^credential-user-scope$/i;
+const CREDENTIAL_WRITER_IMAGE_RE = /^(?:antigravity|language_server(?:[\w.-]*)?|agy)\.exe$/i;
+const LANGUAGE_SERVER_IMAGE_RE = /^language_server(?:[\w.-]*)?\.exe$/i;
 const SCRUB_ENV_EXACT = new Set([
   'ELECTRON_RUN_AS_NODE',
   'NODE_OPTIONS',
@@ -55,6 +61,29 @@ const CLEAR_PROXY_ENV_UPPER = new Set([
 
 function sleep(ms) {
   return new Promise(resolvePromise => setTimeout(resolvePromise, Math.max(0, ms)));
+}
+
+function samePath(a, b) {
+  const ra = resolve(a);
+  const rb = resolve(b);
+  return process.platform === 'win32' ? ra.toLowerCase() === rb.toLowerCase() : ra === rb;
+}
+
+function isLocalAbsolutePath(p) {
+  return typeof p === 'string' && p.length > 0 && p.length <= 512 && isAbsolute(p) &&
+    !/^[\\/]{2}|[\x00-\x1f\x7f]/.test(p) &&
+    (process.platform !== 'win32' || /^[A-Za-z]:[\\/]/.test(p)) &&
+    !p.split(/[\\/]/).includes('..');
+}
+
+export function verifiedSwitchProfileDir(dirPath) {
+  if (isLocalAbsolutePath(dirPath)) {
+    try {
+      const dir = realpathSync.native(dirPath);
+      if (isLocalAbsolutePath(dir) && dir !== parsePath(dir).root && statSync(dir).isDirectory()) return dir;
+    } catch {}
+  }
+  throw new Error('无法确认账号切换的用户数据目录');
 }
 
 function isInsideDir(baseDir, candidatePath) {
@@ -174,7 +203,7 @@ export function validateRelaunchJob(
       return { valid: false, reason: 'invalid-credential-switch' };
     }
     for (const key of Object.keys(cs)) {
-      if (key !== 'accountId' && key !== 'expectedEmail') {
+      if (!ALLOWED_CRED_SWITCH_KEYS.has(key)) {
         return { valid: false, reason: 'invalid-credential-switch' };
       }
     }
@@ -183,6 +212,26 @@ export function validateRelaunchJob(
     }
     if (typeof cs.expectedEmail !== 'string' || !SAFE_EMAIL_RE.test(cs.expectedEmail.trim())) {
       return { valid: false, reason: 'invalid-credential-switch-email' };
+    }
+    if (cs.expectedHash !== undefined && (typeof cs.expectedHash !== 'string' || !SAFE_SHORT_HASH_RE.test(cs.expectedHash))) {
+      return { valid: false, reason: 'invalid-credential-switch' };
+    }
+    if (cs.switchId !== undefined && (typeof cs.switchId !== 'string' || !SAFE_SWITCH_ID_RE.test(cs.switchId))) {
+      return { valid: false, reason: 'invalid-credential-switch' };
+    }
+    if (cs.switchId !== undefined && !isLocalAbsolutePath(job.profileDir)) {
+      return { valid: false, reason: 'invalid-switch-profile' };
+    }
+  }
+  if (job.profileDir !== undefined && job.profileDir !== null && job.profileDir !== '') {
+    if (!isLocalAbsolutePath(job.profileDir) || resolve(job.profileDir) === parsePath(resolve(job.profileDir)).root) {
+      return { valid: false, reason: 'invalid-switch-profile' };
+    }
+    if (job.onboardingSync?.appStoragePath && !samePath(job.onboardingSync.appStoragePath, join(job.profileDir, 'app_storage.json'))) {
+      return { valid: false, reason: 'invalid-switch-profile' };
+    }
+    if (job.clearScopePath && !samePath(job.clearScopePath, join(job.profileDir, 'credential-user-scope'))) {
+      return { valid: false, reason: 'invalid-switch-profile' };
     }
   }
   if (job.clearScopePath !== undefined && job.clearScopePath !== null && job.clearScopePath !== '') {
@@ -218,13 +267,51 @@ export function parseTasklistPids(stdout, { excludePids = new Set(), imageNames 
   return pids;
 }
 
+// Strict unfiltered CSV parser: any error, localized diagnostic, empty output,
+// or truncated row fails closed instead of looking like "0 running processes".
+export function parseCredentialWriterPids(stdout, excludeOrSelfPid = new Set()) {
+  const text = String(stdout || '').trim();
+  if (!text) throw new Error('process-list-unavailable');
+  let excludePids;
+  let pattern = CREDENTIAL_WRITER_IMAGE_RE;
+  if (typeof excludeOrSelfPid === 'number') {
+    excludePids = new Set([excludeOrSelfPid]);
+  } else if (excludeOrSelfPid instanceof Set) {
+    excludePids = excludeOrSelfPid;
+  } else if (excludeOrSelfPid && typeof excludeOrSelfPid === 'object') {
+    excludePids = excludeOrSelfPid.excludePids instanceof Set
+      ? excludeOrSelfPid.excludePids
+      : new Set(excludeOrSelfPid.excludePids || []);
+    if (excludeOrSelfPid.pattern instanceof RegExp) pattern = excludeOrSelfPid.pattern;
+  } else {
+    excludePids = new Set();
+  }
+  const pids = [];
+  const seen = new Set();
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    const match = /^"([^"]+)","(\d+)","[^"]*","\d+","[^"]*"$/.exec(line);
+    if (!match) throw new Error('process-list-unavailable');
+    const pid = Number(match[2]);
+    if (!Number.isInteger(pid) || pid <= 0) throw new Error('process-list-unavailable');
+    if (pattern.test(match[1]) && !excludePids.has(pid) && !seen.has(pid)) {
+      seen.add(pid);
+      pids.push(pid);
+    }
+  }
+  return pids;
+}
+
 export function buildCleanTargetEnv(baseEnv, job) {
   const env = { ...(baseEnv || {}) };
   for (const key of Object.keys(env)) {
     const upper = key.toUpperCase();
-    if (SCRUB_ENV_EXACT.has(upper) || upper.startsWith('ANTIGRAVITY_SIDECAR_')) {
+    if (SCRUB_ENV_EXACT.has(upper) || upper.startsWith('ANTIGRAVITY_SIDECAR_') || (job?.profileDir && upper === 'ANTIGRAVITY_USER_DATA_DIR')) {
       delete env[key];
     }
+  }
+  if (job?.profileDir) {
+    env.ANTIGRAVITY_USER_DATA_DIR = job.profileDir;
   }
   if (job?.proxyEnabled) {
     if (job.proxyEnv && typeof job.proxyEnv === 'object') {
@@ -282,12 +369,52 @@ export function listWindowsImagePids(imageName, { excludePids = new Set(), env =
   return parseTasklistPids(res.stdout, { excludePids, imageNames: [imageName.toLowerCase()] });
 }
 
+export function listWindowsCredentialWriters({
+  excludePids = new Set(),
+  env = process.env,
+  runCommand = spawnSync,
+  pattern = CREDENTIAL_WRITER_IMAGE_RE
+} = {}) {
+  const runTasklist = username => {
+    const args = username
+      ? ['/FI', `USERNAME eq ${username}`, '/FO', 'CSV', '/NH']
+      : ['/FO', 'CSV', '/NH'];
+    return runCommand('tasklist.exe', args, {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
+      timeout: 8000
+    });
+  };
+  const rawUser = typeof env?.USERNAME === 'string' ? env.USERNAME.trim() : '';
+  const safeUser = SAFE_WINDOWS_USERNAME_RE.test(rawUser) ? rawUser : '';
+  if (safeUser) {
+    const filtered = runTasklist(safeUser);
+    if (!filtered?.error && filtered?.status === 0 && String(filtered.stdout || '').trim()) {
+      try {
+        return parseCredentialWriterPids(filtered.stdout, { excludePids, pattern });
+      } catch {}
+    }
+  }
+  const res = runTasklist('');
+  if (!res || res.error || res.status !== 0) throw new Error('process-list-unavailable');
+  return parseCredentialWriterPids(res.stdout, { excludePids, pattern });
+}
+
 function defaultListAntigravityPids(excludePids, env = process.env) {
   return listWindowsImagePids('Antigravity.exe', { excludePids, env });
 }
 
 function defaultListLanguageServerPids(excludePids, env = process.env) {
-  return listWindowsImagePids('language_server.exe', { excludePids, env });
+  try {
+    return listWindowsCredentialWriters({ excludePids, env, pattern: LANGUAGE_SERVER_IMAGE_RE });
+  } catch {
+    return listWindowsImagePids('language_server.exe', { excludePids, env });
+  }
+}
+
+function defaultListWriterPids(excludePids, env = process.env) {
+  return listWindowsCredentialWriters({ excludePids, env, pattern: CREDENTIAL_WRITER_IMAGE_RE });
 }
 
 function defaultGracefulClosePids(pids) {
@@ -345,6 +472,10 @@ export async function runRelaunchJob(jobPath, deps = {}) {
   const listTargetPids = deps.listTargetPids || (() => defaultListAntigravityPids(excludePids, baseEnv));
   const listLanguageServerPids = deps.listLanguageServerPids
     || (deps.listTargetPids ? (() => []) : (() => defaultListLanguageServerPids(excludePids, baseEnv)));
+  const listWriterPids = deps.listWriterPids
+    || ((deps.listTargetPids || deps.listLanguageServerPids)
+      ? null
+      : (() => defaultListWriterPids(excludePids, baseEnv)));
   const gracefulClosePid = deps.gracefulClosePid || defaultGracefulClosePid;
   const forceKillPid = deps.forceKillPid || defaultForceKillPid;
   const spawnProcess = deps.spawnProcess || spawn;
@@ -352,10 +483,12 @@ export async function runRelaunchJob(jobPath, deps = {}) {
   const settleMs = deps.settleMs ?? 350;
   const gracefulTimeoutMs = deps.gracefulTimeoutMs ?? 3000;
   const forceTimeoutMs = deps.forceTimeoutMs ?? 6000;
+  const writerTimeoutMs = deps.writerTimeoutMs ?? 5000;
   const postExitSettleMs = deps.postExitSettleMs ?? 450;
   const verifyDelayMs = deps.verifyDelayMs ?? 1200;
   const pollMs = deps.pollMs ?? 250;
   const leadingArgsForTest = Array.isArray(deps.leadingArgsForTest) ? deps.leadingArgsForTest : [];
+  const sw = job.credentialSwitch || null;
 
   const appendLog = message => {
     if (!job.logPath) return;
@@ -365,23 +498,68 @@ export async function runRelaunchJob(jobPath, deps = {}) {
     } catch {}
   };
 
-  const finishFailed = reason => {
+  const cleanupOwnJobFile = () => {
+    try {
+      if (existsSync(jobPath) && JSON.parse(readFileSync(jobPath, 'utf8')).nonce === job.nonce) {
+        unlinkSync(jobPath);
+      }
+    } catch {}
+  };
+
+  const finishFailed = (reason, { preClose = false } = {}) => {
     try {
       atomicWriteJson(job.ackPath, {
         nonce: job.nonce,
         pid: process.pid,
         childPid: null,
-        state: 'launched',
+        state: preClose ? 'failed' : 'launched',
         ok: false,
+        ...(sw?.switchId ? { failedSwitchId: sw.switchId } : {}),
         reason,
         at: Date.now()
       });
     } catch {}
-    try {
-      if (existsSync(jobPath)) unlinkSync(jobPath);
-    } catch {}
+    cleanupOwnJobFile();
     return { ok: false, childPid: null, verified: false, reason };
   };
+
+  const stillRequested = () => {
+    if (!sw?.switchId) return true;
+    const state = JSON.parse(readFileSync(join(dirname(jobPath), 'accounts.json'), 'utf8'));
+    const target = state.accounts?.find(a => a.id === sw.accountId);
+    if (!target || target.disabled || target.quarantined) return false;
+    if (state.pendingSwitch?.switchId !== sw.switchId || state.pendingSwitch?.targetId !== sw.accountId) return false;
+    if (job.profileDir && state.pendingSwitch.profileDir && !samePath(state.pendingSwitch.profileDir, job.profileDir)) return false;
+    if (String(target.email || '').trim().toLowerCase() !== sw.expectedEmail.trim().toLowerCase()) return false;
+    if (sw.expectedHash && target.credHash && target.credHash.toUpperCase() !== sw.expectedHash.toUpperCase()) return false;
+    return true;
+  };
+
+  const verifiedProfile = () => {
+    if (!job.profileDir) return true;
+    try {
+      return samePath(verifiedSwitchProfileDir(job.profileDir), job.profileDir);
+    } catch {
+      return false;
+    }
+  };
+
+  // Pre-close validation: fail closed BEFORE closing Antigravity if profile or intent is invalid/cancelled.
+  if (job.profileDir && !verifiedProfile()) {
+    appendLog('invalid-switch-profile');
+    return finishFailed('invalid-switch-profile', { preClose: true });
+  }
+  if (sw?.switchId) {
+    try {
+      if (!stillRequested()) {
+        appendLog('switch-cancelled');
+        return finishFailed('switch-cancelled', { preClose: true });
+      }
+    } catch {
+      appendLog('switch-cancelled');
+      return finishFailed('switch-cancelled', { preClose: true });
+    }
+  }
 
   // 1. Immediately write ACK JSON atomically so the caller confirms AV/EDR did not block launch
   try {
@@ -393,11 +571,23 @@ export async function runRelaunchJob(jobPath, deps = {}) {
     });
   } catch (err) {
     appendLog(`ack write err: ${err?.message || err}`);
+    if (sw?.switchId) return finishFailed('ack-write-failed', { preClose: true });
   }
   appendLog(`worker started pid=${process.pid} ppid=${process.ppid}`);
 
   // 2. Brief settle pause so caller reads ACK before Antigravity begins closing
   await sleep(settleMs);
+  if (sw?.switchId) {
+    try {
+      if (!stillRequested()) {
+        appendLog('switch-cancelled');
+        return finishFailed('switch-cancelled', { preClose: true });
+      }
+    } catch {
+      appendLog('switch-cancelled');
+      return finishFailed('switch-cancelled', { preClose: true });
+    }
+  }
 
   // 3-4. Find running non-self Antigravity.exe PIDs and send graceful WM_CLOSE in a single taskkill.exe call (no /F)
   const initialPids = listTargetPids().filter(pid => !excludePids.has(pid));
@@ -429,7 +619,8 @@ export async function runRelaunchJob(jobPath, deps = {}) {
     }
   }
 
-  // 5b. Terminate sibling language_server.exe instances so stale OAuth TokenSources cannot write into gemini:antigravity after exit
+  // 5b. Terminate sibling language_server*.exe instances (including language_server_windows_x64.exe)
+  // so stale OAuth TokenSources cannot write into gemini:antigravity after exit.
   const initialLsPids = listLanguageServerPids().filter(pid => !excludePids.has(pid));
   if (initialLsPids.length) {
     appendLog(`graceful close language_server pids=${initialLsPids.join(',')}`);
@@ -458,7 +649,8 @@ export async function runRelaunchJob(jobPath, deps = {}) {
   }
 
   // 5c. Only abort launching if Antigravity.exe itself survived force-kill (single-instance lock collision).
-  // If Antigravity.exe already exited and only an unrelated/elevated language_server.exe survived, never strand the IDE closed.
+  // If Antigravity.exe already exited and only an elevated language_server or CLI writer survived,
+  // skip the credential restore safely but NEVER strand the IDE closed.
   const stuckAppPids = listTargetPids().filter(pid => !excludePids.has(pid));
   const stuckLsPids = listLanguageServerPids().filter(pid => !excludePids.has(pid));
   if (stuckAppPids.length) {
@@ -469,7 +661,7 @@ export async function runRelaunchJob(jobPath, deps = {}) {
   let restoreFailReason = '';
   if (stuckLsPids.length) {
     appendLog(`warn: elevated language_server running ls=${stuckLsPids.join(',')}; Antigravity exited so launch will continue`);
-    if (job.credentialSwitch) {
+    if (sw) {
       restoreFailed = true;
       restoreFailReason = 'elevated-process-running';
       appendLog('restore err: skipped credential switch because elevated language_server is still running');
@@ -478,43 +670,103 @@ export async function runRelaunchJob(jobPath, deps = {}) {
 
   await sleep(postExitSettleMs);
 
-  // 6a. Post-exit deferred credential switch (dynamic import keeps WSL standalone worker copy self-contained)
-  if (job.credentialSwitch && !restoreFailed) {
-    let restoreRes = null;
-    try {
-      if (restoreCredential) {
-        restoreRes = await restoreCredential(job.credentialSwitch);
-      } else {
-        const { createCredentialVault } = await import('../lib/credential-vault.mjs');
-        const vault = createCredentialVault({ env: baseEnv });
-        restoreRes = vault.restoreToActive(job.credentialSwitch.accountId, {
-          expectedEmail: job.credentialSwitch.expectedEmail
-        });
+  // 5d. Fail-closed credential writer check before restore (observes Antigravity.exe, language_server*.exe, and agy.exe).
+  if (sw && !restoreFailed && listWriterPids) {
+    const writerDeadline = Date.now() + writerTimeoutMs;
+    while (true) {
+      let writerPids;
+      try {
+        writerPids = listWriterPids().filter(pid => !excludePids.has(pid));
+      } catch (err) {
+        restoreFailed = true;
+        restoreFailReason = 'process-list-unavailable';
+        appendLog(`restore err: process-list-unavailable (${err?.message || err}); continuing launch to avoid stranding IDE`);
+        break;
       }
-    } catch (err) {
-      restoreRes = { ok: false, error: err?.message || String(err) };
-    }
-    if (!restoreRes?.ok) {
-      if (restoreRes?.mismatch) {
-        appendLog(`credential switch failed reason=credential-mismatch err=${restoreRes?.error || 'unknown'}`);
-        return finishFailed('credential-mismatch');
+      if (writerPids.length === 0) break;
+      if (Date.now() >= writerDeadline) {
+        restoreFailed = true;
+        restoreFailReason = 'credential-writers-still-running';
+        appendLog(`restore err: credential writers still running pids=${writerPids.join(',')}; continuing launch to avoid stranding IDE`);
+        break;
       }
-      restoreFailed = true;
-      restoreFailReason = 'credential-switch-failed';
-      appendLog(`restore err: ${restoreRes?.error || 'unknown'}; continuing launch to avoid stranding IDE`);
-    } else {
-      appendLog(`credential switch ok accountId=${job.credentialSwitch.accountId}`);
+      await sleep(pollMs);
     }
   }
 
-  // 6b. Post-exit credential-user-scope cleanup so Electron starts with the newly restored account scope
-  if (!restoreFailed && job.clearScopePath && exists(job.clearScopePath)) {
+  // 6a. Post-exit deferred credential switch (dynamic import keeps WSL standalone worker copy self-contained)
+  if (sw && !restoreFailed) {
+    let preRestoreOk = true;
     try {
-      unlinkSync(job.clearScopePath);
+      if (!stillRequested() || !verifiedProfile()) {
+        preRestoreOk = false;
+        restoreFailed = true;
+        restoreFailReason = 'switch-cancelled';
+        appendLog('restore err: switch cancelled or profile changed before restore; continuing launch to avoid stranding IDE');
+      }
+    } catch {
+      preRestoreOk = false;
+      restoreFailed = true;
+      restoreFailReason = 'switch-cancelled';
+      appendLog('restore err: unable to confirm pending switch before restore; continuing launch to avoid stranding IDE');
+    }
+
+    if (preRestoreOk) {
+      let restoreRes = null;
+      try {
+        if (restoreCredential) {
+          restoreRes = await restoreCredential(sw);
+        } else {
+          const vault = deps.vault || (await import('../lib/credential-vault.mjs')).createCredentialVault({ env: baseEnv });
+          if (vault.backend && vault.backend !== 'win32-credman') {
+            restoreRes = { ok: false, error: 'unsupported-credential-backend' };
+          } else {
+            restoreRes = vault.restoreToActive(sw.accountId, {
+              expectedEmail: sw.expectedEmail,
+              ...(sw.expectedHash ? { expectedHash: sw.expectedHash } : {})
+            });
+          }
+        }
+      } catch (err) {
+        restoreRes = { ok: false, error: err?.message || String(err) };
+      }
+      if (!restoreRes?.ok) {
+        if (restoreRes?.mismatch) {
+          appendLog(`credential switch failed reason=credential-mismatch err=${restoreRes?.error || 'unknown'}`);
+          return finishFailed('credential-mismatch');
+        }
+        restoreFailed = true;
+        restoreFailReason = 'credential-switch-failed';
+        appendLog(`restore err: ${restoreRes?.error || 'unknown'}; continuing launch to avoid stranding IDE`);
+      } else {
+        appendLog(`credential switch ok accountId=${sw.accountId}`);
+      }
+    }
+  }
+
+  // 6b. Post-exit credential-user-scope cleanup inside pinned profileDir (or legacy clearScopePath)
+  const effectiveScopePath = job.profileDir ? join(job.profileDir, 'credential-user-scope') : job.clearScopePath;
+  if (!restoreFailed && effectiveScopePath && exists(effectiveScopePath)) {
+    try {
+      unlinkSync(effectiveScopePath);
       appendLog('cleared credential-user-scope');
     } catch (err) {
-      appendLog(`clear scope err: ${err?.message || err}`);
+      if (err?.code !== 'ENOENT') {
+        appendLog(`clear scope err: ${err?.message || err}`);
+      }
     }
+  }
+
+  if (sw && !restoreFailed && sw.switchId) {
+    try {
+      atomicWriteJson(job.ackPath, {
+        nonce: job.nonce,
+        pid: process.pid,
+        state: 'restored',
+        appliedSwitchId: sw.switchId,
+        at: Date.now()
+      });
+    } catch {}
   }
 
   // 6c. Post-exit atomic app_storage.json onboarding sync in pure Node.js
@@ -538,7 +790,7 @@ export async function runRelaunchJob(jobPath, deps = {}) {
     }
   }
 
-  // 7. Build clean target env (scrubbing Electron/sidecar vars and applying/clearing proxy vars)
+  // 7. Build clean target env (scrubbing Electron/sidecar vars, preserving profileDir, and applying/clearing proxy vars)
   const targetEnv = buildCleanTargetEnv(baseEnv, job);
 
   // 8. Spawn Antigravity.exe detached with NUL stdio so Windows Terminal / ConPTY never attaches
@@ -560,7 +812,7 @@ export async function runRelaunchJob(jobPath, deps = {}) {
     spawnError = err;
   }
 
-  // 9. Verify launch, write final ACK JSON, append log, and delete ONLY relaunch-job.json
+  // 9. Verify launch, write final ACK JSON, append log, and delete ONLY our relaunch-job.json
   await sleep(verifyDelayMs);
   let verified = false;
   if (!spawnError) {
@@ -580,20 +832,22 @@ export async function runRelaunchJob(jobPath, deps = {}) {
       childPid: child?.pid || null,
       state: 'launched',
       ok: verified,
+      ...(sw?.switchId && !restoreFailed ? { appliedSwitchId: sw.switchId } : {}),
+      ...(sw?.switchId && restoreFailed ? { failedSwitchId: sw.switchId } : {}),
       ...(restoreFailed ? { restoreFailed: true, ...(restoreFailReason ? { reason: restoreFailReason } : {}) } : {}),
       at: Date.now()
     });
   } catch {}
   appendLog(`done childPid=${child?.pid || 0} verified=${verified}${restoreFailed ? ` restoreFailed=true reason=${restoreFailReason}` : ''}${spawnError ? ` err=${spawnError.message}` : ''}`);
 
-  try {
-    if (existsSync(jobPath)) unlinkSync(jobPath);
-  } catch {}
+  cleanupOwnJobFile();
 
   return {
     ok: verified,
     childPid: child?.pid || null,
     verified,
+    ...(sw?.switchId && !restoreFailed ? { appliedSwitchId: sw.switchId } : {}),
+    ...(sw?.switchId && restoreFailed ? { failedSwitchId: sw.switchId } : {}),
     ...(restoreFailed ? { restoreFailed: true, ...(restoreFailReason ? { reason: restoreFailReason } : {}) } : {})
   };
 }

@@ -3378,8 +3378,13 @@ test('Issue #88: exportSettings/importSettings handle downloads, size guards, cr
 
   const findByTestId = (node, tid) => {
     if (!node || typeof node !== 'object') return null;
+    if (Array.isArray(node)) {
+      for (const item of node) { const hit = findByTestId(item, tid); if (hit) return hit; }
+      return null;
+    }
     if (node.props?.['data-testid'] === tid) return node;
-    for (const child of Array.isArray(node.children) ? node.children : [node.children]) {
+    const extras = [node.props?.rightElement, node.props?.extraContent];
+    for (const child of [...(Array.isArray(node.children) ? node.children : [node.children]), ...extras]) {
       const hit = findByTestId(child, tid);
       if (hit) return hit;
     }
@@ -3394,6 +3399,8 @@ test('Issue #88: exportSettings/importSettings handle downloads, size guards, cr
   };
 
   let tree = renderSettings();
+  findByTestId(tree, 'agy-settings-cat-system').props.onClick();
+  tree = renderSettings();
   const exportBtn = findByTestId(tree, 'agy-export-settings-btn');
   const importBtn = findByTestId(tree, 'agy-import-settings-btn');
   const importInput = findByTestId(tree, 'agy-import-settings-input');
@@ -3736,8 +3743,13 @@ test('import validation error codes localize across zh-TW, en, fr, and ja withou
     });
     const findByTestId = (node, tid) => {
       if (!node || typeof node !== 'object') return null;
+      if (Array.isArray(node)) {
+        for (const item of node) { const hit = findByTestId(item, tid); if (hit) return hit; }
+        return null;
+      }
       if (node.props?.['data-testid'] === tid) return node;
-      for (const child of Array.isArray(node.children) ? node.children : [node.children]) {
+      const extras = [node.props?.rightElement, node.props?.extraContent];
+      for (const child of [...(Array.isArray(node.children) ? node.children : [node.children]), ...extras]) {
         const hit = findByTestId(child, tid);
         if (hit) return hit;
       }
@@ -3751,6 +3763,8 @@ test('import validation error codes localize across zh-TW, en, fr, and ja withou
       return settingsComp.type(settingsComp.props);
     };
     let tree = renderSettings();
+    findByTestId(tree, 'agy-settings-cat-system').props.onClick();
+    tree = renderSettings();
     const importInput = findByTestId(tree, 'agy-import-settings-input');
     await importInput.props.onChange({ target: { value: 'empty.json', files: [{ size: 20, text: async () => '{}' }] } });
     tree = renderSettings();
@@ -4233,4 +4247,890 @@ test('About panel surfaces update.install error message when request rejects (Is
   assert.ok(statusEl);
   assert.match(collectText(statusEl), /EACCES: permission denied/);
   panels.dispose();
+});
+
+test('installThemeTooltips ignores non-focus-visible programmatic focusin/focusout while allowing keyboard focus-visible', () => {
+  const listeners = new Map();
+  const makeEl = tag => ({
+    tagName: String(tag || 'div').toUpperCase(),
+    dataset: {},
+    style: {},
+    className: '',
+    textContent: '',
+    isConnected: true,
+    attrs: new Map(),
+    children: [],
+    append(...items) { this.children.push(...items); },
+    remove() { this.isConnected = false; },
+    setAttribute(k, v) { this.attrs.set(k, String(v)); },
+    getAttribute(k) { return this.attrs.has(k) ? this.attrs.get(k) : null; },
+    removeAttribute(k) { this.attrs.delete(k); },
+    getBoundingClientRect: () => ({ width: 200, height: 28, left: 0, top: 0, right: 200, bottom: 28 })
+  });
+  const head = makeEl('head');
+  const body = makeEl('body');
+  const doc = {
+    readyState: 'complete',
+    head,
+    body,
+    documentElement: { toggleAttribute() {}, removeAttribute() {}, style: { setProperty() {}, removeProperty() {} }, clientWidth: 1000, clientHeight: 700 },
+    createElement: tag => makeEl(tag),
+    addEventListener(type, fn, opts) {
+      if (!listeners.has(type)) listeners.set(type, []);
+      listeners.get(type).push(fn);
+      opts?.signal?.addEventListener?.('abort', () => {
+        const list = listeners.get(type) || [];
+        const idx = list.indexOf(fn);
+        if (idx >= 0) list.splice(idx, 1);
+      }, { once: true });
+    },
+    querySelectorAll: () => [],
+    querySelector: () => null
+  };
+  const fire = (type, evt) => { for (const fn of [...(listeners.get(type) || [])]) fn(evt); };
+  const ctx = vm.createContext({
+    document: doc,
+    location: { pathname: '/' },
+    innerWidth: 1000,
+    innerHeight: 700,
+    AbortController,
+    React: { createElement() { return {}; } },
+    ReactDOM: { createRoot() { throw new Error('No DOM roots expected'); } },
+    HC() {},
+    __agyNativeAdapter: { wrap() {} },
+    MutationObserver: class { observe() {} disconnect() {} },
+    setInterval: () => 1,
+    clearInterval() {},
+    setTimeout: () => 1,
+    clearTimeout() {}
+  });
+  vm.runInContext(source, ctx);
+
+  const makeFocusableHost = (tip, isFocusVisible) => {
+    let focusVisible = isFocusVisible;
+    const attrs = new Map([['data-pt-tip', tip]]);
+    const host = {
+      isConnected: true,
+      setFocusVisible(v) { focusVisible = v; },
+      matches: sel => (sel === ':focus-visible' ? focusVisible : false),
+      getAttribute: k => (attrs.has(k) ? attrs.get(k) : null),
+      setAttribute: (k, v) => attrs.set(k, String(v)),
+      removeAttribute: k => attrs.delete(k),
+      closest: sel => (sel === '[data-pt-tip]' ? host : null),
+      getBoundingClientRect: () => ({ left: 200, right: 360, top: 120, bottom: 148, width: 160, height: 28 })
+    };
+    return host;
+  };
+
+  const firstRow = makeFocusableHost('First subagent tooltip', false);
+  const secondRow = makeFocusableHost('Second subagent tooltip', false);
+
+  // Programmatic/pointer focus (not :focus-visible) must NOT auto-open tooltip on popover open
+  fire('focusin', { target: firstRow });
+  assert.equal(body.children.find(c => c.className === 'pt-tip-pop'), undefined);
+
+  // Keyboard Tab focus (:focus-visible === true) MUST open tooltip immediately
+  firstRow.setFocusVisible(true);
+  fire('focusin', { target: firstRow });
+  const pop = body.children.find(c => c.className === 'pt-tip-pop');
+  assert.ok(pop);
+  assert.equal(pop.dataset.open, 'true');
+  assert.equal(pop.children[0].textContent, 'First subagent tooltip');
+
+  // Moving focus programmatically to another non-focus-visible element must hide instead of popping up next tooltip
+  fire('focusout', { target: firstRow, relatedTarget: secondRow });
+  assert.equal(pop.dataset.open, 'false');
+
+  // Moving keyboard focus to secondRow opens secondRow's tooltip
+  secondRow.setFocusVisible(true);
+  fire('focusin', { target: secondRow });
+  assert.equal(pop.dataset.open, 'true');
+  assert.equal(pop.children[0].textContent, 'Second subagent tooltip');
+
+  ctx.__agyPowertools.dispose();
+});
+
+test('ContextDetails scopes subagent tooltip to name span only and SessionStatsDetails removes Cache observation while keeping Cache hit', async () => {
+  const p = page(true);
+  p.context.location.pathname = '/c/conv-ui-polish';
+  let lastRingEl = null;
+  const flexParent = { children: [], style: {}, append() {}, insertBefore() {} };
+  const card = { dataset: {}, querySelector: () => null };
+  const model = {
+    isConnected: true,
+    parentElement: flexParent,
+    nextSibling: null,
+    closest: sel => (sel === '.surface-composer-card' ? card : null)
+  };
+  p.document.querySelectorAll = sel => (sel === '[data-testid="model-selector-trigger"]' ? [model] : []);
+  p.context.getComputedStyle = () => ({ display: 'flex' });
+  p.context.React = {
+    createElement: (type, props, ...children) => ({ type, props: props || {}, children }),
+    Fragment: 'fragment',
+    useEffect() {},
+    useState: init => [typeof init === 'function' ? init() : init, () => {}],
+    useSyncExternalStore: (_, getSnap) => getSnap()
+  };
+  p.context.HC = () => null;
+  p.context.IC = 'IC';
+  p.context.JC = 'JC';
+  p.context.Uy = 'Uy';
+  p.context.k0 = 'k0';
+  p.context.ReactDOM = {
+    createRoot(mount) {
+      return {
+        render(tree) {
+          if (mount.dataset?.agyPowertoolsRoot === 'ring') lastRingEl = tree;
+        },
+        unmount() {}
+      };
+    }
+  };
+  p.context.__agyNativeAdapter.wrap = el => el;
+  p.context.__agyNativeAdapter.installPage = () => true;
+  p.context.__agyNativeAdapter.composerCascadeId = () => 'conv-ui-polish';
+  p.context.__agyNativeAdapter.executionState = () => ({ conversationId: 'conv-ui-polish', status: 2 });
+  p.context.__agyNativeAdapter.subagents = () => ([
+    { id: 'sub-1', parentId: 'conv-ui-polish', depth: 1, title: 'Codebase Researcher', status: 'done', stepCount: 4, lastModifiedAtMs: Date.now() }
+  ]);
+
+  const nowMs = Date.now();
+  const mainState = {
+    conversationId: 'conv-ui-polish',
+    modelName: 'Gemini 4 Carbon',
+    costUsd: 0.12,
+    contextWindow: {
+      usedTokens: 50000,
+      maxTokens: 1000000,
+      usedPercent: 5,
+      inputTokens: 1000,
+      cacheReadTokens: 49000,
+      compactedPending: false,
+      compactions: 0,
+      categories: [{ key: 'chat', label: 'Chat Messages', tokens: 50000, percent: 5 }],
+      models: []
+    },
+    telemetry: {
+      turnCount: 2,
+      stepCount: 5,
+      totalTokens: 50000,
+      requestCount: 3,
+      errorCount: 0,
+      toolCount: 2,
+      tps: 62,
+      peakTps: 84,
+      latestTps: 60,
+      cacheHitPercent: 98,
+      inputTokens: 1000,
+      cacheReadTokens: 49000,
+      outputTokens: 300,
+      thinkingTokens: 0,
+      modelTimeMs: 1200,
+      toolTimeMs: 400,
+      avgTtftMs: 180
+    },
+    progress: { status: 'complete', toolCount: 2, recentActivity: [], tasks: [] },
+    turns: [{ turnNumber: 1, status: 'complete' }],
+    requests: [{ id: 'req-1', model: 'Claude Sonnet 4.6', timestampMs: nowMs - 15000, inputTokens: 1000, cacheReadTokens: 49000 }],
+    errors: []
+  };
+  const subState = {
+    conversationId: 'sub-1',
+    modelName: 'Gemini 3.1 Pro (High)',
+    shortModel: 'G3.1 Pro',
+    costUsd: 0.03,
+    contextWindow: { usedTokens: 24000, maxTokens: 200000, usedPercent: 12, compactions: 0, categories: [] },
+    telemetry: { totalTokens: 28000, inputTokens: 2000, cacheReadTokens: 26000, cacheHitPercent: 92.9, tps: 71, requestCount: 2, toolCount: 3 }
+  };
+
+  let stored = { enabled: true, contextRing: true, speedStats: true, subagentTelemetry: true, language: 'zh-CN' };
+  let env = null;
+  p.context.__agyPanels = value => { env = value; return { dispose() {} }; };
+  p.context.__agyPowertoolsHost = raw => {
+    const req = JSON.parse(raw);
+    queueMicrotask(() => {
+      if (req.method === 'settings.get') {
+        p.context.__agyPowertoolsReceive(req.id, { ...stored });
+      } else if (req.method === 'settings.set') {
+        stored = { ...stored, ...req.settings };
+        p.context.__agyPowertoolsReceive(req.id, { ...stored });
+      } else if (req.method === 'state') {
+        p.context.__agyPowertoolsReceive(req.id, JSON.parse(JSON.stringify(mainState)));
+      } else if (req.method === 'subagents.stats') {
+        p.context.__agyPowertoolsReceive(req.id, { items: { 'sub-1': subState } });
+      } else {
+        p.context.__agyPowertoolsReceive(req.id, { ok: true });
+      }
+    });
+  };
+  p.context.__agyInitialSettings = { ...stored };
+  vm.runInContext(source, p.context);
+  await new Promise(r => setTimeout(r, 40));
+
+  const expand = node => {
+    if (!node || typeof node !== 'object') return node;
+    if (Array.isArray(node)) return node.map(expand);
+    if (typeof node.type === 'function') return expand(node.type({ ...(node.props || {}), children: node.children }));
+    return { ...node, children: Array.isArray(node.children) ? node.children.map(expand) : node.children };
+  };
+  const findAll = (node, pred, acc = []) => {
+    if (!node || typeof node !== 'object') return acc;
+    if (Array.isArray(node)) { for (const c of node) findAll(c, pred, acc); return acc; }
+    if (pred(node)) acc.push(node);
+    findAll(node.children, pred, acc);
+    return acc;
+  };
+  const collectText = node => {
+    if (typeof node === 'string' || typeof node === 'number') return String(node);
+    if (!node || typeof node !== 'object') return '';
+    if (Array.isArray(node)) return node.map(collectText).join(' ');
+    return collectText(node.children);
+  };
+
+  assert.ok(lastRingEl);
+  const ringTree = lastRingEl.type(lastRingEl.props);
+  const ctxPopup = findAll(ringTree, n => n.props?.['data-testid'] === 'agy-context-popup')[0];
+  const statsPopup = findAll(ringTree, n => n.props?.['data-testid'] === 'agy-stats-popup')[0];
+  assert.ok(ctxPopup && statsPopup);
+
+  // 1a: ContextDetails subagent row button has NO data-pt-tip; only the subagent name span has data-pt-tip
+  const ctxTree = expand(ctxPopup.children[0]);
+  const subRowBtn = findAll(ctxTree, n => n.props?.['data-testid'] === 'agy-subagent-ctx-sub-1')[0];
+  assert.ok(subRowBtn);
+  assert.equal(subRowBtn.props['data-pt-tip'], undefined);
+  const tippedInsideRow = findAll(subRowBtn, n => Boolean(n.props?.['data-pt-tip']));
+  assert.equal(tippedInsideRow.length, 1);
+  assert.equal(tippedInsideRow[0].type, 'span');
+  assert.equal(collectText(tippedInsideRow[0]).trim(), 'Codebase Researcher');
+  assert.equal(tippedInsideRow[0].props['data-pt-tip'], 'Codebase Researcher (Gemini 3.1 Pro (High))');
+
+  // 3: SessionStatsDetails removes Cache observation row in zh-CN and en while preserving Cache hit and other stats
+  const statsTreeZh = expand(statsPopup.children[0]);
+  assert.equal(findAll(statsTreeZh, n => n.props?.['data-testid'] === 'agy-cache-observation').length, 0);
+  const statsTextZh = collectText(statsTreeZh);
+  assert.equal(statsTextZh.includes('缓存观察'), false);
+  assert.equal(statsTextZh.includes('Cache window'), false);
+  assert.ok(statsTextZh.includes('缓存命中'));
+  assert.ok(statsTextZh.includes('98%'));
+  assert.ok(statsTextZh.includes('62 tok/s'));
+  assert.equal(statsTextZh.includes('\u00b7'), false);
+
+  await env.change({ language: 'en' });
+  const statsTreeEn = expand(statsPopup.children[0]);
+  assert.equal(findAll(statsTreeEn, n => n.props?.['data-testid'] === 'agy-cache-observation').length, 0);
+  const statsTextEn = collectText(statsTreeEn);
+  assert.equal(statsTextEn.includes('Cache window'), false);
+  assert.equal(statsTextEn.includes('Cache watch'), false);
+  assert.ok(statsTextEn.includes('98%'));
+
+  p.context.__agyPowertools.dispose();
+});
+
+test('PR #102: refreshAccount skips quota.observe on pendingSwitchIgnored/syncSkipped and surfaces toast on credentialMismatch.afterSwitch', async () => {
+  const p = page(true);
+  const calls = [];
+  const toasts = [];
+  let syncReply = {
+    activeId: 'acct-a',
+    accounts: [{ id: 'acct-a', email: 'alpha@example.com', hasCredential: true }],
+    pendingSwitchIgnored: true,
+    syncSkipped: true
+  };
+  let capturedEnv = null;
+  p.context.React = {
+    createElement: (type, props, ...children) => ({ type, props, children }),
+    useEffect: fn => { fn(); }
+  };
+  const custLink = { isConnected: true, nextSibling: null, parentElement: { insertBefore(n) { n.isConnected = true; } } };
+  p.document.querySelector = sel => sel === 'a[href="/customizations"]' ? custLink : null;
+  p.context.ReactDOM = {
+    createRoot: () => ({
+      render(tree) { if (typeof tree?.type === 'function') tree.type(tree.props || {}); },
+      unmount() {}
+    })
+  };
+  p.context.um = () => payload => toasts.push(payload);
+  p.context.__agyNativeAdapter.wrap = el => el;
+  p.context.__agyNativeAdapter.installPage = () => true;
+  p.context.__agyNativeAdapter.capabilities = () => ({ email: 'alpha@example.com', name: 'Alpha' });
+  p.context.__agyNativeAdapter.service = () => ({
+    retrieveUserQuotaSummary: async () => ({
+      response: {
+        groups: [{
+          displayName: 'Gemini Models',
+          buckets: [{ bucketId: 'g-5h', window: '5h', remaining: { case: 'remainingFraction', value: 0 }, resetTime: null }]
+        }]
+      }
+    })
+  });
+  p.context.__agyPanels = env => {
+    capturedEnv = env;
+    return { Page: () => null, Sidebar: () => null, dispose() {} };
+  };
+  p.context.__agyPowertoolsHost = raw => {
+    const req = JSON.parse(raw);
+    calls.push(req);
+    queueMicrotask(() => {
+      if (req.method === 'settings.get') {
+        p.context.__agyPowertoolsReceive(req.id, { enabled: true, multiAccount: true, autoSwitchAccount: true, language: 'zh-CN' });
+      } else if (req.method === 'accounts.syncActive') {
+        p.context.__agyPowertoolsReceive(req.id, syncReply);
+      } else {
+        p.context.__agyPowertoolsReceive(req.id, { ok: true, activeId: 'acct-a', accounts: syncReply.accounts });
+      }
+    });
+  };
+  p.context.__agyInitialSettings = { enabled: true, multiAccount: true, autoSwitchAccount: true, language: 'zh-CN' };
+  vm.runInContext(source, p.context);
+  await new Promise(r => setTimeout(r, 30));
+  assert.ok(capturedEnv);
+
+  // 1. pendingSwitchIgnored / syncSkipped MUST skip quota.observe and autoSwitchCandidate
+  const obsBefore = calls.filter(c => c.method === 'quota.observe').length;
+  await capturedEnv.refreshAccountQuotas('acct-a');
+  assert.equal(calls.filter(c => c.method === 'quota.observe').length, obsBefore);
+  assert.equal(calls.some(c => c.method === 'accounts.autoSwitchCandidate'), false);
+
+  // 2. syncSkipped alone also skips quota.observe
+  syncReply = {
+    activeId: 'acct-a',
+    accounts: [{ id: 'acct-a', email: 'alpha@example.com', hasCredential: true }],
+    syncSkipped: true
+  };
+  await capturedEnv.refreshAccountQuotas('acct-a');
+  assert.equal(calls.filter(c => c.method === 'quota.observe').length, obsBefore);
+
+  // 3. credentialMismatch.afterSwitch surfaces switch-mismatch toast and skips quota.observe
+  toasts.length = 0;
+  syncReply = {
+    activeId: 'acct-a',
+    accounts: [
+      { id: 'acct-a', email: 'alpha@example.com', hasCredential: true },
+      { id: 'acct-b', email: 'beta@example.com', hasCredential: false }
+    ],
+    credentialMismatch: { uiEmail: 'alpha@example.com', targetEmail: 'beta@example.com', afterSwitch: true }
+  };
+  await capturedEnv.refreshAccountQuotas('acct-a');
+  assert.equal(calls.filter(c => c.method === 'quota.observe').length, obsBefore);
+  const mismatchToast = toasts.find(t => t.tag === 'agy-account-switch-mismatch');
+  assert.ok(mismatchToast);
+  assert.doesNotMatch(mismatchToast.message, /[\u00b7\u2022\u2027\u30fb]/);
+
+  p.context.__agyPowertools.dispose();
+});
+
+test('PR #102 & macOS direct-launch RPCs: native-host guards quota attribution and wires launcher.mac* handlers', async () => {
+  const { mkdtempSync, writeFileSync, rmSync, readFileSync: readFs } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join, resolve } = await import('node:path');
+  const { startNativeIntegration } = await import('../lib/native-host.mjs');
+  const dataDir = mkdtempSync(join(tmpdir(), 'agy-host-w2-'));
+  const portFile = join(dataDir, 'port');
+  const origin = 'https://127.0.0.1:5123';
+  const fetchBefore = globalThis.fetch;
+  let stop, receiveEvent, lastReply;
+  const macCalls = [];
+  let confirmed = '';
+  const fakeAccounts = {
+    list: () => ({ activeId: 'a1', accounts: [{ id: 'a1', email: 'a@example.com' }, { id: 'b1', email: 'b@example.com' }], vaultSupported: true }),
+    confirmedQuotaEmail: () => confirmed,
+    canRecordQuota: (email, { multiAccountEnabled = true } = {}) => {
+      if (!multiAccountEnabled) return true;
+      const clean = String(email || '').trim().toLowerCase();
+      return Boolean(clean && confirmed && confirmed === clean);
+    },
+    clearConfirmedQuota: () => { confirmed = ''; },
+    syncActive: snapshot => {
+      if (snapshot?.email === 'pending@example.com') {
+        confirmed = '';
+        return { activeId: 'a1', accounts: [{ id: 'a1', email: 'a@example.com' }], confirmedQuotaEmail: '', canRecordQuota: false, pendingSwitchIgnored: true, syncSkipped: true };
+      }
+      confirmed = String(snapshot?.email || '').trim().toLowerCase();
+      return { activeId: 'a1', accounts: [{ id: 'a1', email: confirmed }, { id: 'b1', email: 'b@example.com' }], confirmedQuotaEmail: confirmed, canRecordQuota: Boolean(confirmed) };
+    },
+    completeAdd: async () => {
+      confirmed = '';
+      return { ok: true, accountChanged: true, relaunching: true, account: { id: 'b1', email: 'b@example.com' }, activeId: 'b1', accounts: [{ id: 'a1', email: 'a@example.com' }, { id: 'b1', email: 'b@example.com' }] };
+    },
+    switchAccount: async () => {
+      confirmed = '';
+      return { ok: true, relaunching: true, account: { id: 'b1', email: 'b@example.com' }, activeId: 'b1', accounts: [{ id: 'a1', email: 'a@example.com' }, { id: 'b1', email: 'b@example.com' }] };
+    }
+  };
+  try {
+    writeFileSync(portFile, '12345\n');
+    writeFileSync(join(dataDir, 'settings.json'), JSON.stringify({ enabled: true, multiAccount: true }));
+    globalThis.fetch = async () => ({ json: async () => [{ id: 'w1', type: 'page', title: 'Antigravity', url: origin + '/c/a', webSocketDebuggerUrl: 'ws://127.0.0.1:12345/devtools/page/a' }] });
+    stop = startNativeIntegration({
+      portFile,
+      dataDir,
+      platform: 'darwin',
+      home: '/Users/demo',
+      accountsStore: fakeAccounts,
+      macLauncher: {
+        inspect: opts => { macCalls.push({ fn: 'inspect', opts }); return { supported: true, exists: false, cliCommand: 'node launch' }; },
+        create: opts => { macCalls.push({ fn: 'create', opts }); return { ok: true, exists: true, appPath: '/Users/demo/Applications/Antigravity (Powertools).app' }; },
+        remove: opts => { macCalls.push({ fn: 'remove', opts }); return { ok: true, removed: true, exists: false }; },
+        reveal: opts => { macCalls.push({ fn: 'reveal', opts }); return { ok: true, revealed: true }; }
+      },
+      parseSessionData: () => ({}),
+      onStatus: () => {},
+      discover: async () => [],
+      connect: async () => ({
+        socket: { addEventListener() {}, close() {} },
+        onEvent(cb) { receiveEvent = cb; },
+        async send(method, params) {
+          if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'frame' } } };
+          if (method === 'Page.addScriptToEvaluateOnNewDocument') return { identifier: 'script' };
+          if (params?.expression?.startsWith('globalThis.__agyPowertoolsReceive?.(')) {
+            vm.runInNewContext(params.expression, { __agyPowertoolsReceive: (_id, data) => { lastReply = JSON.parse(JSON.stringify(data)); } });
+          }
+          return { result: { value: false } };
+        }
+      })
+    });
+    await stop.ready;
+    await receiveEvent({ method: 'Runtime.executionContextCreated', params: { context: { id: 7, origin, auxData: { isDefault: true, frameId: 'frame' } } } });
+    const rpc = async (method, payload = {}) => {
+      lastReply = null;
+      await receiveEvent({ method: 'Runtime.bindingCalled', params: { name: '__agyPowertoolsHost', executionContextId: 7, payload: JSON.stringify({ id: 1, method, ...payload }) } });
+      return lastReply;
+    };
+
+    // Unconfirmed account: dashboard & quota.observe & switch & completeAdd must NOT write timeline
+    await rpc('dashboard', { accountKey: 'unconfirmed@example.com' });
+    const obsSkipped = await rpc('quota.observe', { groups: [], accountKey: 'unconfirmed@example.com' });
+    assert.equal(obsSkipped.skipped, true);
+    await rpc('accounts.switch', { accountId: 'b1' });
+    await rpc('accounts.completeAdd', { email: 'b@example.com' });
+    await rpc('accounts.syncActive', { snapshot: { email: 'pending@example.com' } });
+    let timelineExists = false;
+    try { readFs(join(dataDir, 'account-timeline.json'), 'utf8'); timelineExists = true; } catch {}
+    assert.equal(timelineExists, false);
+
+    // Confirmed syncActive records quota timeline and allows quota.observe
+    await rpc('accounts.syncActive', { snapshot: { email: 'a@example.com' } });
+    const timeline = JSON.parse(readFs(join(dataDir, 'account-timeline.json'), 'utf8'));
+    assert.equal(timeline.at(-1)?.email, 'a@example.com');
+    const obsAllowed = await rpc('quota.observe', { groups: [], accountKey: 'a@example.com' });
+    assert.equal(obsAllowed.skipped, undefined);
+
+    // macOS direct-launch RPC handlers forward home, dataDir, pluginDir, platform, nodePath
+    assert.equal((await rpc('launcher.macStatus')).exists, false);
+    assert.equal((await rpc('launcher.macCreate')).exists, true);
+    assert.equal((await rpc('launcher.macReveal')).revealed, true);
+    assert.equal((await rpc('launcher.macRemove')).removed, true);
+    assert.deepEqual(macCalls.map(c => c.fn), ['inspect', 'create', 'reveal', 'remove']);
+    assert.equal(macCalls[0].opts.pluginDir, resolve('.'));
+    assert.equal(macCalls[1].opts.nodePath, process.execPath);
+    assert.equal(macCalls[1].opts.platform, 'darwin');
+    assert.equal(macCalls[1].opts.home, '/Users/demo');
+  } finally {
+    await stop?.();
+    globalThis.fetch = fetchBefore;
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test('Settings macDirectLauncher row renders only on macOS, toggles Create vs Reveal+Delete, copies CLI, handles errors, and has zero middle dots', async () => {
+  const panelsSrc = readFileSync(new URL('../lib/native-panels.js', import.meta.url), 'utf8');
+  const i18nSrc = readFileSync(new URL('../lib/native-i18n.js', import.meta.url), 'utf8');
+  const expand = node => {
+    if (!node || typeof node !== 'object') return node;
+    if (Array.isArray(node)) return node.map(expand);
+    if (typeof node.type === 'function') return expand(node.type({ ...(node.props || {}), children: node.children }));
+    return { ...node, children: Array.isArray(node.children) ? node.children.map(expand) : node.children };
+  };
+  const findByTestId = (node, tid) => {
+    if (!node || typeof node !== 'object') return null;
+    if (Array.isArray(node)) { for (const c of node) { const hit = findByTestId(c, tid); if (hit) return hit; } return null; }
+    if (node.props?.['data-testid'] === tid) return node;
+    return findByTestId(node.children, tid);
+  };
+  const collectText = node => {
+    if (typeof node === 'string' || typeof node === 'number') return String(node);
+    if (!node || typeof node !== 'object') return '';
+    if (Array.isArray(node)) return node.map(collectText).join(' ');
+    return collectText(node.children);
+  };
+
+  const renderSettings = ({ platform, language = 'zh-CN', initialStatus = null, createFail = '', copiedOut = [] }) => {
+    const states = new Map();
+    let currentComp = null;
+    let slotIdx = 0;
+    let status = initialStatus;
+    const calls = [];
+    const ctx = vm.createContext({
+      document: {
+        head: { append() {} },
+        createElement: () => ({ dataset: {}, textContent: '', remove() {} }),
+        createTreeWalker: () => ({ nextNode: () => null }),
+        querySelectorAll: () => []
+      },
+      NodeFilter: { SHOW_TEXT: 4 },
+      MutationObserver: class { observe() {} disconnect() {} },
+      URL,
+      window: { addEventListener() {}, removeEventListener() {} },
+      navigator: {
+        platform: platform === 'darwin' ? 'MacIntel' : platform === 'win32' ? 'Win32' : 'Linux x86_64',
+        userAgent: '',
+        clipboard: { writeText: async txt => { copiedOut.push(txt); } }
+      },
+      location: { pathname: '/powertools' },
+      setTimeout: fn => { fn; return 1; },
+      clearTimeout() {},
+      __agyToZhTw: toZhTw,
+      React: {
+        Fragment: Symbol('Fragment'),
+        createElement: (type, props, ...children) => ({ type, props: props || {}, children: children.flat() }),
+        useId: () => 'id-mac',
+        useState: init => {
+          const key = `${currentComp}:${slotIdx++}`;
+          if (!states.has(key)) states.set(key, typeof init === 'function' ? init() : init);
+          return [states.get(key), next => { states.set(key, typeof next === 'function' ? next(states.get(key)) : next); }];
+        },
+        useEffect: fn => { fn(); },
+        useRef: v => ({ current: v }),
+        useMemo: fn => fn(),
+        useCallback: fn => fn,
+        useSyncExternalStore: (_, g) => g()
+      },
+      HC: ({ children }) => children,
+      IC: ({ children }) => children,
+      JC: ({ children }) => children,
+      KC: ({ children }) => children,
+      GC: ({ children }) => children,
+      kT: ({ children }) => children,
+      lT: ({ children }) => children,
+      mT: ({ children }) => children,
+      nT: ({ children }) => children,
+      Uy: props => ({ type: 'button', props, children: props.children || [] }),
+      XP: props => ({ type: 'switch', props, children: [] }),
+      UP: props => ({ type: 'row', props, children: [props.label, props.description, props.rightElement, props.extraContent] }),
+      TP: ({ children }) => ({ type: 'card', props: {}, children }),
+      VP: ({ children }) => ({ type: 'section', props: {}, children }),
+      dq: props => ({ type: 'icon', props, children: [] }),
+      Sy: ({ children }) => children,
+      Wz: ({ children }) => children
+    });
+    const prevExpand = expand;
+    const expandStateful = node => {
+      if (!node || typeof node !== 'object') return node;
+      if (Array.isArray(node)) return node.map(expandStateful);
+      if (typeof node.type === 'function') {
+        const prevComp = currentComp, prevSlot = slotIdx;
+        currentComp = node.type.name || 'anon';
+        slotIdx = 0;
+        const out = node.type({ ...(node.props || {}), children: node.children });
+        const res = expandStateful(out);
+        currentComp = prevComp;
+        slotIdx = prevSlot;
+        return res;
+      }
+      return { ...node, children: Array.isArray(node.children) ? node.children.map(expandStateful) : node.children };
+    };
+    vm.runInContext(i18nSrc, ctx);
+    vm.runInContext(panelsSrc, ctx);
+    const panels = ctx.__agyPanels({
+      adapter: { router: () => ({ navigate() {} }) },
+      t: s => s,
+      version: '2.16.11',
+      platform,
+      defaults: { enabled: true, language },
+      project: { name: 'Agy Powertools', githubUrl: '', subscriptionUrl: '' },
+      options: () => ({ enabled: true, language, macAutoRelaunch: true }),
+      state: () => ({ contextWindow: { maxTokens: 1000000 } }),
+      settingsError: () => '',
+      proxyStatus: () => null,
+      loadProxyStatus: async () => null,
+      macDirectLauncher: () => status,
+      refreshMacDirectLauncher: async () => { calls.push('refresh'); return status; },
+      createMacDirectLauncher: async () => {
+        calls.push('create');
+        if (createFail) throw new Error(createFail);
+        status = { supported: true, exists: true, cliCommand: 'node "$HOME/.gemini/config/plugins/agy-powertools/scripts/launch-macos.mjs"' };
+        return status;
+      },
+      removeMacDirectLauncher: async () => {
+        calls.push('remove');
+        status = { supported: true, exists: false, cliCommand: 'node "$HOME/.gemini/config/plugins/agy-powertools/scripts/launch-macos.mjs"' };
+        return status;
+      },
+      revealMacDirectLauncher: async () => { calls.push('reveal'); return { ok: true, revealed: true }; },
+      change: async () => {},
+      subscribe: () => () => {},
+      revision: () => 0
+    });
+    const render = () => expandStateful({ type: panels.Settings, props: {}, children: [] });
+    return { panels, render, calls, prevExpand };
+  };
+
+  // Hidden completely on Windows & Linux (including under System tab)
+  for (const os of ['win32', 'linux']) {
+    const view = renderSettings({ platform: os });
+    let tree = view.render();
+    findByTestId(tree, 'agy-settings-cat-system').props.onClick();
+    tree = view.render();
+    assert.equal(findByTestId(tree, 'agy-setting-row-macAutoRelaunch'), null);
+    assert.equal(findByTestId(tree, 'agy-setting-row-macDirectLauncher'), null);
+    view.panels.dispose();
+  }
+
+  // Shown on macOS under System tab: Create -> Reveal+Delete -> Delete -> Create, plus Copy CLI & zero middle dots
+  const copied = [];
+  const mac = renderSettings({
+    platform: 'darwin',
+    language: 'zh-CN',
+    initialStatus: { supported: true, exists: false, cliCommand: 'node "$HOME/.gemini/config/plugins/agy-powertools/scripts/launch-macos.mjs"' },
+    copiedOut: copied
+  });
+  let tree = mac.render();
+  findByTestId(tree, 'agy-settings-cat-system').props.onClick();
+  tree = mac.render();
+  const row = findByTestId(tree, 'agy-setting-row-macDirectLauncher');
+  assert.ok(row);
+  assert.ok(findByTestId(tree, 'agy-setting-row-macAutoRelaunch'));
+  const createBtn = findByTestId(row, 'agy-mac-launcher-create');
+  const copyBtn = findByTestId(row, 'agy-mac-launcher-copy-cli');
+  assert.ok(createBtn && copyBtn);
+  assert.equal(findByTestId(row, 'agy-mac-launcher-reveal'), null);
+  assert.equal(findByTestId(row, 'agy-mac-launcher-remove'), null);
+  assert.doesNotMatch(collectText(row), /[\u00b7\u2022\u2027\u30fb]/);
+
+  await createBtn.props.onClick();
+  await new Promise(r => setImmediate(r));
+  tree = mac.render();
+  const rowAfterCreate = findByTestId(tree, 'agy-setting-row-macDirectLauncher');
+  assert.equal(findByTestId(rowAfterCreate, 'agy-mac-launcher-create'), null);
+  const revealBtn = findByTestId(rowAfterCreate, 'agy-mac-launcher-reveal');
+  const removeBtn = findByTestId(rowAfterCreate, 'agy-mac-launcher-remove');
+  const feedbackOk = findByTestId(rowAfterCreate, 'agy-mac-launcher-feedback');
+  assert.ok(revealBtn && removeBtn && feedbackOk);
+  assert.equal(feedbackOk.props['data-tone'], 'ok');
+  assert.doesNotMatch(collectText(rowAfterCreate), /[\u00b7\u2022\u2027\u30fb]/);
+
+  await revealBtn.props.onClick();
+  await copyBtn.props.onClick();
+  await new Promise(r => setImmediate(r));
+  assert.equal(copied.at(-1), 'node "$HOME/.gemini/config/plugins/agy-powertools/scripts/launch-macos.mjs"');
+
+  await removeBtn.props.onClick();
+  await new Promise(r => setImmediate(r));
+  tree = mac.render();
+  assert.ok(findByTestId(tree, 'agy-mac-launcher-create'));
+  assert.equal(findByTestId(tree, 'agy-mac-launcher-remove'), null);
+  mac.panels.dispose();
+
+  // Error handling surfaces inline error feedback cleanly
+  const errMac = renderSettings({
+    platform: 'darwin',
+    language: 'en',
+    initialStatus: { supported: true, exists: false, cliCommand: 'node launch-macos.mjs' },
+    createFail: 'Antigravity.app was not found'
+  });
+  let errTree = errMac.render();
+  findByTestId(errTree, 'agy-settings-cat-system').props.onClick();
+  errTree = errMac.render();
+  await findByTestId(errTree, 'agy-mac-launcher-create').props.onClick();
+  await new Promise(r => setImmediate(r));
+  errTree = errMac.render();
+  const fbErr = findByTestId(errTree, 'agy-mac-launcher-feedback');
+  assert.ok(fbErr);
+  assert.equal(fbErr.props['data-tone'], 'error');
+  assert.match(collectText(fbErr), /Antigravity\.app was not found/);
+  assert.doesNotMatch(collectText(errTree), /[\u00b7\u2022\u2027\u30fb]/);
+  errMac.panels.dispose();
+});
+
+test('duration carries >= 1h, tokens carry >= 1e9 to B and format zh 万/亿/萬/億, and moneyText converts USD/CNY live across SessionStatsDetails, ContextDetails, and ResponseTurnMeta', async () => {
+  const p = page(true);
+  p.context.location.pathname = '/c/conv-fmt';
+  p.context.__agyToZhTw = toZhTw;
+  let capturedEnv = null;
+  const renderedByKind = new Map();
+  p.context.React = {
+    Fragment: Symbol('Fragment'),
+    createElement: (type, props, ...children) => ({ type, props: props || {}, children: children.flat() }),
+    useEffect() {},
+    useSyncExternalStore: (_, getSnap) => getSnap()
+  };
+  p.context.ReactDOM = {
+    createRoot(mount) {
+      return {
+        render(el) { renderedByKind.set(mount.dataset.agyPowertoolsRoot, el); },
+        unmount() {}
+      };
+    }
+  };
+  p.context.getComputedStyle = () => ({ display: 'flex' });
+  p.context.HC = ({ children }) => ({ type: 'popover', props: {}, children });
+  p.context.IC = ({ children }) => ({ type: 'trigger', props: {}, children });
+  p.context.JC = props => ({ type: 'dialog', props, children: props.children || [] });
+  p.context.Uy = props => ({ type: 'button', props, children: props.children || [] });
+  p.context.k0 = props => ({ type: 'disclosure', props, children: [props.trigger, ...(props.children || [])] });
+  p.context.Sy = props => ({ type: 'tooltip', props, children: props.children || [] });
+  p.context.dq = props => ({ type: 'icon', props, children: [] });
+  p.context.HU = m => m?.stepIndex;
+  p.context.__agyNativeAdapter.wrap = el => el;
+  p.context.__agyNativeAdapter.installPage = () => true;
+  p.context.__agyNativeAdapter.composerCascadeId = () => 'conv-fmt';
+  p.context.__agyPanels = env => { capturedEnv = env; return { Page: () => null, Sidebar: () => null, dispose() {} }; };
+
+  const parent = { insertBefore(child) { child.isConnected = true; } };
+  const trigger = { isConnected: true, parentElement: parent, nextSibling: null, closest: sel => sel === '.surface-composer-card' ? {} : null };
+  const feedbackBtn = { parentElement: { insertBefore(child) { child.isConnected = true; } } };
+  const responseEl = {
+    isConnected: true,
+    firstChild: null,
+    children: [],
+    insertBefore(child) { child.isConnected = true; },
+    closest: sel => sel === '[data-turn-content]' ? {
+      querySelector: s => s === '[aria-label="Bad response"]' ? feedbackBtn : null,
+      querySelectorAll: () => []
+    } : null,
+    querySelector: () => null,
+    querySelectorAll: () => []
+  };
+  p.context.__agyNativeAdapter.fiber = el => el === responseEl ? { memoizedProps: { container: { steps: [{ step: { case: 'userInput' }, metadata: { stepIndex: 1 } }] } }, return: null } : null;
+  p.document.querySelectorAll = sel => {
+    if (sel === '[data-testid="model-selector-trigger"]') return [trigger];
+    if (sel === '[data-testid="agent-response"]') return [responseEl];
+    return [];
+  };
+
+  let stored = { enabled: true, contextRing: true, speedStats: true, timing: true, turnMeta: true, language: 'zh-CN', tokenUnit: 'compact', currency: 'USD', cnyRate: 7.2 };
+  const sampleState = {
+    conversationId: 'conv-fmt',
+    modelName: 'Gemini 4 Carbon',
+    costUsd: 10.5,
+    contextWindow: {
+      usedPercent: 24,
+      usedTokens: 237700,
+      maxTokens: 1000000,
+      inputTokens: 8540,
+      cacheReadTokens: 229160,
+      categories: [
+        { key: 'msgs', label: 'Chat Messages', tokens: 237700, percent: 23.8 },
+        { key: 'free', label: '剩余空间', tokens: 762300, percent: 76.2 }
+      ]
+    },
+    telemetry: {
+      turnCount: 3,
+      stepCount: 20,
+      totalTokens: 1183000000,
+      inputTokens: 14210000,
+      cacheReadTokens: 237700,
+      outputTokens: 8540,
+      thinkingTokens: 381,
+      requestCount: 12,
+      errorCount: 0,
+      toolCount: 6,
+      tps: 54,
+      peakTps: 88,
+      latestTps: 60,
+      cacheHitPercent: 92,
+      modelTimeMs: 78798000,
+      toolTimeMs: 125000,
+      avgTtftMs: 42000
+    },
+    turns: [{
+      turnNumber: 1,
+      status: 'done',
+      stepIndexStart: 1,
+      stepIndexEnd: 5,
+      durationMs: 78798000,
+      completedAtIso: '2026-11-27T10:00:00Z',
+      toolCalls: [],
+      toolGroups: [],
+      modelName: 'Gemini 4 Carbon',
+      shortModel: 'Carbon',
+      newInputTokens: 8540,
+      cacheReadTokens: 229160,
+      totalInputTokens: 237700,
+      outputTokens: 15000,
+      thinkingTokens: 0,
+      cacheHitPercent: 96,
+      requestCount: 2,
+      tps: 58,
+      costUsd: 0.0008
+    }],
+    requests: [],
+    errors: []
+  };
+
+  p.context.__agyPowertoolsHost = raw => {
+    const req = JSON.parse(raw);
+    queueMicrotask(() => {
+      if (req.method === 'settings.get') p.context.__agyPowertoolsReceive(req.id, { ...stored });
+      else if (req.method === 'settings.set') { stored = { ...stored, ...req.settings }; p.context.__agyPowertoolsReceive(req.id, { ...stored }); }
+      else if (req.method === 'state') p.context.__agyPowertoolsReceive(req.id, JSON.parse(JSON.stringify(sampleState)));
+      else p.context.__agyPowertoolsReceive(req.id, { ok: true });
+    });
+  };
+  p.context.__agyInitialSettings = { ...stored };
+  vm.runInContext(source, p.context);
+  await new Promise(r => setTimeout(r, 25));
+
+  const collectText = node => {
+    if (node == null || typeof node === 'boolean') return '';
+    if (typeof node === 'string' || typeof node === 'number') return String(node);
+    if (Array.isArray(node)) return node.map(collectText).join(' ');
+    if (typeof node === 'object') {
+      if (typeof node.type === 'function') return collectText(node.type({ ...(node.props || {}), children: node.children }));
+      return collectText(node.children);
+    }
+    return '';
+  };
+
+  // 1. Default zh-CN + compact + USD: hours carry, >=1e9 carries to B, USD formatted
+  let ringText = collectText(renderedByKind.get('ring'));
+  let compText = collectText(renderedByKind.get('completion'));
+  let metaText = collectText(renderedByKind.get('turn-meta'));
+  assert.match(ringText, /1\.18B/);
+  assert.match(ringText, /14\.2M/);
+  assert.match(ringText, /237\.7k/);
+  assert.match(ringText, /\$10\.50/);
+  assert.match(ringText, /21小时53分18秒/);
+  assert.match(ringText, /2分5秒/);
+  assert.match(ringText, /42秒/);
+  assert.match(compText, /用时 21小时53分18秒/);
+  assert.match(metaText, /\$0\.0008/);
+  assert.doesNotMatch(`${ringText} ${compText} ${metaText}`, /[\u00b7\u2022\u2027\u30fb]/);
+
+  // 2. Switch to zh-CN + zh units + CNY with custom rate 7.5
+  await capturedEnv.change({ tokenUnit: 'zh', currency: 'CNY', cnyRate: 7.5 });
+  ringText = collectText(renderedByKind.get('ring'));
+  metaText = collectText(renderedByKind.get('turn-meta'));
+  assert.match(ringText, /11\.83亿/);
+  assert.match(ringText, /1421万/);
+  assert.match(ringText, /23\.77万 \/ 100万/);
+  assert.match(ringText, /\b8540\b/);
+  assert.match(ringText, /\b381\b/);
+  assert.match(ringText, /¥78\.75/);
+  assert.match(metaText, /23\.77万/);
+  assert.match(metaText, /1\.5万/);
+  assert.match(metaText, /¥0\.0060/);
+  assert.doesNotMatch(`${ringText} ${metaText}`, /[\u00b7\u2022\u2027\u30fb]/);
+
+  // 3. Switch to zh-TW + zh units + CNY (rate 7.2): Traditional 小時 / 億 / 萬
+  await capturedEnv.change({ language: 'zh-TW', cnyRate: 7.2 });
+  ringText = collectText(renderedByKind.get('ring'));
+  compText = collectText(renderedByKind.get('completion'));
+  assert.match(ringText, /21小時53分18秒/);
+  assert.match(ringText, /11\.83億/);
+  assert.match(ringText, /23\.77萬 \/ 100萬/);
+  assert.match(ringText, /¥75\.60/);
+  assert.match(compText, /21小時53分18秒/);
+
+  // 4. Switch to en + compact + USD: 21h 53m 18s / 2m 5s / 42s / 1.18B / $10.50
+  await capturedEnv.change({ language: 'en', tokenUnit: 'compact', currency: 'USD' });
+  ringText = collectText(renderedByKind.get('ring'));
+  compText = collectText(renderedByKind.get('completion'));
+  assert.match(ringText, /21h 53m 18s/);
+  assert.match(ringText, /2m 5s/);
+  assert.match(ringText, /42s/);
+  assert.match(ringText, /1\.18B/);
+  assert.match(ringText, /\$10\.50/);
+  assert.match(compText, /Worked for 21h 53m 18s/);
+  p.context.__agyPowertools.dispose();
 });

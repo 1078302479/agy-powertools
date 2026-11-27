@@ -209,12 +209,18 @@ test('Windows PowerShell WIN32_SCRIPT compiles Add-Type and extracts id_token_em
   }), 'utf8').toString('base64')}`;
   const goKeyringDouble = `go-keyring-base64:${Buffer.from(goKeyringSingle, 'utf8').toString('base64')}`;
   const goKeyringTriple = `go-keyring-base64:${Buffer.from(goKeyringDouble, 'utf8').toString('base64')}`;
+  const escapedDecoyPayload = JSON.stringify({
+    note: '"id_token_email":"fake@example.com","refresh_token":"rt-fake"',
+    id_token_email: 'Escaped@Example.com',
+    token: { refresh_token: 'rt-escaped-1' }
+  });
   const expectedRfA = createHash('sha256').update('rt-a').digest('hex').slice(0, 12);
   const expectedRfBeta = createHash('sha256').update('rt-beta-123').digest('hex').slice(0, 12);
   const expectedRfMac = createHash('sha256').update('rt-mac-001').digest('hex').slice(0, 12);
+  const expectedRfEscaped = createHash('sha256').update('rt-escaped-1').digest('hex').slice(0, 12);
   const verifyScript = [
     addTypeBlock,
-    '$cases = @($env:AGY_TEST_C1, $env:AGY_TEST_C2, $env:AGY_TEST_C3, $env:AGY_TEST_C4, $env:AGY_TEST_C5, $env:AGY_TEST_C6, $env:AGY_TEST_C7, $env:AGY_TEST_C8)',
+    '$cases = @($env:AGY_TEST_C1, $env:AGY_TEST_C2, $env:AGY_TEST_C3, $env:AGY_TEST_C4, $env:AGY_TEST_C5, $env:AGY_TEST_C6, $env:AGY_TEST_C7, $env:AGY_TEST_C8, $env:AGY_TEST_C9)',
     '$out = foreach ($c in $cases) {',
     '  $b = [System.Text.Encoding]::UTF8.GetBytes($c)',
     '  ([AgyWinCred]::ExtractEmail($b)) + ":" + ([AgyWinCred]::ExtractRefreshHash($b))',
@@ -237,7 +243,8 @@ test('Windows PowerShell WIN32_SCRIPT compiles Add-Type and extracts id_token_em
         AGY_TEST_C5: goKeyringSingle,
         AGY_TEST_C6: goKeyringDouble,
         AGY_TEST_C7: goKeyringTriple,
-        AGY_TEST_C8: 'go-keyring-base64:!!!not-base64!!!'
+        AGY_TEST_C8: 'go-keyring-base64:!!!not-base64!!!',
+        AGY_TEST_C9: escapedDecoyPayload
       }
     }
   );
@@ -245,8 +252,79 @@ test('Windows PowerShell WIN32_SCRIPT compiles Add-Type and extracts id_token_em
   const line = String(res.stdout || '').trim().split(/\r?\n/).filter(Boolean).at(-1) || '';
   assert.equal(
     line,
-    `alpha@example.com:${expectedRfA}|real@example.com:|beta@example.com:${expectedRfBeta}|:|mac@example.com:${expectedRfMac}|mac@example.com:${expectedRfMac}|:|:`
+    `alpha@example.com:${expectedRfA}|real@example.com:|beta@example.com:${expectedRfBeta}|:|mac@example.com:${expectedRfMac}|mac@example.com:${expectedRfMac}|:|:|escaped@example.com:${expectedRfEscaped}`
   );
+});
+
+test('PR #102: credential vault fails closed on unextractable email, invalid expectedEmail, and expectedHash mismatch across backends', () => {
+  const raw = JSON.stringify({ id_token_email: 'Test@example.invalid', token: { refresh_token: 'rt-1' } });
+  const wrap = text => 'go-keyring-base64:' + Buffer.from(text).toString('base64');
+  let macSecret = wrap(raw);
+  const macWrites = [];
+  const macVault = createCredentialVault({
+    platform: 'darwin',
+    runSpawn(cmd, args, opts) {
+      if (cmd === '/usr/bin/osascript') return { status: 1 };
+      if (args.includes('-w')) return { status: 0, stdout: Buffer.from(macSecret + '\n') };
+      macWrites.push(opts.input);
+      return { status: 0 };
+    }
+  });
+  const okHash = macVault.inspectActive().hash;
+  assert.equal(macVault.saveActiveTo('acct-test', { expectedEmail: 'test@example.invalid', expectedHash: okHash }).ok, true);
+  assert.equal(macWrites.length, 1);
+  // expectedHash mismatch blocks write
+  const staleHashRes = macVault.saveActiveTo('acct-test', { expectedEmail: 'test@example.invalid', expectedHash: '000000000000' });
+  assert.equal(staleHashRes.ok, false);
+  assert.match(staleHashRes.error, /changed/);
+  // Invalid expectedEmail fails closed before reading
+  assert.equal(macVault.saveActiveTo('acct-test', { expectedEmail: 'not-an-email' }).ok, false);
+  // Opaque / malformed / missing-email / over-nested secrets MUST fail closed with mismatch: true
+  for (const bad of [wrap(raw) + '!', wrap('opaque'), wrap(JSON.stringify({})), wrap(wrap(wrap(raw)))]) {
+    macSecret = bad;
+    assert.equal(macVault.inspectActive().email, undefined);
+    const res = macVault.restoreToActive('acct-test', { expectedEmail: 'test@example.invalid' });
+    assert.equal(res.ok, false);
+    assert.equal(res.mismatch, true);
+    assert.equal(res.actualEmail, '');
+  }
+  assert.equal(macWrites.length, 1);
+
+  // Linux: opaque token fails closed when expectedEmail is specified
+  const linuxOps = [];
+  const linuxVault = createCredentialVault({
+    platform: 'linux',
+    wsl: false,
+    runSpawn(_cmd, args) {
+      linuxOps.push(args[0]);
+      if (args[0] === 'lookup') return { status: 0, stdout: Buffer.from('opaque-token') };
+      return { status: 0, stdout: '' };
+    }
+  });
+  const linuxBlocked = linuxVault.saveActiveTo('acct-test', { expectedEmail: 'test@example.invalid' });
+  assert.equal(linuxBlocked.ok, false);
+  assert.equal(linuxBlocked.mismatch, true);
+  assert.equal(linuxBlocked.actualEmail, '');
+  assert.equal(linuxOps.includes('store'), false);
+
+  // Windows: forwards AGY_CRED_EXPECTED_HASH and fails closed on empty actualEmail mismatch JSON
+  const winEnvs = [];
+  const winVault = createCredentialVault({
+    platform: 'win32',
+    runSpawn(_cmd, _args, opts) {
+      winEnvs.push(opts.env);
+      return {
+        status: 1,
+        stdout: '{"ok":false,"mismatch":true,"actualEmail":"","expectedEmail":"test@example.invalid","error":"credential email mismatch"}\n',
+        stderr: ''
+      };
+    }
+  });
+  const winBlocked = winVault.restoreToActive('acct-test', { expectedEmail: 'test@example.invalid', expectedHash: 'AABBCCDDEEFF' });
+  assert.equal(winBlocked.ok, false);
+  assert.equal(winBlocked.mismatch, true);
+  assert.equal(winBlocked.actualEmail, '');
+  assert.equal(winEnvs[0].AGY_CRED_EXPECTED_HASH, 'AABBCCDDEEFF');
 });
 
 test('extractCredentialMeta unwraps go-keyring-base64: with depth <= 2, computes refreshHash, and blocks mismatched macOS writes (Issues #95 & #97)', () => {

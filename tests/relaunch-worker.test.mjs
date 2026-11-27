@@ -8,7 +8,10 @@ import { pathToFileURL } from 'node:url';
 import {
   validateRelaunchJob,
   parseTasklistPids,
+  parseCredentialWriterPids,
   listWindowsImagePids,
+  listWindowsCredentialWriters,
+  verifiedSwitchProfileDir,
   buildCleanTargetEnv,
   runRelaunchJob
 } from '../scripts/relaunch-worker.mjs';
@@ -955,6 +958,182 @@ test('inspectWindowsShortcutBytes safely scans arbitrary binary/surrogate .lnk p
       hasDefaultDebugFlag: false,
       readable: true
     });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('PR #102: relaunch-worker catches language_server_windows_x64.exe & agy.exe via fail-closed CSV, pins custom profileDir, and emits appliedSwitchId/failedSwitchId without stranding IDE', async () => {
+  // 1. parseCredentialWriterPids matches Antigravity.exe, language_server*.exe, and agy.exe and fails closed on diagnostics/truncation
+  const rows = [
+    'Antigravity.exe',
+    'language_server.exe',
+    'language_server_windows_x64.exe',
+    'agy.exe',
+    'node.exe'
+  ].map((name, i) => `"${name}","${i + 10}","Console","1","200 K"`);
+  assert.deepEqual(parseCredentialWriterPids(rows.join('\r\n'), 10), [11, 12, 13]);
+  for (const bad of ['', 'INFO: No tasks are running.', rows[0] + '\ntruncated']) {
+    assert.throws(() => parseCredentialWriterPids(bad, 10), /process-list-unavailable/);
+  }
+
+  // 2. listWindowsCredentialWriters scopes to current USERNAME first, falls back to unfiltered CSV, and fails closed on error
+  const scopedCalls = [];
+  const scoped = listWindowsCredentialWriters({
+    excludePids: new Set([10]),
+    env: { USERNAME: 'Alice.Dev' },
+    runCommand: (_cmd, args) => {
+      scopedCalls.push(args);
+      return { status: 0, stdout: rows.join('\r\n') };
+    }
+  });
+  assert.deepEqual(scoped, [11, 12, 13]);
+  assert.equal(scopedCalls.length, 1);
+  assert.ok(scopedCalls[0].includes('USERNAME eq Alice.Dev'));
+
+  assert.throws(() => listWindowsCredentialWriters({
+    env: { USERNAME: 'Alice.Dev' },
+    runCommand: () => ({ status: 1, stdout: '' })
+  }), /process-list-unavailable/);
+
+  // 3. profileDir validation, ANTIGRAVITY_USER_DATA_DIR preservation, switchId/expectedHash ACK, and non-stranding launch
+  const root = mkdtempSync(join(tmpdir(), 'agy-worker-102-'));
+  try {
+    const target = join(root, 'Antigravity.exe');
+    writeFileSync(target, '');
+    const customProfile = join(root, 'custom profile');
+    const explorerProfile = join(root, 'Antigravity');
+    mkdirSync(customProfile, { recursive: true });
+    mkdirSync(explorerProfile, { recursive: true });
+    const canonicalProfile = verifiedSwitchProfileDir(customProfile);
+    const customScope = join(canonicalProfile, 'credential-user-scope');
+    const explorerScope = join(explorerProfile, 'credential-user-scope');
+    writeFileSync(customScope, 'stale-custom-scope');
+    writeFileSync(explorerScope, 'keep-explorer-scope');
+
+    const switchId = '11111111-2222-3333-4444-555555555555';
+    const expectedHash = 'AABBCCDDEEFF';
+    const jobPath = join(root, 'relaunch-job.json');
+    const ackPath = join(root, 'relaunch-ack.json');
+    const accountsPath = join(root, 'accounts.json');
+    const seedAccounts = () => writeFileSync(accountsPath, JSON.stringify({
+      version: 2,
+      activeId: 'acct-alpha',
+      pendingSwitch: {
+        targetId: 'acct-beta',
+        targetEmail: 'beta@example.com',
+        atMs: Date.now(),
+        switchId,
+        profileDir: canonicalProfile
+      },
+      accounts: [
+        { id: 'acct-alpha', email: 'alpha@example.com', credHash: '111111111111', hasCredential: true },
+        { id: 'acct-beta', email: 'beta@example.com', credHash: expectedHash, hasCredential: true }
+      ]
+    }));
+    seedAccounts();
+
+    const baseJob = {
+      format: 1,
+      nonce: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+      requestedAt: Date.now(),
+      target,
+      args: ['--remote-debugging-port=0'],
+      proxyEnabled: false,
+      forceHttp1: false,
+      proxyEnv: null,
+      onboardingSync: null,
+      profileDir: canonicalProfile,
+      credentialSwitch: { accountId: 'acct-beta', expectedEmail: 'beta@example.com', expectedHash, switchId },
+      ackPath
+    };
+
+    // Validation checks: require valid profileDir when switchId set, reject relative/extra fields
+    assert.equal(validateRelaunchJob(baseJob, { jobPath }).valid, true);
+    assert.equal(validateRelaunchJob({ ...baseJob, profileDir: undefined }, { jobPath }).reason, 'invalid-switch-profile');
+    assert.equal(validateRelaunchJob({ ...baseJob, profileDir: 'relative/dir' }, { jobPath }).reason, 'invalid-switch-profile');
+    assert.equal(validateRelaunchJob({ ...baseJob, credentialSwitch: { ...baseJob.credentialSwitch, extra: 'bad' } }, { jobPath }).reason, 'invalid-credential-switch');
+
+    // Happy path: waits for writer exit, verifies expectedHash, deletes customProfile scope, passes ANTIGRAVITY_USER_DATA_DIR, writes appliedSwitchId
+    writeFileSync(jobPath, JSON.stringify(baseJob));
+    let writerChecks = 0;
+    let restoredOpts = null;
+    let spawnedEnv = null;
+    const okRes = await runRelaunchJob(jobPath, {
+      env: { APPDATA: root, ANTIGRAVITY_USER_DATA_DIR: explorerProfile },
+      listTargetPids: () => [],
+      listLanguageServerPids: () => [],
+      listWriterPids: () => (++writerChecks === 1 ? [88001] : []),
+      vault: {
+        backend: 'win32-credman',
+        restoreToActive(accountId, opts) {
+          restoredOpts = { accountId, ...opts };
+          return { ok: true };
+        }
+      },
+      spawnProcess: (_cmd, _args, opts) => {
+        spawnedEnv = opts.env;
+        return { pid: process.pid, on() {}, unref() {} };
+      },
+      settleMs: 5,
+      postExitSettleMs: 5,
+      writerTimeoutMs: 500,
+      verifyDelayMs: 5,
+      pollMs: 5
+    });
+    assert.equal(okRes.ok, true);
+    assert.equal(okRes.appliedSwitchId, switchId);
+    assert.deepEqual(restoredOpts, { accountId: 'acct-beta', expectedEmail: 'beta@example.com', expectedHash });
+    assert.equal(spawnedEnv.ANTIGRAVITY_USER_DATA_DIR, canonicalProfile);
+    assert.equal(existsSync(customScope), false);
+    assert.equal(readFileSync(explorerScope, 'utf8'), 'keep-explorer-scope');
+    assert.equal(JSON.parse(readFileSync(ackPath, 'utf8')).appliedSwitchId, switchId);
+
+    // Post-exit tasklist error (process-list-unavailable): skips restore & scope cleanup, STILL launches IDE (never stranded!), writes failedSwitchId
+    writeFileSync(customScope, 'keep-on-tasklist-err');
+    writeFileSync(jobPath, JSON.stringify(baseJob));
+    let restoreOnErr = 0;
+    let spawnOnErr = 0;
+    const errRes = await runRelaunchJob(jobPath, {
+      env: { APPDATA: root },
+      listTargetPids: () => [],
+      listLanguageServerPids: () => [],
+      listWriterPids: () => { throw new Error('process-list-unavailable'); },
+      vault: {
+        backend: 'win32-credman',
+        restoreToActive() { restoreOnErr++; return { ok: true }; }
+      },
+      spawnProcess: () => { spawnOnErr++; return { pid: process.pid, on() {}, unref() {} }; },
+      settleMs: 5,
+      postExitSettleMs: 5,
+      verifyDelayMs: 5,
+      pollMs: 5
+    });
+    assert.equal(errRes.ok, true);
+    assert.equal(errRes.restoreFailed, true);
+    assert.equal(errRes.reason, 'process-list-unavailable');
+    assert.equal(errRes.failedSwitchId, switchId);
+    assert.equal(restoreOnErr, 0);
+    assert.equal(spawnOnErr, 1);
+    assert.equal(existsSync(customScope), true);
+    const errAck = JSON.parse(readFileSync(ackPath, 'utf8'));
+    assert.equal(errAck.failedSwitchId, switchId);
+    assert.equal(errAck.appliedSwitchId, undefined);
+
+    // Pre-close cancelled switch aborts cleanly BEFORE closing Antigravity and writes state: 'failed' + failedSwitchId
+    writeFileSync(accountsPath, JSON.stringify({ version: 2, activeId: 'acct-alpha', pendingSwitch: null, accounts: [] }));
+    writeFileSync(jobPath, JSON.stringify(baseJob));
+    let closedOnCancel = 0;
+    const cancelRes = await runRelaunchJob(jobPath, {
+      listTargetPids: () => { closedOnCancel++; return [999]; },
+      settleMs: 5
+    });
+    assert.equal(cancelRes.ok, false);
+    assert.equal(cancelRes.reason, 'switch-cancelled');
+    assert.equal(closedOnCancel, 0);
+    const cancelAck = JSON.parse(readFileSync(ackPath, 'utf8'));
+    assert.equal(cancelAck.state, 'failed');
+    assert.equal(cancelAck.failedSwitchId, switchId);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

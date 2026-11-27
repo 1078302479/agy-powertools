@@ -334,6 +334,34 @@ test('sidebar monitor decorates running rows with flowing beam, hides only 4-dot
   assert.doesNotMatch(css, /conic-gradient|offset-path|pt-run-head-dot|pt-run-pause-btn/);
   assert.match(css, /data-agy-sb-palette="aurora"/);
   assert.match(css, /data-agy-sb-palette="quota"/);
+  // Pulse Inner & Pulse Outside razor-thin 1px 3-spotlight living engine, coprime timing, hue-rotate guard, masks, overflow guard, and reduced-motion rules
+  assert.match(css, /@keyframes agy-sb-hue\{[\s\S]*?hue-rotate\(360deg\)/);
+  assert.match(css, /@keyframes agy-sb-p1\{/);
+  assert.match(css, /@keyframes agy-sb-p2\{/);
+  assert.match(css, /@keyframes agy-sb-p3\{/);
+  assert.match(css, /html\[data-agy-sb-style="pulse-inner"\][^{]*\.agy-sb-beam-border[^{]*\{[^}]*padding:1px;/);
+  assert.match(css, /animation:agy-sb-hue 10s linear infinite;/);
+  assert.match(css, /animation:agy-sb-p1 4\.1s ease-in-out infinite;/);
+  assert.match(css, /animation:agy-sb-p2 5\.7s ease-in-out -1\.9s infinite;/);
+  assert.match(css, /animation:agy-sb-p3 7\.3s ease-in-out -3\.8s infinite;/);
+  assert.match(css, /\[data-agy-sb-palette="accent"\][^{]*\.agy-sb-slide[^{]*\{[^}]*animation:none;[^}]*filter:none;/);
+  assert.match(css, /\[data-agy-sb-palette="quota"\][^{]*\.agy-sb-slide[^{]*\{[^}]*animation:none;[^}]*filter:none;/);
+  assert.match(css, /\[data-agy-sb-state="waiting"\] \.agy-sb-slide[^{]*\{[^}]*animation:none;[^}]*filter:none;/);
+  assert.match(css, /html\[data-agy-sb-style="pulse-inner"\][^{]*\.agy-sb-beam-glow \.agy-sb-fade\{[^}]*transparent 10px[^}]*transparent 16px[^}]*mask-composite:add/);
+  assert.match(css, /html\[data-agy-sb-style="pulse-inner"\][^{]*\.agy-sb-plume\{[^}]*filter:blur\(7px\) saturate\(1\.3\);[^}]*opacity:\.3;/);
+  assert.match(css, /html\[data-agy-sb-style="pulse-outside"\] \[data-agy-sb-running="true"\]\{[^}]*overflow:visible!important/);
+  assert.match(css, /html\[data-agy-sb-style="pulse-outside"\] \.pt-run-list\{[^}]*padding:4px 4px;[^}]*gap:4px;/);
+  assert.match(css, /html\[data-agy-sb-style="pulse-outside"\][^{]*\.agy-sb-beam-glow\{[^}]*inset:-4px -3px;[^}]*padding:4px 3px;[^}]*border-radius:11px \/ 12px;[^}]*z-index:-1;[^}]*mask-composite:exclude/);
+  assert.match(css, /html\[data-agy-sb-style="pulse-outside"\][^{]*\.agy-sb-beam-glow \.agy-sb-fade\{[^}]*3\.5px[^}]*2\.5px[^}]*mask-composite:intersect/);
+  assert.match(css, /html\[data-agy-sb-style="pulse-outside"\][^{]*\.agy-sb-plume\{[^}]*inset:4px 3px;[^}]*opacity:\.46;/);
+  assert.match(css, /html\[data-agy-sb-style="pulse-outside"\][^{]*\.agy-sb-plume \.agy-sb-p1::before[^{]*\{[^}]*inset:-1px;[^}]*filter:blur\(4px\) saturate\(1\.32\) brightness\(\.94\);[^}]*opacity:\.86;/);
+  assert.match(css, /html\[data-agy-sb-style="pulse-outside"\][^{]*\.agy-sb-plume \.agy-sb-p1::after[^{]*\{[^}]*inset:-2px;[^}]*filter:blur\(6px\) saturate\(1\.32\) brightness\(\.94\);[^}]*opacity:\.54;/);
+  assert.match(css, /@media \(prefers-reduced-motion: reduce\)\{[^}]*animation:none!important/);
+  assert.deepEqual([...context.__agySidebarMonitorHelpers.BEAM_STYLES], ['sweep', 'pulse-inner', 'pulse-outside']);
+  assert.equal(context.__agySidebarMonitorHelpers.resolveEffectiveStyle({}), 'sweep');
+  assert.equal(context.__agySidebarMonitorHelpers.resolveEffectiveStyle({ sidebarRunningBeamStyle: 'pulse-inner' }), 'pulse-inner');
+  assert.equal(context.__agySidebarMonitorHelpers.resolveEffectiveStyle({ sidebarRunningBeamStyle: 'pulse-outside' }), 'pulse-outside');
+  assert.equal(context.__agySidebarMonitorHelpers.resolveEffectiveStyle({ sidebarRunningBeamStyle: 'bogus' }), 'sweep');
   assert.equal(context.__agySidebarMonitorHelpers.expandPaletteStops(context.__agySidebarMonitorHelpers.PALETTE_DEFS.gemini).length, 6);
   assert.equal(context.__agySidebarMonitorHelpers.resolveEffectivePalette({ sidebarRunningBeamPalette: 'sync', composerWorkingBeamPalette: 'aurora' }), 'aurora');
   assert.equal(context.__agySidebarMonitorHelpers.resolveEffectivePalette({ sidebarRunningBeamPalette: 'sync', composerWorkingBeamPalette: 'quota' }), 'quota');
@@ -368,7 +396,23 @@ test('sidebar monitor decorates running rows with flowing beam, hides only 4-dot
   opts = { ...opts, sidebarRunningBeamPalette: 'aurora' };
   monitor.sync(true);
   assert.equal(documentElement.getAttribute('data-agy-sb-palette'), 'aurora');
+  assert.equal(documentElement.getAttribute('data-agy-sb-style'), 'sweep');
   assert.equal(documentElement.getAttribute('data-agy-sb-hide-spinner'), 'true');
+  // Verify style attribute syncs across pulse-inner, pulse-outside, and removes cleanly when disabled
+  opts = { ...opts, sidebarRunningBeamStyle: 'pulse-inner' };
+  monitor.sync();
+  assert.equal(documentElement.getAttribute('data-agy-sb-style'), 'pulse-inner');
+  opts = { ...opts, sidebarRunningBeamStyle: 'pulse-outside' };
+  monitor.sync();
+  assert.equal(documentElement.getAttribute('data-agy-sb-style'), 'pulse-outside');
+  opts = { ...opts, sidebarRunningBeam: false };
+  monitor.sync();
+  assert.equal(documentElement.getAttribute('data-agy-sb-palette'), null);
+  assert.equal(documentElement.getAttribute('data-agy-sb-style'), null);
+  opts = { ...opts, sidebarRunningBeam: true, sidebarRunningBeamStyle: 'pulse-inner' };
+  monitor.sync();
+  assert.equal(documentElement.getAttribute('data-agy-sb-palette'), 'aurora');
+  assert.equal(documentElement.getAttribute('data-agy-sb-style'), 'pulse-inner');
   assert.equal(rowRun.row.dataset.agySbRunning, 'true');
   assert.equal(rowRun.row.dataset.agySbState, 'running');
   assert.equal(rowRun.row.querySelectorAll('[data-agy-powertools-root="sidebar-beam"]').length, 1);
@@ -378,9 +422,11 @@ test('sidebar monitor decorates running rows with flowing beam, hides only 4-dot
   assert.equal(beamLayer.children[0].children[0].className, 'agy-sb-fade');
   assert.equal(beamLayer.children[0].children[0].children[0].className, 'agy-sb-slide');
   assert.equal(beamLayer.children[0].children[0].children[0].children[0].className, 'agy-sb-plume');
+  assert.deepEqual(beamLayer.children[0].children[0].children[0].children[0].children.map(el => el.className), ['agy-sb-p1', 'agy-sb-p2', 'agy-sb-p3']);
   assert.equal(beamLayer.children[1].children[0].className, 'agy-sb-fade');
   assert.equal(beamLayer.children[1].children[0].children[0].className, 'agy-sb-slide');
   assert.equal(beamLayer.children[1].children[0].children[0].children[0].className, 'agy-sb-edge');
+  assert.deepEqual(beamLayer.children[1].children[0].children[0].children[0].children.map(el => el.className), ['agy-sb-p1', 'agy-sb-p2', 'agy-sb-p3']);
   // Button "More options" and its inner SVG must NEVER be marked hidden
   assert.equal(rowRun.moreBtn.getAttribute('data-agy-sb-native-spinner'), null);
   assert.equal(rowRun.moreIcon.getAttribute('data-agy-sb-native-spinner'), null);
@@ -431,6 +477,7 @@ test('sidebar monitor decorates running rows with flowing beam, hides only 4-dot
   // Dispose removes everything cleanly
   monitor.dispose();
   assert.equal(documentElement.getAttribute('data-agy-sb-palette'), null);
+  assert.equal(documentElement.getAttribute('data-agy-sb-style'), null);
   assert.equal(documentElement.getAttribute('data-agy-sb-quota-tone'), null);
   assert.equal(documentElement.getAttribute('data-agy-sb-hide-spinner'), null);
   assert.equal(documentElement.getAttribute('data-agy-sb-paused'), null);
@@ -445,7 +492,7 @@ test('nativeSource bundles native-sidebar-monitor.js before native-ui.js and nat
   assert.ok(monitorIdx > 0, 'native-sidebar-monitor.js should be bundled in nativeSource');
   assert.ok(uiIdx > monitorIdx, 'native-sidebar-monitor.js should load before native-ui.js');
 
-  const { document, makeEl, body } = createMiniDom();
+  const { document, makeEl, body, documentElement } = createMiniDom();
   const nav = makeEl('DIV');
   const customizations = makeEl('A', { attrs: { href: '/customizations' } });
   nav.append(customizations);
@@ -456,7 +503,7 @@ test('nativeSource bundles native-sidebar-monitor.js before native-ui.js and nat
     document,
     location: { pathname: '/' },
     AbortController,
-    __agyInitialSettings: { enabled: true, sidebarRunningGroup: true, sidebarRunningBeam: true },
+    __agyInitialSettings: { enabled: true, sidebarRunningGroup: true, sidebarRunningBeam: true, sidebarRunningBeamStyle: 'pulse-outside' },
     React: { createElement: (type, props, ...children) => ({ type, props: props || {}, children }), useSyncExternalStore: (_, g) => g(), useState: v => [typeof v === 'function' ? v() : v, () => {}] },
     ReactDOM: {
       createRoot(mount) {
@@ -475,7 +522,9 @@ test('nativeSource bundles native-sidebar-monitor.js before native-ui.js and nat
 
   assert.ok(mountedKinds.includes('management'));
   assert.ok(mountedKinds.includes('sidebar-running-group'));
+  assert.equal(documentElement.getAttribute('data-agy-sb-style'), 'pulse-outside');
   context.__agyPowertools.dispose();
+  assert.equal(documentElement.getAttribute('data-agy-sb-style'), null);
 });
 
 test('Settings panel renders sidebar running beam palette, hide-spinner toggle, preview button, and running group toggle without middle dots', () => {
@@ -483,6 +532,9 @@ test('Settings panel renders sidebar running beam palette, hide-spinner toggle, 
   const { document } = createMiniDom();
   const changes = [];
   let previewOn = false;
+  const hookStates = new Map();
+  let currentComp = 'Settings';
+  let hookIdx = 0;
   const ctx = vm.createContext({
     document,
     URL,
@@ -492,7 +544,11 @@ test('Settings panel renders sidebar running beam palette, hide-spinner toggle, 
       Fragment: Symbol('Fragment'),
       createElement: (type, props, ...children) => ({ type, props: props || {}, children: children.flat() }),
       useId: () => 'id-1',
-      useState: init => [typeof init === 'function' ? init() : init, () => {}],
+      useState: init => {
+        const key = `${currentComp}:${hookIdx++}`;
+        if (!hookStates.has(key)) hookStates.set(key, typeof init === 'function' ? init() : init);
+        return [hookStates.get(key), next => { hookStates.set(key, typeof next === 'function' ? next(hookStates.get(key)) : next); }];
+      },
       useEffect() {},
       useRef: v => ({ current: v }),
       useMemo: fn => fn(),
@@ -554,13 +610,32 @@ test('Settings panel renders sidebar running beam palette, hide-spinner toggle, 
     const expand = node => {
       if (!node || typeof node !== 'object') return node;
       if (Array.isArray(node)) return node.map(expand);
-      if (typeof node.type === 'function') return expand(node.type({ ...(node.props || {}), children: node.children }));
+      if (typeof node.type === 'function') {
+        const prevComp = currentComp, prevIdx = hookIdx;
+        currentComp = `${prevComp}>${node.type.name || 'fn'}:${node.props?.key ?? ''}`;
+        hookIdx = 0;
+        try {
+          return expand(node.type({ ...(node.props || {}), children: node.children }));
+        } finally {
+          currentComp = prevComp;
+          hookIdx = prevIdx;
+        }
+      }
       return { ...node, children: Array.isArray(node.children) ? node.children.map(expand) : node.children };
     };
+    hookStates.clear();
+    currentComp = 'Settings';
+    hookIdx = 0;
+    const initial = expand(panels.Settings());
+    const beamsTab = collectNodes(initial).find(n => n.props?.['data-testid'] === 'agy-settings-cat-beams');
+    assert.ok(beamsTab);
+    beamsTab.props.onClick();
+    currentComp = 'Settings';
+    hookIdx = 0;
     return expand(panels.Settings());
   };
 
-  const onTree = renderWith({ enabled: true, language: 'zh-CN', composerWorkingBeam: true, composerWorkingBeamPalette: 'quota', sidebarRunningBeam: true, sidebarRunningBeamPalette: 'sync', sidebarHideNativeSpinner: true, sidebarRunningGroup: true, sidebarProjectLimit: 0 });
+  const onTree = renderWith({ enabled: true, language: 'zh-CN', composerWorkingBeam: true, composerWorkingBeamPalette: 'quota', sidebarRunningBeam: true, sidebarRunningBeamPalette: 'sync', sidebarRunningBeamStyle: 'pulse-outside', sidebarHideNativeSpinner: true, sidebarRunningGroup: true, sidebarProjectLimit: 0 });
   const panelStyleEl = document.head.children.find(el => el.dataset?.agyPanelStyle !== undefined);
   assert.ok(panelStyleEl);
   assert.match(panelStyleEl.textContent, /\.pt-bubble-panel\{padding:12px 12px 14px;/);
@@ -570,28 +645,69 @@ test('Settings panel renders sidebar running beam palette, hide-spinner toggle, 
   assert.doesNotMatch(panelStyleEl.textContent, /\.pt-proxy-fields\{[^}]*border-top:/);
   assert.match(panelStyleEl.textContent, /\.pt-release-notes\{margin:0;padding:4px 12px 14px;/);
   assert.match(panelStyleEl.textContent, /\.pt-settings-foot\{/);
+  assert.match(panelStyleEl.textContent, /\.pt-beam-stage\{[^}]*padding:16px 18px;/);
+  assert.doesNotMatch(panelStyleEl.textContent, /\.pt-beam-stage\[data-style="pulse-outside"\]/);
+  assert.match(panelStyleEl.textContent, /\.pt-beam-sample\[data-style="pulse-inner"\] \.pt-beam-sample-border,\.pt-beam-sample\[data-style="pulse-outside"\] \.pt-beam-sample-border\{padding:1px\}/);
+  assert.match(panelStyleEl.textContent, /\.pt-beam-sample\[data-style="pulse-outside"\]\{overflow:visible\}/);
+  assert.match(panelStyleEl.textContent, /\.pt-beam-sample\[data-style="pulse-inner"\] \.pt-beam-sample-glow \.pt-beam-sample-fade\{[^}]*transparent 10px[^}]*transparent 16px[^}]*mask-composite:add/);
+  assert.match(panelStyleEl.textContent, /\.pt-beam-sample\[data-style="pulse-outside"\] \.pt-beam-sample-glow\{inset:-6px -6px;padding:6px;border-radius:15px;overflow:visible;z-index:-1;/);
+  assert.match(panelStyleEl.textContent, /\.pt-beam-sample\[data-style="pulse-outside"\] \.pt-beam-sample-glow \.pt-beam-sample-fade\{[^}]*#000 5px[^}]*mask-composite:intersect/);
+  assert.match(panelStyleEl.textContent, /\.pt-beam-sample\[data-style="pulse-outside"\] \.pt-beam-sample-plume\{inset:6px;[^}]*opacity:\.48\}/);
+  assert.match(panelStyleEl.textContent, /\.pt-beam-sample\[data-style="pulse-outside"\] \.pt-beam-sample-plume \.pt-beam-p1::before[^{]*\{inset:-1px;filter:blur\(4px\) saturate\(1\.32\) brightness\(\.94\);opacity:\.86\}/);
+  assert.match(panelStyleEl.textContent, /\.pt-beam-sample\[data-style="pulse-outside"\] \.pt-beam-sample-plume \.pt-beam-p1::after[^{]*\{inset:-2px;filter:blur\(7px\) saturate\(1\.32\) brightness\(\.94\);opacity:\.56\}/);
+  assert.match(panelStyleEl.textContent, /@keyframes pt-beam-hue\{0%\{filter:hue-rotate\(0deg\)\}100%\{filter:hue-rotate\(360deg\)\}\}/);
+  assert.match(panelStyleEl.textContent, /animation:pt-beam-p1 4\.1s ease-in-out infinite/);
+  assert.match(panelStyleEl.textContent, /animation:pt-beam-p2 5\.7s ease-in-out -1\.9s infinite/);
+  assert.match(panelStyleEl.textContent, /animation:pt-beam-p3 7\.3s ease-in-out -3\.8s infinite/);
+  assert.match(panelStyleEl.textContent, /\[data-palette="quota"\] \.pt-beam-sample-slide\{animation:none;filter:none\}/);
   const onNodes = collectNodes(onTree);
   assert.ok(onNodes.find(n => n.props?.['data-testid'] === 'agy-setting-sidebarRunningBeam'));
-  assert.ok(onNodes.find(n => n.props?.['data-testid'] === 'agy-setting-row-sidebarRunningBeamPalette'));
-  assert.ok(onNodes.find(n => n.props?.['data-testid'] === 'agy-setting-sidebarHideNativeSpinner'));
+  assert.ok(onNodes.find(n => n.props?.['data-testid'] === 'agy-setting-row-sidebarRunningBeamStyle'));
+  const sbPalettePanel = onNodes.find(n => n.props?.['data-testid'] === 'agy-setting-row-sidebarRunningBeamPalette');
+  assert.ok(sbPalettePanel);
+  const sbPaletteChildren = collectNodes(sbPalettePanel);
+  assert.ok(sbPaletteChildren.find(n => n.props?.['data-testid'] === 'agy-setting-row-sidebarHideNativeSpinner'));
+  assert.ok(sbPaletteChildren.find(n => n.props?.['data-testid'] === 'agy-setting-sidebarHideNativeSpinner'));
   assert.ok(onNodes.find(n => n.props?.['data-testid'] === 'agy-setting-sidebarRunningGroup'));
   const sbStage = onNodes.find(n => n.props?.['data-testid'] === 'agy-sidebar-beam-stage');
   assert.equal(sbStage?.props?.['data-palette'], 'quota');
+  assert.equal(sbStage?.props?.['data-style'], 'pulse-outside');
   assert.equal(sbStage?.props?.style?.['--pt-bs-1'], '#EF4444');
+  // Beam style pills reflect active selection, localized labels, and call env.change({ sidebarRunningBeamStyle })
+  assert.equal(onNodes.find(n => n.props?.['data-testid'] === 'agy-sb-style-sweep')?.props?.['aria-pressed'], false);
+  assert.equal(onNodes.find(n => n.props?.['data-testid'] === 'agy-sb-style-pulse-inner')?.props?.['aria-pressed'], false);
+  assert.equal(onNodes.find(n => n.props?.['data-testid'] === 'agy-sb-style-pulse-outside')?.props?.['aria-pressed'], true);
+  assert.equal(collectText(onNodes.find(n => n.props?.['data-testid'] === 'agy-sb-style-pulse-inner')), '内发光脉冲');
+  assert.equal(collectText(onNodes.find(n => n.props?.['data-testid'] === 'agy-sb-style-pulse-outside')), '外光晕脉冲');
+  onNodes.find(n => n.props?.['data-testid'] === 'agy-sb-style-pulse-inner').props.onClick();
+  onNodes.find(n => n.props?.['data-testid'] === 'agy-sb-style-sweep').props.onClick();
   // Composer working beam is a 360-degree WebGL perimeter orbit, so it MUST NOT render the inline bottom-sweep stage; keep Try preview button.
   assert.equal(onNodes.find(n => n.props?.['data-testid'] === 'agy-composer-beam-stage'), undefined);
   assert.ok(onNodes.find(n => n.props?.['data-testid'] === 'agy-beam-preview-toggle'));
   assert.equal(onNodes.find(n => n.props?.['data-testid'] === 'agy-sidebar-beam-palette-sync')?.props?.['aria-pressed'], true);
   onNodes.find(n => n.props?.['data-testid'] === 'agy-sidebar-beam-palette-neon').props.onClick();
-  assert.deepEqual(JSON.parse(JSON.stringify(changes)), [{ sidebarRunningBeamPalette: 'neon' }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(changes)), [
+    { sidebarRunningBeamStyle: 'pulse-inner' },
+    { sidebarRunningBeamStyle: 'sweep' },
+    { sidebarRunningBeamPalette: 'neon' }
+  ]);
   const prevBtn = onNodes.find(n => n.props?.['data-testid'] === 'agy-sidebar-beam-preview-toggle');
   assert.ok(prevBtn);
   prevBtn.props.onClick();
   assert.equal(previewOn, true);
-  assert.equal(collectText(onTree).includes('\u00b7'), false);
+  assert.equal(/[\u00b7\u2022\u2027\u30fb]/.test(collectText(onTree)), false);
 
-  const offTree = renderWith({ enabled: true, language: 'zh-CN', sidebarRunningBeam: false, sidebarRunningBeamPalette: 'gemini', sidebarHideNativeSpinner: true, sidebarRunningGroup: true, sidebarProjectLimit: 0 });
+  const innerTree = renderWith({ enabled: true, language: 'en', sidebarRunningBeam: true, sidebarRunningBeamPalette: 'gemini', sidebarRunningBeamStyle: 'pulse-inner', sidebarHideNativeSpinner: true, sidebarRunningGroup: false, sidebarProjectLimit: 0 });
+  const innerNodes = collectNodes(innerTree);
+  assert.equal(innerNodes.find(n => n.props?.['data-testid'] === 'agy-sidebar-beam-stage')?.props?.['data-style'], 'pulse-inner');
+  assert.equal(innerNodes.find(n => n.props?.['data-testid'] === 'agy-sb-style-pulse-inner')?.props?.['aria-pressed'], true);
+  assert.equal(collectText(innerNodes.find(n => n.props?.['data-testid'] === 'agy-sb-style-pulse-inner')), 'Inner pulse');
+  assert.equal(collectText(innerNodes.find(n => n.props?.['data-testid'] === 'agy-sb-style-pulse-outside')), 'Outer pulse');
+  assert.equal(/[\u00b7\u2022\u2027\u30fb]/.test(collectText(innerTree)), false);
+
+  const offTree = renderWith({ enabled: true, language: 'zh-CN', sidebarRunningBeam: false, sidebarRunningBeamPalette: 'gemini', sidebarRunningBeamStyle: 'pulse-inner', sidebarHideNativeSpinner: true, sidebarRunningGroup: true, sidebarProjectLimit: 0 });
   const offNodes = collectNodes(offTree);
+  assert.equal(offNodes.find(n => n.props?.['data-testid'] === 'agy-setting-row-sidebarRunningBeamStyle'), undefined);
   assert.equal(offNodes.find(n => n.props?.['data-testid'] === 'agy-setting-row-sidebarRunningBeamPalette'), undefined);
   assert.equal(offNodes.find(n => n.props?.['data-testid'] === 'agy-setting-sidebarHideNativeSpinner'), undefined);
   assert.ok(offNodes.find(n => n.props?.['data-testid'] === 'agy-setting-sidebarRunningGroup'));
