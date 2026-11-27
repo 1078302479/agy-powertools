@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,existsSync,readdirSync,rmSync,symlinkSync,unlinkSync,lstatSync,renameSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,existsSync,readdirSync,rmSync,symlinkSync,unlinkSync,lstatSync,renameSync,realpathSync} from 'node:fs';
 import {join,resolve,parse as parsePath} from 'node:path';
 import {tmpdir} from 'node:os';
 import {spawn,spawnSync} from 'node:child_process';
@@ -247,9 +247,10 @@ test('Issue #96: Windows relocated .gemini junction supports install, update han
     writeFileSync(marker, 'keep');
 
     // installationPaths keeps logical paths.root; maintenancePaths pins real destination
+    const realTargetGemini = realpathSync.native ? realpathSync.native(targetGemini) : realpathSync(targetGemini);
     assert.equal(s.paths.root, join(resolve(s.home), '.gemini'));
     assert.equal(lstatSync(s.paths.root).isSymbolicLink(), true);
-    assert.equal(maintenancePaths(s.home).root, targetGemini);
+    assert.equal(maintenancePaths(s.home).root, realTargetGemini);
 
     // 1. Fresh install + startUpdate + runUpdateJob through .gemini junction succeed
     const installed = await installPlugin({ bundle: older, home: s.home, stop });
@@ -271,7 +272,7 @@ test('Issue #96: Windows relocated .gemini junction supports install, update han
       }
     });
     assert.equal(plan.home, s.home);
-    assert.equal(plan.expectedRoot, targetGemini);
+    assert.equal(plan.expectedRoot, realTargetGemini);
     assert.equal(updateStatus(s.home).status, 'preparing');
     await runUpdateJob(plan, {
       fetcher: async () => new Response(bytes),
