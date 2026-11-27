@@ -55,8 +55,9 @@
    - 主要涉及文件：`lib/settings.mjs`、`lib/native-ui.js`、`lib/native-panels.js`、`tests/settings.test.mjs`、`tests/native-ui.test.mjs`
 2. **Codex CLI MCP 集成 (`agy-codex`)**
    - 通过插件内置零依赖 Stdio MCP Server（`mcp_config.json` -> `scripts/codex-mcp.mjs` -> `lib/codex-bridge.mjs`）暴露 `codex_doctor`、`codex_run`、`codex_resume`、`codex_review` 4 个工具，并配套 `skills/codex-cli/SKILL.md` 协作技能。
-   - 自动探测 `/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex`、PATH 及自定义 `codexPath`，自动继承 Powertools 代理配置，默认沙盒 `workspace-write`。
-   - 主要涉及文件：`lib/codex-bridge.mjs`、`scripts/codex-mcp.mjs`、`mcp_config.json`、`skills/codex-cli/SKILL.md`、`lib/settings.mjs`、`lib/package.mjs`、`lib/native-panels.js`、`tests/codex-bridge.test.mjs`
+   - 自动探测 `/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex`、PATH 及自定义 `codexPath`，自动读取 `~/.codex/models_cache.json` 与 `config.toml` 提供模型与思考强度动态下拉选择，自动继承 Powertools 代理配置，默认沙盒 `workspace-write`。
+   - 支持 **自动优先委派给 Codex (`codexAutoDelegate`)**：默认 `coding`（编码与审查优先派给 Codex），支持 `coding` / `always` / `off` 三档，通过 `lib/native-client.js` 动态注入 `PromptSectionSchema` 实时生效无需重启。
+   - 主要涉及文件：`lib/codex-bridge.mjs`、`scripts/codex-mcp.mjs`、`mcp_config.json`、`skills/codex-cli/SKILL.md`、`lib/settings.mjs`、`lib/package.mjs`、`lib/native-client.js`、`lib/native-host.mjs`、`lib/native-ui.js`、`lib/native-panels.js`、`tests/codex-bridge.test.mjs`
 3. **代码与文案约束**
    - 所有遥测与统计展示保持简洁，禁止使用中点字符作为分隔符。
    - 二次开发期间建议在插件「设置 -> 关于」中关闭空闲自动热更新，避免覆盖本地安装版本。

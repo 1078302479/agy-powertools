@@ -486,6 +486,50 @@ test('stage updates compose with context limits, show live updates and fold them
   assert.equal(context.__agyNativeAdapter.active,true);
 });
 
+test('Codex delegation replaces its prompt on mode changes and stops when turned off or disabled', async () => {
+  const title = 'powertools_codex_delegation';
+  const existing = { title: 'existing', content: 'preserve' };
+  const base = { plannerConfig: { promptSectionCustomizationConfig: { appendPromptSections: [existing] } } };
+  const sections = config => Array.from(config.plannerConfig.promptSectionCustomizationConfig.appendPromptSections);
+  const resolve = () => base;
+  const send = payload => payload;
+  const service = { forkConversation() {}, sendUserCascadeMessage: send };
+  const element = { '__reactFiber$fixture': { tag: 10, type: {}, memoizedProps: { value: service }, return: null } };
+  const context = vm.createContext({ document: { querySelector: () => element }, sjc: resolve,
+    I: {}, tc: (_, value) => structuredClone(value), Wb: (_, value) => value });
+  vm.runInContext(readFileSync(new URL('../lib/native-client.js', import.meta.url), 'utf8'), context);
+  const adapter = context.__agyNativeAdapter;
+
+  adapter.setCodexDelegation('coding');
+  const codingConfig = context.sjc();
+  assert.deepEqual(sections(codingConfig).map(p => p.title), [existing.title, title]);
+  assert.match(sections(codingConfig).at(-1).content, /tiny 1-2 line edits/);
+
+  adapter.setCodexDelegation('always');
+  const { cascadeConfig: alwaysConfig } = await service.sendUserCascadeMessage({ cascadeConfig: codingConfig });
+  assert.deepEqual(sections(alwaysConfig).map(p => p.title), [existing.title, title]);
+  assert.match(sections(alwaysConfig).at(-1).content, /delegate almost all/);
+  assert.equal(sections(context.sjc()).at(-1).content, sections(alwaysConfig).at(-1).content);
+
+  adapter.setCodexDelegation('off');
+  assert.deepEqual(sections(context.sjc()), [existing]);
+  const offPayload = await service.sendUserCascadeMessage({ cascadeConfig: alwaysConfig });
+  assert.deepEqual(sections(offPayload.cascadeConfig), [existing]);
+
+  adapter.setCodexDelegation('always');
+  adapter.setEnabled(false);
+  assert.equal(context.sjc, resolve);
+  assert.equal(service.sendUserCascadeMessage, send);
+  assert.deepEqual(sections(context.sjc()), [existing]);
+  adapter.setEnabled(true);
+  assert.equal(sections(context.sjc()).at(-1).title, title);
+
+  adapter.setCodexDelegation('auto');
+  assert.deepEqual(sections(context.sjc()), [existing]);
+  assert.deepEqual(sections(base), [existing]);
+  adapter.dispose();
+});
+
 test('setSidebarProjectLimit controls per-project visible rows, supports show-all, and restores cleanly',()=>{
   const nativeFlat=args=>{
     const out=[];

@@ -115,6 +115,12 @@ test('settings persist, merge safely, and reject unknown options without changin
     assert.equal(store.get().proxyForceHttp1, true);
     store.set({ proxyEnabled: false, proxyUrl: '', proxyBypass: 'localhost,127.0.0.1,::1', proxyForceHttp1: false });
     assert.equal(store.get().codexEnabled, true);
+    assert.equal(store.get().codexAutoDelegate, 'coding');
+    for (const codexAutoDelegate of ['always', 'off', 'coding']) {
+      assert.equal(store.set({ codexAutoDelegate }).codexAutoDelegate, codexAutoDelegate);
+      assert.equal(createSettingsStore(directory).get().codexAutoDelegate, codexAutoDelegate);
+    }
+    assert.throws(() => store.set({ codexAutoDelegate: 'auto' }), /设置/);
     assert.equal(store.get().codexPath, '');
     assert.equal(store.get().codexDefaultModel, '');
     assert.equal(store.get().codexDefaultReasoningEffort, '');
