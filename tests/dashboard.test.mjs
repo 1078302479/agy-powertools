@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { annotateCacheAnomalies, dateRange, modelIdentity, resolveWeeklyQuotaWindow, summarizeRequests, subscriptionIdentity, distributionModels, timestampToMs } from '../lib/dashboard.mjs';
+import { annotateCacheAnomalies, dateRange, isBufferedTailFlush, modelIdentity, resolveRequestSpeed, resolveWeeklyQuotaWindow, robustPeakTps, summarizeRequests, subscriptionIdentity, distributionModels, timestampToMs } from '../lib/dashboard.mjs';
 test('calendar ranges use local midnight and a Monday week boundary',()=>{
  const now=+new Date(2026,10,13,12,30),midnight=+new Date(2026,10,13);
  assert.deepEqual(dateRange('today',now),{start:midnight,end:now});
@@ -290,4 +290,133 @@ test('weeklyQuota resolves exact native reset windows, per-pool cycle boundaries
   });
   assert.equal(placeholderUnstarted.status, 'unstarted');
   assert.equal(placeholderUnstarted.resetTimeMs, null);
+});
+
+test('weekly quota totals use separate Gemini, third-party and Argon billing boundaries', () => {
+  const day = 86400000, now = 10 * day;
+  const quotaSamples = ['gemini-weekly', '3p-weekly', 'argon-weekly'].map((bucketId, i) => ({ bucketId, resetTimeMs: now + (3 + i) * day }));
+  const range = resolveWeeklyQuotaWindow({ now, quotaSamples });
+  const models = ['Gemini Carbon', 'Orchestrator (Claude Opus)', 'GPT', 'Gemini Argon', 'unknown'];
+  const requests = models.flatMap(model => [6, 7, 8].map(d => ({ model, timestampMs: d * day })));
+  assert.deepEqual(summarizeRequests(requests, range).requests.map(r => r.timestampMs / day), [6,7,8, 7,8, 7,8, 8, 6,7,8]);
+  assert.equal(range.match({ model: 'GPT', timestampMs: now - 1, durationMs: 2 }), false);
+});
+
+test('robustPeakTps filters short-stream inflation and isolated buffered spikes while preserving ultra-fast streams and fallbacks', () => {
+  assert.equal(robustPeakTps([]), null);
+  assert.equal(robustPeakTps([{ outputTokens: 0, durationMs: 1000, tps: 0 }]), null);
+
+  // 1. Short-stream (< 3s) inflation excluded when sustained streams (>= 3s, >= 100 tokens) exist
+  const hydrogenRows = [
+    { outputTokens: 564, ttftMs: 4000, streamingMs: 580, durationMs: 4580, tpsDurationMs: 580, tps: 971.9, wholeTps: 123.1, tpsMode: 'stream' },
+    { outputTokens: 900, ttftMs: 3000, streamingMs: 5000, durationMs: 8000, tpsDurationMs: 5000, tps: 180, wholeTps: 112.5, tpsMode: 'stream' },
+    { outputTokens: 1200, ttftMs: 2500, streamingMs: 5000, durationMs: 7500, tpsDurationMs: 5000, tps: 240, wholeTps: 160, tpsMode: 'stream' }
+  ];
+  assert.equal(robustPeakTps(hydrogenRows), 240);
+
+  // 2. Isolated multi-step partial-buffer spike (19s / 964 tok/s after 96s TTFT) rejected by Tukey upper fence
+  const neonRows = [120, 128, 135, 142, 150, 165].map(tps => ({
+    outputTokens: Math.round(tps * 6),
+    ttftMs: 4000,
+    streamingMs: 6000,
+    durationMs: 10000,
+    tpsDurationMs: 6000,
+    tps,
+    wholeTps: Number((Math.round(tps * 6) * 1000 / 10000).toFixed(1)),
+    tpsMode: 'stream'
+  }));
+  neonRows.push({
+    outputTokens: 18316,
+    ttftMs: 96000,
+    streamingMs: 19000,
+    durationMs: 115000,
+    tpsDurationMs: 19000,
+    tps: 964.0,
+    wholeTps: 159.3,
+    tpsMode: 'stream'
+  });
+  assert.equal(robustPeakTps(neonRows), 165);
+
+  // 3. Genuinely ultra-fast Flash stream (wholeTps >= 0.5 * tps) is preserved even above Tukey fence
+  const flashRows = [300, 320, 340, 360, 380].map(tps => ({
+    outputTokens: tps * 4,
+    ttftMs: 1000,
+    streamingMs: 4000,
+    durationMs: 5000,
+    tpsDurationMs: 4000,
+    tps,
+    wholeTps: Number((tps * 4 * 1000 / 5000).toFixed(1)),
+    tpsMode: 'stream'
+  }));
+  flashRows.push({
+    outputTokens: 4946,
+    ttftMs: 1160,
+    streamingMs: 4000,
+    durationMs: 5160,
+    tpsDurationMs: 4000,
+    tps: 1236.5,
+    wholeTps: 958.6,
+    tpsMode: 'stream'
+  });
+  assert.equal(robustPeakTps(flashRows), 1236.5);
+
+  // 4. IQR == 0 guard uses q3 * 1.25 floor so small natural variance is kept while extreme spikes are rejected
+  const flatRows = [100, 100, 100, 100, 118].map(tps => ({
+    outputTokens: tps * 4,
+    ttftMs: 10000,
+    streamingMs: 4000,
+    durationMs: 14000,
+    tpsDurationMs: 4000,
+    tps,
+    wholeTps: Number((tps * 4 * 1000 / 14000).toFixed(1)),
+    tpsMode: 'stream'
+  }));
+  assert.equal(robustPeakTps(flatRows), 118);
+  flatRows.push({
+    outputTokens: 720,
+    ttftMs: 14000,
+    streamingMs: 4000,
+    durationMs: 18000,
+    tpsDurationMs: 4000,
+    tps: 180,
+    wholeTps: 40,
+    tpsMode: 'stream'
+  });
+  assert.equal(robustPeakTps(flatRows), 118);
+
+  // 5. Fallback when < 5 samples or only short/whole requests exist
+  assert.equal(robustPeakTps(neonRows.slice(0, 3).concat({ outputTokens: 1200, ttftMs: 2000, streamingMs: 4000, durationMs: 6000, tpsDurationMs: 4000, tps: 300, wholeTps: 200, tpsMode: 'stream' })), 300);
+  const shortOnly = [
+    { outputTokens: 80, ttftMs: 500, streamingMs: 800, durationMs: 1300, tpsDurationMs: 800, tps: 100, wholeTps: 61.5, tpsMode: 'stream' },
+    { outputTokens: 50, ttftMs: 400, streamingMs: 600, durationMs: 1000, tpsDurationMs: 600, tps: 83.3, wholeTps: 50, tpsMode: 'stream' }
+  ];
+  assert.equal(robustPeakTps(shortOnly), 100);
+
+  // 6. summarizeRequests uses robustPeakTps and defensively normalizes stale buffered-tail rows in avgTps and peakTps
+  const staleTail = {
+    model: 'Gemini 4 Neon (High)',
+    timestampMs: 5000,
+    inputTokens: 1000,
+    outputTokens: 1707,
+    ttftMs: 17627,
+    streamingMs: 865,
+    durationMs: 18492,
+    tpsDurationMs: 865,
+    tps: 1973.4,
+    wholeTps: 92.3,
+    tpsMode: 'stream',
+    status: 'success'
+  };
+  assert.equal(isBufferedTailFlush(1707, 865, 18492), true);
+  assert.equal(resolveRequestSpeed({ outputTokens: 1707, ttftMs: 17627, streamingMs: 865 }).tps, 92.3);
+  const summary = summarizeRequests([
+    ...neonRows.map((r, idx) => ({ ...r, model: 'Gemini 4 Neon (High)', timestampMs: 1000 + idx * 100, inputTokens: 100, status: 'success' })),
+    staleTail
+  ], { start: 0, end: 10000 });
+  const neon = summary.models.find(m => m.id === 'gemini-4-neon');
+  assert.equal(neon.peakTps, 165);
+  // Stale buffered-tail row contributes its full 18492ms duration rather than 865ms to avgTps
+  const expectedOut = neonRows.reduce((s, r) => s + r.outputTokens, 0) + 1707;
+  const expectedDur = neonRows.reduce((s, r) => s + r.tpsDurationMs, 0) + 18492;
+  assert.ok(Math.abs(neon.avgTps - expectedOut * 1000 / expectedDur) < 1e-9);
 });
