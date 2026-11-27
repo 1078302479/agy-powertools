@@ -11,11 +11,64 @@ import {
   buildCodexEnv,
   buildSpawnCommand,
   inspectCodexHealth,
+  listCodexModels,
   parseCodexJsonl,
   resolveCodexBinary,
   runCodexTask
 } from '../lib/codex-bridge.mjs';
 import { collectPackage } from '../lib/package.mjs';
+
+test('listCodexModels reads the Codex home override and prepends an uncached top-level model', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'agy-codex-models-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const configPath = join(dir, 'config.toml');
+  writeFileSync(configPath, '# model = "commented-out"\nmodel = "local-model" # default\n[profiles.work]\nmodel = "profile-model"\n');
+  writeFileSync(join(dir, 'models_cache.json'), JSON.stringify({
+    fetched_at: '2026-11-27T00:00:00Z',
+    models: [
+      { slug: 'hidden-model', visibility: 'hide' },
+      { slug: 'cached-model', display_name: 'Cached Model' },
+      { slug: 'cached-model', display_name: 'Duplicate' },
+      { slug: 'other-model' }
+    ]
+  }));
+  const options = { env: { CODEX_HOME: dir } };
+  const cachedModels = [
+    { slug: 'cached-model', displayName: 'Cached Model' },
+    { slug: 'other-model', displayName: 'other-model' }
+  ];
+  assert.deepEqual(listCodexModels(options), {
+    models: [{ slug: 'local-model', displayName: 'local-model' }, ...cachedModels],
+    configuredModel: 'local-model',
+    fetchedAt: '2026-11-27T00:00:00Z'
+  });
+
+  writeFileSync(configPath, 'model = "cached-model"\n');
+  assert.deepEqual(listCodexModels(options).models, cachedModels);
+  writeFileSync(configPath, '# model = "commented-out"\n[profiles.work]\nmodel = "profile-model"\n');
+  assert.equal(listCodexModels(options).configuredModel, '');
+});
+
+test('listCodexModels falls back to the home directory and handles missing or corrupt files', t => {
+  const home = mkdtempSync(join(tmpdir(), 'agy-codex-models-'));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const options = { env: {}, home };
+  const empty = { models: [], configuredModel: '', fetchedAt: '' };
+  assert.deepEqual(listCodexModels(options), empty);
+
+  const dir = join(home, '.codex');
+  mkdirSync(dir);
+  writeFileSync(join(dir, 'config.toml'), 'model = "unterminated');
+  writeFileSync(join(dir, 'models_cache.json'), '{ broken JSON');
+  assert.deepEqual(listCodexModels(options), empty);
+
+  writeFileSync(join(dir, 'config.toml'), 'model = "local-model"\n');
+  assert.deepEqual(listCodexModels(options), {
+    models: [{ slug: 'local-model', displayName: 'local-model' }],
+    configuredModel: 'local-model',
+    fetchedAt: ''
+  });
+});
 
 function makeStubCodex(dir) {
   const scriptPath = join(dir, 'codex-stub.mjs');
