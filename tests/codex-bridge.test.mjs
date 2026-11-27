@@ -22,38 +22,41 @@ test('listCodexModels reads the Codex home override and prepends an uncached top
   const dir = mkdtempSync(join(tmpdir(), 'agy-codex-models-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const configPath = join(dir, 'config.toml');
-  writeFileSync(configPath, '# model = "commented-out"\nmodel = "local-model" # default\n[profiles.work]\nmodel = "profile-model"\n');
+  writeFileSync(configPath, '# model = "commented-out"\nmodel = "local-model" # default\nmodel_reasoning_effort = "high" # default\n[profiles.work]\nmodel = "profile-model"\nmodel_reasoning_effort = "low"\n');
   writeFileSync(join(dir, 'models_cache.json'), JSON.stringify({
     fetched_at: '2026-11-27T00:00:00Z',
     models: [
       { slug: 'hidden-model', visibility: 'hide' },
-      { slug: 'cached-model', display_name: 'Cached Model' },
+      { slug: 'cached-model', display_name: 'Cached Model', default_reasoning_level: 'medium', supported_reasoning_levels: ['low', { effort: 'medium' }, {}, null] },
       { slug: 'cached-model', display_name: 'Duplicate' },
       { slug: 'other-model' }
     ]
   }));
   const options = { env: { CODEX_HOME: dir } };
   const cachedModels = [
-    { slug: 'cached-model', displayName: 'Cached Model' },
-    { slug: 'other-model', displayName: 'other-model' }
+    { slug: 'cached-model', displayName: 'Cached Model', defaultReasoningEffort: 'medium', reasoningLevels: ['low', 'medium'] },
+    { slug: 'other-model', displayName: 'other-model', defaultReasoningEffort: '', reasoningLevels: [] }
   ];
   assert.deepEqual(listCodexModels(options), {
-    models: [{ slug: 'local-model', displayName: 'local-model' }, ...cachedModels],
+    models: [{ slug: 'local-model', displayName: 'local-model', defaultReasoningEffort: '', reasoningLevels: [] }, ...cachedModels],
     configuredModel: 'local-model',
+    configuredReasoningEffort: 'high',
     fetchedAt: '2026-11-27T00:00:00Z'
   });
 
   writeFileSync(configPath, 'model = "cached-model"\n');
   assert.deepEqual(listCodexModels(options).models, cachedModels);
-  writeFileSync(configPath, '# model = "commented-out"\n[profiles.work]\nmodel = "profile-model"\n');
-  assert.equal(listCodexModels(options).configuredModel, '');
+  writeFileSync(configPath, '# model = "commented-out"\n[profiles.work]\nmodel = "profile-model"\nmodel_reasoning_effort = "low"\n');
+  const profileOnly = listCodexModels(options);
+  assert.equal(profileOnly.configuredModel, '');
+  assert.equal(profileOnly.configuredReasoningEffort, '');
 });
 
 test('listCodexModels falls back to the home directory and handles missing or corrupt files', t => {
   const home = mkdtempSync(join(tmpdir(), 'agy-codex-models-'));
   t.after(() => rmSync(home, { recursive: true, force: true }));
   const options = { env: {}, home };
-  const empty = { models: [], configuredModel: '', fetchedAt: '' };
+  const empty = { models: [], configuredModel: '', configuredReasoningEffort: '', fetchedAt: '' };
   assert.deepEqual(listCodexModels(options), empty);
 
   const dir = join(home, '.codex');
@@ -64,8 +67,9 @@ test('listCodexModels falls back to the home directory and handles missing or co
 
   writeFileSync(join(dir, 'config.toml'), 'model = "local-model"\n');
   assert.deepEqual(listCodexModels(options), {
-    models: [{ slug: 'local-model', displayName: 'local-model' }],
+    models: [{ slug: 'local-model', displayName: 'local-model', defaultReasoningEffort: '', reasoningLevels: [] }],
     configuredModel: 'local-model',
+    configuredReasoningEffort: '',
     fetchedAt: ''
   });
 });
@@ -116,6 +120,7 @@ test('buildCodexArgs builds exact flags for run, resume, and review modes and re
     cwd: '/tmp/repo',
     sandbox: 'read-only',
     model: 'gpt-5-codex',
+    reasoningEffort: 'xhigh',
     worktree: true,
     addDirs: ['/tmp/extra'],
     skipGitRepoCheck: true,
@@ -123,7 +128,7 @@ test('buildCodexArgs builds exact flags for run, resume, and review modes and re
     hasPrompt: true
   });
   assert.deepEqual(runArgs, [
-    'exec', '-C', '/tmp/repo', '-s', 'read-only', '-m', 'gpt-5-codex',
+    'exec', '-C', '/tmp/repo', '-s', 'read-only', '-m', 'gpt-5-codex', '-c', 'model_reasoning_effort="xhigh"',
     '--worktree', '--add-dir', '/tmp/extra', '--skip-git-repo-check',
     '--json', '-o', '/tmp/out.txt', '-'
   ]);
@@ -131,10 +136,11 @@ test('buildCodexArgs builds exact flags for run, resume, and review modes and re
   const resumeArgs = buildCodexArgs({
     mode: 'resume',
     sessionId: 'sess-123',
+    reasoningEffort: 'none',
     outputLastMessagePath: '/tmp/out.txt',
     hasPrompt: true
   });
-  assert.deepEqual(resumeArgs, ['exec', 'resume', '--json', '-o', '/tmp/out.txt', '--', 'sess-123', '-']);
+  assert.deepEqual(resumeArgs, ['exec', 'resume', '-c', 'model_reasoning_effort="none"', '--json', '-o', '/tmp/out.txt', '--', 'sess-123', '-']);
 
   for (const sessionId of ['  --last', '-x', '\nsession', 'sess\x7fid', 'sess\u0085id']) {
     assert.throws(() => buildCodexArgs({ mode: 'resume', sessionId }), /sessionId/);
@@ -144,9 +150,14 @@ test('buildCodexArgs builds exact flags for run, resume, and review modes and re
     mode: 'review',
     base: 'main',
     model: 'gpt-5-codex',
+    reasoningEffort: 'ultra',
     hasPrompt: false
   });
-  assert.deepEqual(reviewArgs, ['exec', 'review', '-c', 'sandbox_mode="read-only"', '--base', 'main', '-m', 'gpt-5-codex', '--json']);
+  assert.deepEqual(reviewArgs, ['exec', 'review', '-c', 'sandbox_mode="read-only"', '--base', 'main', '-m', 'gpt-5-codex', '-c', 'model_reasoning_effort="ultra"', '--json']);
+  for (const reasoningEffort of ['', 'invalid', ['high'], 'high"\nsandbox_mode="danger-full-access']) {
+    assert.deepEqual(buildCodexArgs({ reasoningEffort }), buildCodexArgs());
+  }
+  assert.deepEqual(buildCodexArgs({ mode: 'version', reasoningEffort: 'max' }), ['-c', 'model_reasoning_effort="max"', '--version']);
 
   const customPromptReview = buildCodexArgs({ mode: 'review', hasPrompt: true });
   assert.deepEqual(customPromptReview, ['exec', 'review', '-c', 'sandbox_mode="read-only"', '--json', '-']);
@@ -236,6 +247,7 @@ test('runCodexTask executes stub codex for run, resume, review and records run h
       codexPath: stub,
       codexDefaultSandbox: 'workspace-write',
       codexDefaultModel: '',
+      codexDefaultReasoningEffort: 'high',
       proxyEnabled: true,
       proxyUrl: 'http://127.0.0.1:7897',
       proxyBypass: 'localhost,127.0.0.1,::1'
@@ -248,6 +260,7 @@ test('runCodexTask executes stub codex for run, resume, review and records run h
     const health = inspectCodexHealth({ settings });
     assert.equal(health.found, true);
     assert.equal(health.version, 'codex-cli 0.171.0-stub');
+    assert.equal(health.defaultReasoningEffort, 'high');
     assert.equal(health.proxyInherited, true);
 
     const model = 'model "with quotes" & (symbols) ^! %PATH%';
@@ -270,11 +283,13 @@ test('runCodexTask executes stub codex for run, resume, review and records run h
     assert.equal(payload.prompt, 'Implement feature X');
     assert.equal(payload.proxy, 'http://127.0.0.1:7897');
     assert.equal(payload.args[payload.args.indexOf('-m') + 1], model);
+    assert.equal(payload.args[payload.args.indexOf('-c') + 1], 'model_reasoning_effort="high"');
     assert.equal(payload.args[payload.args.indexOf('--add-dir') + 1], addDir);
 
     const resumeRes = await runCodexTask({
       mode: 'resume',
       sessionId: runRes.sessionId,
+      reasoningEffort: 'minimal',
       prompt: 'Add unit tests',
       cwd: dir,
       settings,
@@ -282,7 +297,9 @@ test('runCodexTask executes stub codex for run, resume, review and records run h
     });
     assert.equal(resumeRes.ok, true);
     assert.equal(resumeRes.sessionId, 'sess-stub-42');
-    assert.equal(JSON.parse(resumeRes.message).mode, 'resume');
+    const resumePayload = JSON.parse(resumeRes.message);
+    assert.equal(resumePayload.mode, 'resume');
+    assert.equal(resumePayload.args[resumePayload.args.indexOf('-c') + 1], 'model_reasoning_effort="minimal"');
 
     const reviewRes = await runCodexTask({
       mode: 'review',
@@ -407,7 +424,11 @@ test('codex-mcp.mjs serves JSON-RPC tools and is included in the package', async
   assert.equal(health.codexHome, join(dir, '.codex'));
 
   for (const [id, mode] of [[4, 'run'], [5, 'resume'], [6, 'review']]) {
-    const args = { cwd: dir, prompt: 'Test tool arguments' };
+    const args = { cwd: dir, prompt: 'Test tool arguments', reasoningEffort: 'medium' };
+    const schema = responses.get(2).result.tools.find(tool => tool.name === 'codex_' + mode).inputSchema;
+    assert.deepEqual(schema.properties.reasoningEffort, {
+      type: 'string', enum: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']
+    });
     if (mode === 'resume') args.sessionId = 'sess-stub-42';
     send({ id, method: 'tools/call', params: { name: 'codex_' + mode, arguments: args } });
     const { result } = await waitFor(() => responses.get(id), mode);
@@ -415,6 +436,7 @@ test('codex-mcp.mjs serves JSON-RPC tools and is included in the package', async
     const payload = JSON.parse(JSON.parse(result.content[0].text).message);
     assert.equal(payload.mode, mode);
     assert.equal(payload.prompt, args.prompt);
+    assert.equal(payload.args[payload.args.indexOf('model_reasoning_effort="medium"') - 1], '-c');
 
     const invalidArgs = { ...args, settings: { codexEnabled: false } };
     send({ id: id + 3, method: 'tools/call', params: { name: 'codex_' + mode, arguments: invalidArgs } });

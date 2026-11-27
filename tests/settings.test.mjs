@@ -117,12 +117,21 @@ test('settings persist, merge safely, and reject unknown options without changin
     assert.equal(store.get().codexEnabled, true);
     assert.equal(store.get().codexPath, '');
     assert.equal(store.get().codexDefaultModel, '');
+    assert.equal(store.get().codexDefaultReasoningEffort, '');
     assert.equal(store.get().codexDefaultSandbox, 'workspace-write');
     store.set({ codexEnabled: false, codexPath: '  /usr/local/bin/codex  ', codexDefaultModel: ' gpt-5-codex ', codexDefaultSandbox: 'read-only' });
     assert.equal(store.get().codexEnabled, false);
     assert.equal(store.get().codexPath, '/usr/local/bin/codex');
     assert.equal(store.get().codexDefaultModel, 'gpt-5-codex');
     assert.equal(store.get().codexDefaultSandbox, 'read-only');
+    store.set({ codexDefaultReasoningEffort: ' xhigh ' });
+    assert.equal(createSettingsStore(directory).get().codexDefaultReasoningEffort, 'xhigh');
+    for (const codexDefaultReasoningEffort of ['turbo', 'HIGH', true, null, ['high']]) {
+      assert.throws(() => store.set({ codexDefaultReasoningEffort }), /设置/);
+    }
+    assert.equal(store.get().codexDefaultReasoningEffort, 'xhigh');
+    store.set({ codexDefaultReasoningEffort: '' });
+    assert.equal(store.get().codexDefaultReasoningEffort, '');
     store.set({ codexEnabled: true, codexPath: '', codexDefaultModel: '', codexDefaultSandbox: 'workspace-write' });
     assert.equal(store.get().sidebarProjectLimit, 0);
     store.set({ sidebarProjectLimit: 3 }); assert.equal(store.get().sidebarProjectLimit, 3);

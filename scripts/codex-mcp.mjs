@@ -3,12 +3,15 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { inspectCodexHealth, runCodexTask } from '../lib/codex-bridge.mjs';
+import { CODEX_REASONING_EFFORTS } from '../lib/settings.mjs';
 
 const rootDir = join(dirname(fileURLToPath(import.meta.url)), '..');
 let serverVersion = '0.1.0';
 try {
   serverVersion = JSON.parse(readFileSync(join(rootDir, 'package.json'), 'utf8')).version || serverVersion;
 } catch {}
+
+const reasoningEffortSchema = { type: 'string', enum: CODEX_REASONING_EFFORTS.filter(Boolean) };
 
 const TOOLS = [
   {
@@ -34,6 +37,7 @@ const TOOLS = [
           description: 'Sandbox permission mode. Defaults to the configured Agy Powertools setting (workspace-write).'
         },
         model: { type: 'string', description: 'Optional model override (defaults to ~/.codex/config.toml or Powertools setting).' },
+        reasoningEffort: reasoningEffortSchema,
         worktree: { type: 'boolean', description: 'If true, run Codex inside an isolated managed Git worktree.' },
         addDirs: { type: 'array', items: { type: 'string' }, description: 'Additional writable directories alongside cwd.' },
         skipGitRepoCheck: { type: 'boolean', description: 'Allow running outside a Git repository.' },
@@ -53,6 +57,7 @@ const TOOLS = [
         prompt: { type: 'string', description: 'Follow-up instructions for the existing Codex session.' },
         cwd: { type: 'string', description: 'Absolute path to the workspace directory.' },
         model: { type: 'string', description: 'Optional model override.' },
+        reasoningEffort: reasoningEffortSchema,
         timeoutSeconds: { type: 'integer', minimum: 10, maximum: 1800, description: 'Execution timeout in seconds (default 600).' }
       },
       required: ['sessionId', 'prompt'],
@@ -71,6 +76,7 @@ const TOOLS = [
         commit: { type: 'string', description: 'Optional commit SHA to review.' },
         prompt: { type: 'string', description: 'Custom review instructions. Cannot be combined with base, commit, or uncommitted: true.' },
         model: { type: 'string', description: 'Optional model override.' },
+        reasoningEffort: reasoningEffortSchema,
         timeoutSeconds: { type: 'integer', minimum: 10, maximum: 1800, description: 'Execution timeout in seconds (default 600).' }
       },
       additionalProperties: false
